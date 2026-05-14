@@ -2,7 +2,7 @@
 
 Claude Code–driven algorithmic trading framework for **Questrade** (Canadian + US equities / ETFs). Paper-trading by default. Live trading behind explicit flags + risk gates.
 
-Built around the five Claude Code skills from [Top 5 Claude Code Skills for Algorithmic Trading](https://medium.datadriveninvestor.com/top-5-claude-code-skills-for-algorithmic-trading-49620fa2b02c) — rewired to use Questrade as the single data + execution source instead of EODHD.
+Claude also ships with 5 algorithm tools (skills) — market data, signal generation, backtesting, risk management, and live execution — all wired to Questrade as the single data + execution source.
 
 ---
 
