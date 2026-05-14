@@ -62,6 +62,20 @@ If any check fails, stop and report — do not edit the .env to make it pass.
 - Risk gates: `src/trading_live_claude/risk/`
 - Questrade client: `src/trading_live_claude/brokers/questrade.py`
 
+## Two trading modes — pick the right one
+
+This repo supports **two distinct ways to trade** that share the same Router and risk gates:
+
+### A. LLM-driven trader (you are the trader)
+
+- Triggered by `/trade-check` or `/trade-now`.
+- The `claude-trader` skill describes your decision framework. Read it before deciding.
+- You gather state via `trading status / positions / risk-report / signal`, weigh the algorithm's signal against macro/cost/fit, then call `trading place-order` (which still routes through Router).
+- Use `/loop 10m /trade-check` to put yourself on a polling schedule. Stops when the user closes Claude.
+- Default mode for orders is `--mode auto` which honors `execution_mode` in `trading.yaml`. Refuse `--mode live` unless the user has explicitly typed "live" in this session.
+
+### B. Deterministic autonomous daemon (Python decides)
+
 ## Autonomous mode
 
 This repo supports a fully-autonomous Claude-driven trading loop. **Read these rules before touching anything related to it.**

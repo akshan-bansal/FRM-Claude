@@ -607,6 +607,145 @@ def autonomous_tail(lines: int = typer.Option(30, help="Lines from each log")) -
             console.print(f"[red]Could not read: {e}[/red]")
 
 
+# ----- place-order: the LLM-trader's hands ------------------------------------
+#
+# This is what the Claude Code session calls when it has done its analysis and
+# wants to place a single order. The Router enforces every risk gate before the
+# broker sees the order; Claude cannot bypass them regardless of what it
+# "decides". On rejection the CLI exits non-zero so Claude can read the failure.
+
+
+@app.command("place-order")
+def place_order(
+    symbol: str = typer.Option(..., help="Ticker, e.g. XIC.TO or AAPL"),
+    side: str = typer.Option(..., help="buy | sell"),
+    shares: int = typer.Option(..., help="Whole-share quantity (broker will reject fractions)"),
+    stop: float = typer.Option(..., help="Protective stop price (used by Router sanity gate)"),
+    target: float = typer.Option(0.0, help="Optional take-profit reference (informational)"),
+    reason: str = typer.Option(..., help='Free-text rationale; logged to state/orders.jsonl'),
+    strategy: str = typer.Option("llm-claude", help="Strategy/source tag for the journal"),
+    mode: str = typer.Option(
+        "auto",
+        help='Router mode override: auto|paper|dry-run|live|autonomous. "auto" reads execution_mode.',
+    ),
+    json_output: bool = typer.Option(False, help="Emit machine-readable JSON instead of text"),
+) -> None:
+    """Place a single order. Claude calls this after analysis. All risk gates apply."""
+    import json as _json
+    from .brokers.models import OrderAction
+    from .execution.router import OrderIntent
+
+    settings = get_settings()
+    chosen_mode = (mode if mode != "auto" else settings.execution_mode).lower()
+    if chosen_mode not in {"paper", "dry-run", "live", "autonomous"}:
+        console.print(f"[red]Invalid mode {chosen_mode!r}.[/red]")
+        raise typer.Exit(code=2)
+    if chosen_mode == "live":
+        console.print(
+            "[red]place-order refuses mode=live (typed confirmation phrase required).[/red] "
+            "Use mode=autonomous (with AUTONOMOUS_ENABLED=true) or mode=paper instead."
+        )
+        raise typer.Exit(code=2)
+
+    side_lower = side.lower().strip()
+    if side_lower not in {"buy", "sell"}:
+        console.print(f"[red]side must be buy or sell; got {side!r}[/red]")
+        raise typer.Exit(code=2)
+    action = OrderAction.BUY if side_lower == "buy" else OrderAction.SELL
+
+    feed = _make_questrade(settings)
+    broker = feed
+    if chosen_mode == "paper":
+        broker = PaperBroker(feed=feed, starting_equity=100_000.0, journal_dir=settings.state_dir)
+
+    accounts = broker.accounts()
+    if not accounts:
+        console.print("[red]No account.[/red]")
+        raise typer.Exit(code=1)
+    account_number = settings.questrade_account_number or accounts[0].number
+    equity = broker.equity(account_number, currency=settings.account_currency)
+
+    # Approximate existing open-risk dollars (2% of notional as a stand-in stop).
+    existing_positions = broker.positions(account_number)
+    existing_risk = sum(abs(p.openQuantity) * p.currentPrice * 0.02 for p in existing_positions)
+    open_positions_count = sum(1 for p in existing_positions if p.openQuantity != 0)
+
+    risk_dollars = abs(shares * (stop - 0.0)) if action == OrderAction.SELL else abs(shares * (0.0 - stop))
+    # Better: risk = shares * |entry - stop|. We don't have entry; use latest quote.
+    try:
+        quote_now = broker.quote(symbol)
+    except Exception as e:
+        console.print(f"[red]Quote fetch failed for {symbol}: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    entry_ref = quote_now.mid or quote_now.lastTradePrice or 0.0
+    if entry_ref <= 0:
+        console.print(f"[red]No usable price for {symbol}.[/red]")
+        raise typer.Exit(code=1)
+    risk_dollars = abs(shares * (entry_ref - stop))
+
+    intent = OrderIntent(
+        symbol=symbol,
+        action=action,
+        shares=int(shares),
+        entry=float(entry_ref),
+        stop=float(stop),
+        target=float(target) if target > 0 else None,
+        strategy=strategy,
+        risk_dollars=float(risk_dollars),
+        account_number=account_number,
+    )
+
+    router = Router.build_default(
+        mode="paper" if chosen_mode == "paper" else ("dry-run" if chosen_mode == "dry-run" else "autonomous"),
+        broker=broker,
+        state_dir=settings.state_dir,
+        cap_pct=settings.portfolio_heat_cap,
+        max_drawdown_pct=settings.max_drawdown_kill_switch,
+        daily_loss_limit_pct=settings.daily_loss_limit_pct,
+        max_open_positions=settings.max_open_positions,
+        min_ticket_usd=settings.min_ticket_usd,
+        daily_max_trades=settings.autonomous_daily_max_trades,
+        daily_max_notional_usd=settings.autonomous_daily_max_notional_usd,
+    ) if chosen_mode == "autonomous" else Router.build_default(
+        mode="paper" if chosen_mode == "paper" else "dry-run",
+        broker=broker,
+        state_dir=settings.state_dir,
+        cap_pct=settings.portfolio_heat_cap,
+        max_drawdown_pct=settings.max_drawdown_kill_switch,
+        daily_loss_limit_pct=settings.daily_loss_limit_pct,
+        max_open_positions=settings.max_open_positions,
+        min_ticket_usd=settings.min_ticket_usd,
+    )
+
+    placed = router.submit(
+        intent,
+        equity=equity,
+        existing_risk=existing_risk,
+        open_positions=open_positions_count,
+    )
+    payload = {
+        "submitted": placed is not None,
+        "order_id": placed.id if placed else None,
+        "symbol": symbol,
+        "side": side_lower,
+        "shares": int(shares),
+        "entry_ref": entry_ref,
+        "stop": stop,
+        "risk_dollars": risk_dollars,
+        "mode": chosen_mode,
+        "reason": reason,
+    }
+    if json_output:
+        print(_json.dumps(payload))
+    else:
+        if placed:
+            console.print(f"[green]PLACED[/green] {symbol} {side_lower} {shares} (order_id={placed.id})")
+        else:
+            console.print(f"[red]REJECTED[/red] {symbol} — see state/rejected.jsonl")
+        console.print(payload)
+    raise typer.Exit(code=0 if placed else 3)
+
+
 def _entry() -> None:
     app()
 

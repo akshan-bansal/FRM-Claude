@@ -14,6 +14,7 @@
       "Bash(uv run trading autonomous stop)",
       "Bash(uv run trading autonomous tail:*)",
       "Bash(uv run trading tune:*)",
+      "Bash(uv run trading place-order:*)",
       "Bash(uv run pytest:*)",
       "Bash(uv run ruff:*)",
       "Bash(uv run mypy:*)",

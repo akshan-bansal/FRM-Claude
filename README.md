@@ -8,20 +8,44 @@ Built around the five Claude Code skills from [Top 5 Claude Code Skills for Algo
 
 ## Use with Claude Code
 
-Open this repo in Claude Code and talk to it. The SessionStart hook auto-launches the autonomous daemon if enabled in `config/trading.yaml`. Everything below works as Claude slash commands or natural-language requests.
+Open this repo in Claude Code. There are **two trading modes**:
+
+| Mode | Who decides each buy/sell | Cost | Reliability | Setup |
+|---|---|---|---|---|
+| **LLM-driven** (`claude-trader` skill) | The Claude Code session itself | LLM API tokens per tick | Only runs while Claude is open (or via `/loop`) | `/trade-check` |
+| **Deterministic daemon** (`autonomous`) | Python algorithm, no LLM | $0 | Runs forever, survives Claude closing | `/autonomous start` |
+
+Both share the **same Router and risk gates**.
+
+### LLM-driven flow (Claude decides, algorithms help)
+
+```
+> /trade-check
+```
+
+Claude does: gather state → pull signals from algorithms → analyze regime + cost + fit → decide buy/sell/hold → if buy/sell, call `uv run trading place-order ...` (still gated by Router).
+
+Schedule it:
+```
+> /loop 10m /trade-check
+```
+
+Claude wakes itself every 10 min. **Stops when you close Claude.** For 24/7 trading without Claude open, use the deterministic daemon instead.
 
 ### Slash commands
 
 | Command | What it does |
 |---|---|
-| `/tune` | Backtests 5 strategies × 18 symbols, scores them, rewrites `config/trading.yaml` with the winner |
-| `/backtest <strategy> <symbol> [years]` | One-off backtest with markdown report |
-| `/signal-check <strategy> <symbols>` | One snapshot of live signals; never places orders |
-| `/paper-trade <strategy> <symbols> [iters]` | Paper session vs Questrade quotes, in-memory book |
-| `/autonomous` (`status`/`start`/`stop`/`tail`) | Manage the live trading daemon |
+| **`/trade-check`** | **LLM-driven**: gather → analyze → decide → maybe place order |
+| **`/trade-now <buy\|sell> <sym> <shares> <stop> [target] [reason]`** | Single order Claude already decided on |
+| `/tune` | Backtests 5 strategies × 18 symbols; rewrites `config/trading.yaml` |
+| `/backtest <strategy> <symbol> [years]` | One-off backtest, markdown report |
+| `/signal-check <strategy> <symbols>` | Snapshot live signals; never places orders |
+| `/paper-trade <strategy> <symbols> [iters]` | Paper session vs Questrade quotes |
+| `/autonomous` (`status`/`start`/`stop`/`tail`) | Deterministic-daemon manager |
 | `/positions` | Current Questrade holdings |
 | `/risk-report` | Equity, heat %, kill-switch state |
-| `/live-trade-confirm <strategy> <symbols>` | Pre-flight checklist for human-live trading |
+| `/live-trade-confirm <strategy> <symbols>` | Pre-flight checklist for human-live |
 | `/kill <reason>` | Emergency halt — refuses every order until cleared |
 
 ### Natural-language requests Claude understands
