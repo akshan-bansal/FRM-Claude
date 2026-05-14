@@ -1,0 +1,48 @@
+# Secrets
+.env
+.env.local
+state/tokens.json
+state/tokens.json.enc
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.uv/
+*.egg-info/
+build/
+dist/
+
+# Test/coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Data & logs (never commit market data or trade history)
+data/cache/
+data/*.parquet
+data/*.csv
+logs/
+state/positions.json
+state/equity.csv
+state/orders.jsonl
+state/fills.jsonl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Notebooks
+.ipynb_checkpoints/

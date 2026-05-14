@@ -1,0 +1,25 @@
+# Universe presets. Used by the CLI when no --symbols is passed and the strategy yaml references one.
+canadian_etfs:
+  - XIC.TO   # iShares Core S&P/TSX Capped Composite
+  - VFV.TO   # Vanguard S&P 500
+  - XEF.TO   # iShares MSCI EAFE IMI
+  - XEC.TO   # iShares Core MSCI Emerging Markets
+  - ZAG.TO   # BMO Aggregate Bond
+us_megacap:
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - NVDA
+canadian_bigbanks:
+  - RY.TO
+  - TD.TO
+  - BNS.TO
+  - BMO.TO
+  - CM.TO
+default_watchlist:
+  - AAPL
+  - MSFT
+  - SHOP.TO
+  - XIC.TO
+  - VFV.TO

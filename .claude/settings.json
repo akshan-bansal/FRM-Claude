@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(uv run trading status)",
+      "Bash(uv run trading backtest:*)",
+      "Bash(uv run trading signal:*)",
+      "Bash(uv run trading paper:*)",
+      "Bash(uv run trading positions)",
+      "Bash(uv run trading risk-report)",
+      "Bash(uv run trading kill:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run mypy:*)",
+      "Bash(uv sync)"
+    ],
+    "deny": [
+      "Bash(uv run trading live:*)",
+      "Bash(uv run trading clear-kill:*)",
+      "Read(.env)",
+      "Read(state/tokens.json*)"
+    ]
+  },
+  "env": {
+    "PYTHONUNBUFFERED": "1"
+  }
+}
