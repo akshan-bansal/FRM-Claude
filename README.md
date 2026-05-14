@@ -17,6 +17,33 @@ Open this repo in Claude Code. There are **two trading modes**:
 
 Both share the **same Router and risk gates**.
 
+```mermaid
+flowchart TB
+    User([User in Claude Code]) -->|/trade-check| LLM
+    User -->|/autonomous start| Daemon
+
+    subgraph ModeA["Mode A: LLM-driven (Claude decides)"]
+        LLM[Claude Code session] -->|trading signal| Helpers1[Algorithms<br/>indicators + sizing]
+        LLM -->|trading status| State1[State<br/>equity + positions]
+        LLM -->|web search| Macro[Macro context]
+        Helpers1 --> Decide{Claude decides}
+        State1 --> Decide
+        Macro --> Decide
+        Decide -->|trading place-order| Router1[Router + Risk Gates]
+    end
+
+    subgraph ModeB["Mode B: Deterministic daemon"]
+        Daemon[Background Python process] -->|poll every N min| Loop[Monitor loop]
+        Loop --> Algo[Strategy.generate_signals]
+        Algo --> Cmp{entry == 1?}
+        Cmp -->|yes| Router2[Router + Risk Gates]
+        Cmp -->|no| Sleep[Sleep N seconds]
+    end
+
+    Router1 --> Broker[Questrade]
+    Router2 --> Broker
+```
+
 ### LLM-driven flow (Claude decides, algorithms help)
 
 ```
@@ -210,18 +237,73 @@ Six skills auto-load when this repo is the working directory:
 
 ## Architecture
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for full diagrams. Two-line summary:
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for full diagrams. System layers:
 
-```
-[Strategy] → [Signal] → [Risk Gate] → [Router (paper|live)] → [Broker (Questrade)]
-                                  ↑
-                          [Kill-switch / daily loss / heat checks]
+```mermaid
+flowchart TB
+    CLI[CLI / Claude slash commands] --> Orch[Orchestration<br/>backtest / monitor / tune]
+    Orch --> Strat[Strategies<br/>Bollinger / RSI / MACD / EMA / Donchian / Pairs]
+    Strat --> Sig[Signals + Indicators<br/>vectorized, no lookahead]
+    Sig --> Risk[Risk<br/>Sizer / Heat / VaR / KillSwitch / DailyBudget]
+    Risk --> Router[Execution Router]
+    Router --> Paper[Paper Broker<br/>in-memory book]
+    Router --> Live[Questrade REST client]
+    Live --> Token[OAuth + Fernet-encrypted<br/>Token Store]
+    Live --> Quotes[Quotes + Candles + Orders]
 ```
 
-The same `Strategy` + `Signal` pipeline runs in three modes:
+The same `Strategy` + `Signal` pipeline runs in four modes:
 - **Backtest** — historical OHLCV from Questrade, executes against simulated book
 - **Paper** — live quotes from Questrade, executes against in-memory simulated book
-- **Live** — live quotes from Questrade, executes against your real Questrade account
+- **Live** — live quotes from Questrade, executes against your real Questrade account (human-confirmed)
+- **Autonomous** — same as live, but Claude-driven via daemon or LLM session, no per-order typed confirm
+
+### Every order passes the same risk gate chain
+
+```mermaid
+flowchart LR
+    Intent[OrderIntent<br/>symbol, side, shares, stop] --> G1{Kill switch<br/>tripped?}
+    G1 -->|yes| Rejected[REJECTED<br/>rejected.jsonl]
+    G1 -->|no| G2{equity &gt; 0?}
+    G2 -->|no| Rejected
+    G2 -->|yes| G3{shares &gt; 0?}
+    G3 -->|no| Rejected
+    G3 -->|yes| G4{notional<br/>&ge; min_ticket?}
+    G4 -->|no| Rejected
+    G4 -->|yes| G5{open positions<br/>&lt; cap?}
+    G5 -->|no| Rejected
+    G5 -->|yes| G6{portfolio heat<br/>&le; cap?}
+    G6 -->|no| Rejected
+    G6 -->|yes| G7{stop side<br/>sane?}
+    G7 -->|no| Rejected
+    G7 -->|yes| G8{daily caps OK?<br/>autonomous only}
+    G8 -->|no| Rejected
+    G8 -->|yes| Place[Submit to Questrade]
+    Place --> BrokerNo{Broker<br/>accepted?}
+    BrokerNo -->|no| Rejected
+    BrokerNo -->|yes| Filled[fills.jsonl]
+```
+
+### Daemon lifecycle (autonomous mode)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Fetching: tick (every N min)
+    Fetching --> Computing: quotes + bars in
+    Computing --> Deciding: signals computed
+    Deciding --> Gating: entry or exit fired
+    Deciding --> Idle: hold
+    Gating --> Placing: all gates pass
+    Gating --> Rejected: any gate failed
+    Placing --> Filled: broker confirms
+    Placing --> BrokerError: broker rejected
+    Filled --> Idle
+    Rejected --> Idle
+    BrokerError --> Idle
+    Idle --> Halted: kill switch tripped
+    Halted --> Idle: clear-kill (manual only)
+```
 
 ---
 
