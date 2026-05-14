@@ -1,0 +1,51 @@
+# config/trading.yaml — trading knobs that Claude can read/write freely.
+# Copy this file to config/trading.yaml and customize, or let `trading tune` write it for you.
+# Secrets (tokens, encryption key, SMTP creds) live in .env, NEVER here.
+
+# === Execution Mode ===
+# paper | dry-run | live | autonomous
+execution_mode: paper
+
+# === Strategy and universe ===
+default_strategy: bollinger
+default_symbols: "XIC.TO,VOO,IWM"
+timezone: America/Toronto
+# Currency used for equity, sizing, and heat math. Pick the side of your
+# Questrade multi-currency account that actually holds cash. CAD for Canadian
+# accounts (XIC.TO etc.); USD for US-funded accounts (VOO, AAPL etc.).
+account_currency: CAD
+
+# === Risk gates (apply to every order, all modes) ===
+risk_pct_per_trade: 0.01            # 1% account risk per trade
+portfolio_heat_cap: 0.05            # 5% aggregate open-risk cap
+daily_loss_limit_pct: 0.03          # -3% halts new entries today
+max_drawdown_kill_switch: 0.08      # -8% trips kill-switch automatically
+max_open_positions: 3
+min_ticket_usd: 100.0
+
+# === Questrade target ===
+# practice | live. 'practice' = Questrade's free practice account; 'live' = real money.
+questrade_env: practice
+# Empty string = use first account returned by the API.
+questrade_account_number: ""
+
+# === Autonomous mode (Claude-driven daemon) ===
+autonomous_enabled: false
+autonomous_account: practice
+autonomous_auto_start_on_session: false
+autonomous_interval_seconds: 600     # 10 minutes
+autonomous_strategy: bollinger
+autonomous_symbols: "XIC.TO,VOO,IWM"
+autonomous_daily_max_trades: 5
+autonomous_daily_max_notional_usd: 2000.0
+
+# === Storage ===
+log_level: INFO
+state_dir: state
+log_dir: logs
+data_cache_dir: data/cache
+
+# === Last auto-tune result (written by `trading tune`) ===
+last_tune:
+  ran_at: ""
+  scoreboard: []

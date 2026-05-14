@@ -5,6 +5,7 @@ across the board is ``paper``.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -15,13 +16,16 @@ from rich.table import Table
 from .backtest import BacktestEngine
 from .brokers import PaperBroker, QuestradeBroker, TokenStore
 from .config import get_settings
+from .daemon import AutonomousDaemon
 from .data import CandleCache, MarketData
-from .execution import LiveModeNotConfirmed, Router
+from .execution import AUTONOMOUS_ENV_VAR, AutonomousNotEnabled, LiveModeNotConfirmed, Router
+from .execution.daily_budget import DailyBudget
 from .logging_setup import configure_logging, get_logger
 from .monitor import Alerter, LiveMonitor
 from .monitor.alerter import AlertConfig
 from .risk import KillSwitch, PositionSizer
 from .strategies import STRATEGIES
+from .tune import DEFAULT_TUNE_STRATEGIES, DEFAULT_TUNE_UNIVERSE, apply_tune, run_tune
 
 app = typer.Typer(help="Claude Code algorithmic trading CLI (paper-first; live behind explicit flag).")
 console = Console()
@@ -74,8 +78,9 @@ def status() -> None:
         table.add_row(a.number, a.type, a.status, str(a.isPrimary))
     console.print(table)
     if accounts:
-        eq = broker.equity(accounts[0].number)
-        console.print(f"Equity (primary): [green]${eq:,.2f}[/green]")
+        cur = settings.account_currency
+        eq = broker.equity(accounts[0].number, currency=cur)
+        console.print(f"Equity (primary, {cur}): [green]${eq:,.2f}[/green]")
 
 
 @app.command()
@@ -169,6 +174,7 @@ def signal(
         symbols=[s.strip().upper() for s in symbols.split(",") if s.strip()],
         interval_seconds=interval,
         on_event=_emit,
+        account_currency=settings.account_currency,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
@@ -207,6 +213,7 @@ def paper(
         account_number="PAPER-001",
         symbols=[s.strip().upper() for s in symbols.split(",") if s.strip()],
         interval_seconds=interval,
+        account_currency=settings.account_currency,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
@@ -263,6 +270,7 @@ def live(
         account_number=account_number,
         symbols=[s.strip().upper() for s in symbols.split(",") if s.strip()],
         interval_seconds=interval,
+        account_currency=settings.account_currency,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
@@ -326,7 +334,7 @@ def risk_report() -> None:
     if not accounts:
         return
     acc = settings.questrade_account_number or accounts[0].number
-    eq = broker.equity(acc)
+    eq = broker.equity(acc, currency=settings.account_currency)
     pos = broker.positions(acc)
     notional = sum(abs(p.openQuantity) * p.currentPrice for p in pos)
     heat_pct = notional / eq if eq else 0.0
@@ -341,6 +349,262 @@ def risk_report() -> None:
     if ks.halted:
         t.add_row("reason", ks.reason)
     console.print(t)
+
+
+# ----- tune ------------------------------------------------------------------
+
+
+@app.command()
+def tune(
+    years: float = typer.Option(5.0, help="Years of history per backtest"),
+    symbols: str = typer.Option("", help="Comma-separated symbols (empty = curated default universe)"),
+    strategies: str = typer.Option("", help="Comma-separated strategy keys (empty = all)"),
+    dry_run: bool = typer.Option(False, help="Score + print, but don't write trading.yaml"),
+    parallel: int = typer.Option(4, help="Concurrent backtests"),
+) -> None:
+    """Backtest a strategy x symbol grid; write the winning config to config/trading.yaml."""
+    settings = get_settings()
+    broker = _make_questrade(settings)
+    cache = CandleCache(settings.data_cache_dir)
+
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] or list(DEFAULT_TUNE_UNIVERSE)
+    strat_list = [s.strip() for s in strategies.split(",") if s.strip()] or list(DEFAULT_TUNE_STRATEGIES)
+
+    console.print(
+        f"[bold]Tuning[/bold] {len(strat_list)} strategies x {len(sym_list)} symbols, "
+        f"years={years}, parallel={parallel}"
+    )
+    results = run_tune(broker, cache, symbols=sym_list, strategies=strat_list, years=years, parallel=parallel)
+    if not results:
+        console.print("[red]No backtests succeeded.[/red]")
+        raise typer.Exit(code=1)
+
+    table = Table(title="Scoreboard (top 15)")
+    for col in ("strategy", "symbol", "Sharpe", "MaxDD", "CAGR", "Win%", "trades", "score"):
+        table.add_column(col)
+    for r in results[:15]:
+        table.add_row(
+            r.strategy,
+            r.symbol,
+            f"{r.sharpe:.2f}",
+            f"{r.max_drawdown:.2%}",
+            f"{r.cagr:.2%}",
+            f"{r.win_rate:.2%}",
+            str(r.num_trades),
+            f"{r.score:.2f}",
+        )
+    console.print(table)
+
+    update = apply_tune(results, dry_run=dry_run)
+    if update is None:
+        console.print(
+            "[yellow]No combo passed filters (>= 15 trades, max DD >= -20%). trading.yaml unchanged.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+    if dry_run:
+        console.print("[yellow]--dry-run: trading.yaml NOT written.[/yellow]")
+    else:
+        console.print(
+            f"[green]trading.yaml updated:[/green] strategy={update['default_strategy']}  "
+            f"symbols={update['default_symbols']}"
+        )
+
+
+# ----- autonomous subcommands ------------------------------------------------
+
+autonomous_app = typer.Typer(help="Claude-driven autonomous trading loop. Background daemon process.")
+app.add_typer(autonomous_app, name="autonomous")
+
+
+def _build_alerter(settings) -> Alerter:
+    return Alerter(
+        AlertConfig(
+            telegram_bot_token=settings.telegram_bot_token,
+            telegram_chat_id=settings.telegram_chat_id,
+            smtp_host=settings.smtp_host,
+            smtp_user=settings.smtp_user,
+            smtp_pass=settings.smtp_pass,
+            email_to=settings.alert_email_to,
+        )
+    )
+
+
+@autonomous_app.command("status")
+def autonomous_status() -> None:
+    """Show daemon state, today's trade count, today's notional."""
+    settings = get_settings()
+    daemon = AutonomousDaemon(settings.state_dir, settings.log_dir)
+    st = daemon.status()
+    budget = DailyBudget(
+        settings.state_dir,
+        max_trades_per_day=settings.autonomous_daily_max_trades,
+        max_notional_per_day_usd=settings.autonomous_daily_max_notional_usd,
+    ).snapshot()
+    ks = KillSwitch(settings.state_dir).state()
+    t = Table(title="Autonomous daemon")
+    for col in ("metric", "value"):
+        t.add_column(col)
+    t.add_row("running", "yes" if st.running else "no")
+    t.add_row("pid", str(st.pid) if st.pid else "-")
+    t.add_row("pidfile", str(st.pidfile))
+    t.add_row("stale pidfile", "yes" if st.stale else "no")
+    t.add_row("kill-switch", "HALTED" if ks.halted else "ok")
+    if ks.halted:
+        t.add_row("kill reason", ks.reason)
+    t.add_row("trades today", f"{budget.trades_today}/{budget.max_trades}")
+    t.add_row("notional today", f"${budget.notional_today_usd:,.0f}/${budget.max_notional_usd:,.0f}")
+    t.add_row("autonomous_enabled (.env)", str(settings.autonomous_enabled))
+    t.add_row("autonomous_account (.env)", settings.autonomous_account)
+    t.add_row("interval (s)", str(settings.autonomous_interval_seconds))
+    t.add_row("strategy", settings.autonomous_strategy)
+    t.add_row("symbols", settings.autonomous_symbols)
+    console.print(t)
+
+
+@autonomous_app.command("start")
+def autonomous_start(
+    account: str = typer.Option("", help="Override autonomous_account: practice|live"),
+) -> None:
+    """Spawn the autonomous daemon. Background process; survives this shell."""
+    settings = get_settings()
+    if not settings.autonomous_enabled:
+        console.print(
+            "[red]Refusing to start: AUTONOMOUS_ENABLED is false in .env. "
+            "Read RISK_DISCLOSURE.md, then set AUTONOMOUS_ENABLED=true manually.[/red]"
+        )
+        raise typer.Exit(code=2)
+    if KillSwitch(settings.state_dir).state().halted:
+        console.print("[red]Refusing to start: kill-switch tripped. Clear it manually first.[/red]")
+        raise typer.Exit(code=2)
+
+    chosen_account = (account or settings.autonomous_account).lower()
+    if chosen_account not in {"practice", "live"}:
+        console.print(f"[red]Invalid account '{chosen_account}'. Use practice or live.[/red]")
+        raise typer.Exit(code=2)
+
+    extra_env = {
+        AUTONOMOUS_ENV_VAR: "true",
+        "AUTONOMOUS_ACCOUNT_RUNTIME": chosen_account,
+    }
+    daemon = AutonomousDaemon(settings.state_dir, settings.log_dir)
+    argv = [sys.executable, "-m", "trading_live_claude.cli", "autonomous", "run"]
+    try:
+        pid = daemon.start(argv, extra_env=extra_env)
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from e
+    console.print(f"[green]Autonomous daemon started (pid={pid}, account={chosen_account}).[/green]")
+    console.print(f"  stdout log: {daemon.stdout_log}")
+    console.print(f"  stderr log: {daemon.stderr_log}")
+
+
+@autonomous_app.command("stop")
+def autonomous_stop() -> None:
+    """Stop the autonomous daemon (graceful, with hard-kill fallback)."""
+    settings = get_settings()
+    daemon = AutonomousDaemon(settings.state_dir, settings.log_dir)
+    if daemon.stop():
+        console.print("[yellow]Autonomous daemon stopped.[/yellow]")
+    else:
+        console.print("[dim]No autonomous daemon running.[/dim]")
+
+
+@autonomous_app.command("run")
+def autonomous_run() -> None:
+    """Foreground autonomous loop. Normally invoked by `autonomous start`, not by humans."""
+    settings = get_settings()
+    if not settings.autonomous_enabled:
+        console.print("[red]AUTONOMOUS_ENABLED is false. Aborting.[/red]")
+        raise typer.Exit(code=2)
+    if KillSwitch(settings.state_dir).state().halted:
+        console.print("[red]Kill-switch tripped. Aborting.[/red]")
+        raise typer.Exit(code=2)
+
+    chosen_account = os.environ.get("AUTONOMOUS_ACCOUNT_RUNTIME", settings.autonomous_account).lower()
+    if chosen_account not in {"practice", "live"}:
+        console.print(f"[red]Invalid AUTONOMOUS_ACCOUNT_RUNTIME='{chosen_account}'.[/red]")
+        raise typer.Exit(code=2)
+
+    # If the user picked live but Questrade env is practice (or vice-versa), reconcile
+    # by spawning the broker against the matching endpoint. We honor `chosen_account`
+    # over `.env` QUESTRADE_ENV for the lifetime of this process.
+    os.environ["QUESTRADE_ENV"] = chosen_account
+
+    broker = _make_questrade(settings)
+    accounts = broker.accounts()
+    if not accounts:
+        console.print("[red]No accounts on Questrade login.[/red]")
+        raise typer.Exit(code=1)
+    account_number = settings.questrade_account_number or accounts[0].number
+
+    market = MarketData(broker, cache=CandleCache(settings.data_cache_dir))
+    strat = _strategy_or_die(settings.autonomous_strategy)
+    sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
+
+    try:
+        router = Router.build_default(
+            mode="autonomous",
+            broker=broker,
+            state_dir=settings.state_dir,
+            cap_pct=settings.portfolio_heat_cap,
+            max_drawdown_pct=settings.max_drawdown_kill_switch,
+            daily_loss_limit_pct=settings.daily_loss_limit_pct,
+            max_open_positions=settings.max_open_positions,
+            min_ticket_usd=settings.min_ticket_usd,
+            daily_max_trades=settings.autonomous_daily_max_trades,
+            daily_max_notional_usd=settings.autonomous_daily_max_notional_usd,
+        )
+    except (LiveModeNotConfirmed, AutonomousNotEnabled) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from e
+
+    alerter = _build_alerter(settings)
+
+    def _emit(ev) -> None:
+        if ev.kind in {"entry", "exit"}:
+            alerter.send(
+                f"[autonomous/{chosen_account}] {settings.autonomous_strategy} {ev.kind.upper()}: {ev.symbol}",
+                f"price={ev.price:.4f} detail={ev.detail}",
+            )
+
+    monitor = LiveMonitor(
+        broker=broker,
+        market=market,
+        strategy=strat,
+        sizer=sizer,
+        router=router,
+        account_number=account_number,
+        symbols=settings.autonomous_symbols_list,
+        interval_seconds=settings.autonomous_interval_seconds,
+        on_event=_emit,
+        account_currency=settings.account_currency,
+    )
+    log.info(
+        "autonomous.loop.start",
+        account=chosen_account,
+        strategy=settings.autonomous_strategy,
+        symbols=settings.autonomous_symbols_list,
+        interval=settings.autonomous_interval_seconds,
+    )
+    monitor.run_forever()
+
+
+@autonomous_app.command("tail")
+def autonomous_tail(lines: int = typer.Option(30, help="Lines from each log")) -> None:
+    """Print last N lines of stdout/stderr logs from the daemon."""
+    settings = get_settings()
+    daemon = AutonomousDaemon(settings.state_dir, settings.log_dir)
+    for label, p in (("stdout", daemon.stdout_log), ("stderr", daemon.stderr_log)):
+        console.print(f"[bold]{label} ({p}):[/bold]")
+        if not p.exists():
+            console.print("[dim](empty)[/dim]")
+            continue
+        try:
+            content = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in content[-lines:]:
+                console.print(f"  {line}")
+        except OSError as e:
+            console.print(f"[red]Could not read: {e}[/red]")
 
 
 def _entry() -> None:

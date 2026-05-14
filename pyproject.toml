@@ -22,6 +22,7 @@ dependencies = [
     "cryptography>=42.0",
     "tabulate>=0.9",
     "structlog>=24.1",
+    "pyarrow>=16.0",
 ]
 
 [project.optional-dependencies]
@@ -61,7 +62,8 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --cov=src/trading_live_claude --cov-report=term-missing"
+pythonpath = ["src"]
+addopts = "-ra --strict-markers --cov=trading_live_claude --cov-report=term-missing"
 markers = [
     "network: tests that hit a live network (skipped in CI by default)",
     "live: tests that touch live broker endpoints (NEVER run in CI)",

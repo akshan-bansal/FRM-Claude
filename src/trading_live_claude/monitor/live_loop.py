@@ -50,6 +50,7 @@ class LiveMonitor:
         symbols: list[str],
         interval_seconds: int = 60,
         on_event: Callable[[MonitorEvent], None] | None = None,
+        account_currency: str = "CAD",
     ) -> None:
         self.broker = broker
         self.market = market
@@ -60,6 +61,7 @@ class LiveMonitor:
         self.symbols = symbols
         self.interval_seconds = max(int(interval_seconds), 5)
         self.on_event = on_event or (lambda _: None)
+        self.account_currency = account_currency
 
     def _open_positions(self) -> dict[str, float]:
         positions = self.broker.positions(self.account_number)
@@ -67,7 +69,7 @@ class LiveMonitor:
 
     def step(self) -> list[MonitorEvent]:
         events: list[MonitorEvent] = []
-        equity = self.broker.equity(self.account_number)
+        equity = self.broker.equity(self.account_number, currency=self.account_currency)
         open_positions = self._open_positions()
         # rough existing risk: sum of |qty * 2% of price| (lacking real stops post-hoc)
         existing_risk = 0.0

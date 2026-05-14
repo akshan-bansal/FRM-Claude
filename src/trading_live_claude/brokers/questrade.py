@@ -120,12 +120,23 @@ class QuestradeBroker(Broker):
         data = self._request("GET", f"accounts/{account_number}/positions").json()
         return [Position(**p) for p in data.get("positions", [])]
 
-    def equity(self, account_number: str) -> float:
+    def equity(self, account_number: str, currency: str = "CAD") -> float:
+        """Return account equity in the requested currency.
+
+        Questrade multi-currency accounts report both `perCurrencyBalances`
+        (each currency's own cash + positions) and `combinedBalances` (each
+        currency's view of the *whole* account after FX conversion). We use
+        `combinedBalances[<currency>].totalEquity` so the figure reflects the
+        true buying power for orders denominated in that currency.
+        """
         data = self._request("GET", f"accounts/{account_number}/balances").json()
+        for bal in data.get("combinedBalances", []):
+            if bal.get("currency") == currency:
+                return float(bal.get("totalEquity", 0.0))
+        # Fallbacks: USD, then first available.
         for bal in data.get("combinedBalances", []):
             if bal.get("currency") == "USD":
                 return float(bal.get("totalEquity", 0.0))
-        # fall back to first combined balance
         if data.get("combinedBalances"):
             return float(data["combinedBalances"][0].get("totalEquity", 0.0))
         return 0.0

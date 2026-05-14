@@ -6,6 +6,18 @@ Claude Code project memory. Loaded automatically when working in this repo.
 
 Algorithmic trading framework. Strategies → signals → risk gates → Questrade orders. Paper-mode default. Live mode behind multi-step confirmation.
 
+## Config layout
+
+This repo splits configuration so you can manage it freely without ever touching secrets:
+
+- **`.env`** — secrets only. Refresh token, encryption key, optional SMTP/Telegram creds. Gitignored. **Reading `.env` is denied** in `.claude/settings.json`. You cannot see it.
+- **`config/trading.yaml`** — every non-secret knob (strategy, symbols, risk caps, autonomous config). Gitignored (per-machine). **You can read and write this freely.**
+- **`config/trading.example.yaml`** — committed template; what `trading.yaml` should look like.
+
+Precedence: `trading.yaml` > environment variables > `.env` > dataclass defaults.
+
+Use `uv run trading tune` (or the `/tune` command) to backtest a strategy x symbol grid and atomically rewrite `trading.yaml` with the winning config.
+
 ## Non-negotiables
 
 - **Never bypass the risk gate.** All order intents go through `execution.router.Router`. Even tests must use the paper router, never instantiate a Questrade broker for tests.
@@ -50,6 +62,32 @@ If any check fails, stop and report — do not edit the .env to make it pass.
 - Risk gates: `src/trading_live_claude/risk/`
 - Questrade client: `src/trading_live_claude/brokers/questrade.py`
 
+## Autonomous mode
+
+This repo supports a fully-autonomous Claude-driven trading loop. **Read these rules before touching anything related to it.**
+
+- The daemon process is owned by the user's system, not by Claude. Claude can start/stop/inspect it, but the loop runs in `trading_live_claude.cli:autonomous_run` as a detached process with its own pid.
+- A daemon spawned in this repo can place real Questrade orders if `AUTONOMOUS_ACCOUNT=live`. Default and reset value is `practice`.
+- Autonomous router mode requires the runtime env var `AUTONOMOUS_ENABLED=true` AND `autonomous_enabled=true` in `.env`. The CLI sets the env var when calling `autonomous start`; the daemon then re-checks on every Router construction.
+- The daemon respects ALL the standard gates (kill-switch, heat, per-trade risk, max positions, min ticket) PLUS a daily trade-count and daily notional cap.
+
+### What Claude is allowed to do
+- Run `/autonomous status`, `/autonomous tail`, `/autonomous start`, `/autonomous stop`.
+- Use the `autonomous-monitor` agent to audit health.
+- Recommend a stop if it sees a pattern of rejections, broker errors, or unexpected fills.
+
+### What Claude is NOT allowed to do
+- Flip `AUTONOMOUS_ENABLED` in `.env`. The user does that themselves.
+- Flip `AUTONOMOUS_ACCOUNT` from `practice` to `live` in `.env`. The user does that themselves.
+- Clear the kill-switch under any circumstance.
+- Edit the Router's gate list, the DailyBudget caps, or the strategy code while the daemon is running.
+
+### Failure modes to watch for
+1. Token expiry mid-session → broker raises `TokenExpired`. Daemon continues looping; next iteration re-refreshes. If repeated, stop daemon.
+2. Symbol not found → broker raises `BrokerError`. Daemon logs and skips that symbol; healthy.
+3. Daily-budget exhausted → router rejects with reason "daily trade cap reached" / "daily notional cap". Healthy; daemon should idle until midnight UTC.
+4. Pidfile present but process dead → `status` reports `stale`. `start` clears stale pidfile and proceeds.
+
 ## Skills available in this repo
 
 `.claude/skills/`:
@@ -59,3 +97,11 @@ If any check fails, stop and report — do not edit the .env to make it pass.
 - `risk-management` — sizing, VaR, heat, kill switch
 - `live-signal-monitor` — polling loop, alerts only, never orders
 - `questrade-execution` — signal → risk gate → live order (own skill)
+
+`.claude/commands/`:
+- `/autonomous status|start|stop|tail` — manage the autonomous daemon
+
+`.claude/agents/`:
+- `autonomous-monitor` — periodic health audit of the daemon
+- `risk-gate` — pre-flight audit before going live (autonomous or human-live)
+- `strategy-reviewer` — code review for lookahead/overfitting

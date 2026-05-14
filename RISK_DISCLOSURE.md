@@ -48,6 +48,38 @@ Questrade offers a free practice account. Set `QUESTRADE_ENV=practice` and run f
 
 `trading live` refuses to run unless you pass `--confirm "I UNDERSTAND THE RISK"` as an argument **and** `EXECUTION_MODE=live` is set in the environment. There is no way to remove this — by design.
 
-## 7. Not investment advice
+## 7. Autonomous mode raises the risk ceiling
+
+`AUTONOMOUS_ENABLED=true` lets the daemon place real orders against your Questrade account on every signal pass — every 20 minutes by default. There is no typed confirmation per order. The only things between a bug and your equity are:
+
+| Defense | Where it lives |
+|---|---|
+| `AUTONOMOUS_ENABLED` must be `true` in `.env` AND env var must be `true` at runtime | `Router.confirm_autonomous` |
+| Daily trade count cap | `DailyBudget` (`state/orders.jsonl` based) |
+| Daily notional cap | `DailyBudget` |
+| All standard gates (heat, kill-switch, per-trade risk, max positions, min ticket, stop sanity) | `Router._gate` |
+| Kill-switch on -10% drawdown | `KillSwitch.evaluate` |
+| Daily loss limit (-3%) | `KillSwitch.evaluate` |
+
+**Recommended autonomous defaults for first month live:**
+
+```
+AUTONOMOUS_ENABLED=true
+AUTONOMOUS_ACCOUNT=practice              # NOT live yet
+AUTONOMOUS_INTERVAL_SECONDS=1200
+AUTONOMOUS_DAILY_MAX_TRADES=5
+AUTONOMOUS_DAILY_MAX_NOTIONAL_USD=2500
+AUTONOMOUS_SYMBOLS=XIC.TO                # one ETF only
+RISK_PCT_PER_TRADE=0.005                 # 0.5%
+PORTFOLIO_HEAT_CAP=0.025                 # 2.5%
+MAX_OPEN_POSITIONS=2
+MAX_DRAWDOWN_KILL_SWITCH=0.05            # 5% kill switch (very tight)
+```
+
+After two clean weeks on practice, raise one knob at a time.
+
+**To stop everything immediately:** `uv run trading kill --reason "stop"` (any shell, anywhere). This blocks every order until you run `trading clear-kill` manually.
+
+## 8. Not investment advice
 
 This software does not give financial advice. The included strategies (EMA crossover, RSI mean-reversion, MACD, Bollinger, momentum breakout, pairs) are textbook examples. They are likely **not** profitable out-of-sample at retail scale after costs. They exist to demonstrate the framework, not as recommendations.

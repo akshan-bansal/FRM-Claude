@@ -59,7 +59,8 @@ class PaperBroker(Broker):
     def candles(self, symbol: str, start: datetime, end: datetime, interval: str = "OneDay") -> list[Candle]:
         return self._feed.candles(symbol, start, end, interval)
 
-    def equity(self, account_number: str) -> float:
+    def equity(self, account_number: str, currency: str = "CAD") -> float:
+        """Paper broker is single-currency; `currency` arg accepted for protocol parity."""
         mtm = sum(p.openQuantity * p.currentPrice for p in self._positions.values())
         return self._cash + mtm
 

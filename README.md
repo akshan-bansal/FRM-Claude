@@ -6,6 +6,50 @@ Built around the five Claude Code skills from [Top 5 Claude Code Skills for Algo
 
 ---
 
+## Use with Claude Code
+
+Open this repo in Claude Code and talk to it. The SessionStart hook auto-launches the autonomous daemon if enabled in `config/trading.yaml`. Everything below works as Claude slash commands or natural-language requests.
+
+### Slash commands
+
+| Command | What it does |
+|---|---|
+| `/tune` | Backtests 5 strategies × 18 symbols, scores them, rewrites `config/trading.yaml` with the winner |
+| `/backtest <strategy> <symbol> [years]` | One-off backtest with markdown report |
+| `/signal-check <strategy> <symbols>` | One snapshot of live signals; never places orders |
+| `/paper-trade <strategy> <symbols> [iters]` | Paper session vs Questrade quotes, in-memory book |
+| `/autonomous` (`status`/`start`/`stop`/`tail`) | Manage the live trading daemon |
+| `/positions` | Current Questrade holdings |
+| `/risk-report` | Equity, heat %, kill-switch state |
+| `/live-trade-confirm <strategy> <symbols>` | Pre-flight checklist for human-live trading |
+| `/kill <reason>` | Emergency halt — refuses every order until cleared |
+
+### Natural-language requests Claude understands
+
+- *"backtest bollinger on XIC.TO for 5 years"* → `/backtest`
+- *"is the bot ok?"* / *"how's the daemon?"* → `/autonomous status` + `autonomous-monitor` agent
+- *"pick the best strategy and symbols"* → `/tune`
+- *"add a strategy that does X"* → scaffolds new `Strategy` subclass + runs `strategy-reviewer` agent
+- *"review my changes before going live"* → `risk-gate` agent
+- *"stop trading now"* → `/kill`
+
+### Auto-trading flow (zero ongoing typing)
+
+1. Edit `.env`: paste `QUESTRADE_REFRESH_TOKEN` + `TOKEN_ENCRYPTION_KEY`.
+2. Edit `config/trading.yaml`: set `autonomous_enabled: true`, `autonomous_auto_start_on_session: true`, `autonomous_account: practice` (or `live` after funding).
+3. `uv sync && uv run python scripts/refresh_token.py`.
+4. Open Claude Code in the repo. Daemon auto-spawns. Trades every `autonomous_interval_seconds`.
+5. Optional: `/tune` weekly to re-pick strategy + symbols from latest data, then `/autonomous stop && /autonomous start` to apply.
+
+### Hard safety boundaries (Claude cannot bypass)
+
+- `Read(.env)` denied — Claude cannot see secrets.
+- `trading live --confirm ...` denied — Claude cannot trigger human-live mode.
+- `trading clear-kill --ack ...` denied — only you can resume after a kill-switch trip.
+- `autonomous_account: practice` → `live` flip requires you editing `config/trading.yaml` by hand.
+
+---
+
 ## ⚠️ Risk disclosure
 
 **This software can place real orders against your real Questrade account.** Algorithmic trading carries substantial financial risk. Bugs, network failures, stale tokens, and bad strategies can lose money fast. By using this repo you accept that:
@@ -23,11 +67,12 @@ Built around the five Claude Code skills from [Top 5 Claude Code Skills for Algo
 # 1. Install (Python 3.13+ via uv)
 uv sync
 
-# 2. Bootstrap config
-cp .env.example .env
+# 2. Bootstrap config — TWO files
+cp .env.example .env                              # secrets only (refresh token, encryption key)
+cp config/trading.example.yaml config/trading.yaml # trading knobs (Claude can read/write this)
 # Open https://login.questrade.com/APIAccess/UserApps.aspx and create an app.
 # Generate a refresh token, paste into .env (QUESTRADE_REFRESH_TOKEN=...).
-# Generate a random TOKEN_ENCRYPTION_KEY (e.g. `python -c "import secrets;print(secrets.token_urlsafe(32))"`).
+# Generate the encryption key:  uv run python scripts/generate_encryption_key.py  (paste into .env)
 
 # 3. Validate connection (read-only)
 uv run trading status
@@ -43,7 +88,46 @@ uv run trading paper --strategy ema_crossover --symbols AAPL,XIC.TO
 
 # 7. Live trade (requires explicit confirmation)
 EXECUTION_MODE=live uv run trading live --strategy ema_crossover --symbols AAPL --confirm "I UNDERSTAND THE RISK"
+
+# 8. Autonomous mode (Claude-managed daemon, NO typed confirm per order)
+#    First, set in .env:    AUTONOMOUS_ENABLED=true   AUTONOMOUS_ACCOUNT=practice
+#    Then start the daemon (background process, survives this shell):
+uv run trading autonomous start
+uv run trading autonomous status
+uv run trading autonomous tail
+uv run trading autonomous stop
+
+# 9. Let Claude pick strategy + symbols automatically (writes config/trading.yaml)
+uv run trading tune                              # full grid (5 strategies x 18 symbols)
+uv run trading tune --dry-run                    # just show scoreboard, don't write
 ```
+
+## How configuration is split
+
+| File | Contents | Claude access |
+|---|---|---|
+| `.env` | Secrets (refresh token, encryption key, SMTP/Telegram creds) | **Denied** in `.claude/settings.json`. You set this yourself. |
+| `config/trading.yaml` | Strategy, symbols, risk caps, autonomous knobs, daily budgets | **Read + Write allowed**. `trading tune` rewrites it atomically; you and Claude can edit by hand. |
+| `config/trading.example.yaml` | Committed template documenting every key | Read-only template; copy to `trading.yaml` on first run. |
+
+Anything Claude needs to "decide" lives in `trading.yaml`. Anything secret lives in `.env`.
+
+## Autonomous mode (Claude-driven loop)
+
+The autonomous daemon runs `trading_live_claude.cli:autonomous_run` in a detached process. Every `AUTONOMOUS_INTERVAL_SECONDS` (default 1200 = 20 minutes) it:
+
+1. Pulls latest Questrade quotes + recent bars for `AUTONOMOUS_SYMBOLS`
+2. Re-runs `AUTONOMOUS_STRATEGY` to get entry/exit signals
+3. For any new entry/exit signal: sizes via `PositionSizer`, gates via `Router`, places against the account (`AUTONOMOUS_ACCOUNT=practice|live`)
+4. Logs to `state/orders.jsonl` / `state/fills.jsonl` / `state/rejected.jsonl`
+
+The autonomous router enforces all standard gates plus:
+- Daily trade count cap (`AUTONOMOUS_DAILY_MAX_TRADES`, default 10)
+- Daily notional cap (`AUTONOMOUS_DAILY_MAX_NOTIONAL_USD`, default $10,000)
+
+If `AUTONOMOUS_AUTO_START_ON_SESSION=true`, the SessionStart hook auto-spawns the daemon when you open Claude Code in this repo. Otherwise: `/autonomous start`.
+
+**To stop everything immediately:** `uv run trading kill --reason "stop"`. The router will refuse every order until you manually `clear-kill`.
 
 ---
 

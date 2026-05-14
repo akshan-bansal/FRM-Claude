@@ -20,6 +20,8 @@ def _isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUESTRADE_ENV", "practice")
     monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-key-do-not-use-in-production")
     monkeypatch.setenv("QUESTRADE_REFRESH_TOKEN", "test-refresh-token")
+    # Redirect trading.yaml to a sandbox path so tests don't pick up the real repo's yaml.
+    monkeypatch.setenv("TRADING_YAML_PATH", str(tmp_path / "trading.yaml"))
     # Refresh the cached Settings singleton.
     from trading_live_claude.config.settings import get_settings as gs
 
@@ -44,10 +46,13 @@ def random_walk_df() -> pd.DataFrame:
 
 @pytest.fixture()
 def trending_df() -> pd.DataFrame:
-    """Synthetic trending series so EMA-cross style strategies fire."""
+    """V-shape series: declines first, then rallies. Forces an EMA crossover near the trough."""
     n = 400
-    base = np.linspace(100, 200, n)
-    noise = np.random.default_rng(0).normal(0, 0.5, n)
+    half = n // 2
+    down = np.linspace(200, 100, half)
+    up = np.linspace(100, 200, n - half)
+    base = np.concatenate([down, up])
+    noise = np.random.default_rng(0).normal(0, 0.3, n)
     close = base + noise
     high = close + 0.5
     low = close - 0.5

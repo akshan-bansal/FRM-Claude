@@ -9,16 +9,43 @@
       "Bash(uv run trading positions)",
       "Bash(uv run trading risk-report)",
       "Bash(uv run trading kill:*)",
+      "Bash(uv run trading autonomous status)",
+      "Bash(uv run trading autonomous start:*)",
+      "Bash(uv run trading autonomous stop)",
+      "Bash(uv run trading autonomous tail:*)",
+      "Bash(uv run trading tune:*)",
       "Bash(uv run pytest:*)",
       "Bash(uv run ruff:*)",
       "Bash(uv run mypy:*)",
-      "Bash(uv sync)"
+      "Bash(uv run python -c:*)",
+      "Bash(uv sync)",
+      "Bash(tail -n*)",
+      "Bash(test -f*)",
+      "Read(config/trading.yaml)",
+      "Read(config/trading.example.yaml)",
+      "Write(config/trading.yaml)",
+      "Edit(config/trading.yaml)"
     ],
     "deny": [
       "Bash(uv run trading live:*)",
+      "Bash(uv run trading autonomous run:*)",
       "Bash(uv run trading clear-kill:*)",
       "Read(.env)",
+      "Read(.env.local)",
       "Read(state/tokens.json*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python .claude/hooks/session_start.py"
+          }
+        ]
+      }
     ]
   },
   "env": {
