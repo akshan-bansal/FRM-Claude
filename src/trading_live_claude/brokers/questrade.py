@@ -6,6 +6,7 @@ by the token endpoint to ``state/tokens.json.enc`` before doing anything else.
 """
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,10 @@ class QuestradeBroker(Broker):
         self._tokens: TokenSet | None = self._store.load()
         self._client = httpx.Client(timeout=timeout)
         self._symbol_id_cache: dict[str, int] = {}
+        # Serializes token refresh across threads. The refresh token is one-shot and
+        # persisted to a single file; without this, concurrent callers (e.g. the
+        # parallel tuner) race to refresh and rotate it, corrupting the token store.
+        self._token_lock = threading.Lock()
 
     # ----- token management -----------------------------------------------
 
@@ -76,15 +81,17 @@ class QuestradeBroker(Broker):
         return tokens
 
     def _ensure_token(self) -> TokenSet:
-        if self._tokens is None:
-            if not self._initial_refresh:
-                raise BrokerError(
-                    "No saved tokens and no initial refresh token. Set QUESTRADE_REFRESH_TOKEN."
-                )
-            self._tokens = self._refresh(self._initial_refresh)
-        elif time.time() >= self._tokens.expires_at_epoch:
-            self._tokens = self._refresh(self._tokens.refresh_token)
-        return self._tokens
+        # Locked so only one thread refreshes; others wait, then see the fresh token.
+        with self._token_lock:
+            if self._tokens is None:
+                if not self._initial_refresh:
+                    raise BrokerError(
+                        "No saved tokens and no initial refresh token. Set QUESTRADE_REFRESH_TOKEN."
+                    )
+                self._tokens = self._refresh(self._initial_refresh)
+            elif time.time() >= self._tokens.expires_at_epoch:
+                self._tokens = self._refresh(self._tokens.refresh_token)
+            return self._tokens
 
     # ----- HTTP plumbing ---------------------------------------------------
 
@@ -101,10 +108,19 @@ class QuestradeBroker(Broker):
         headers["Authorization"] = f"{tokens.token_type} {tokens.access_token}"
         resp = self._client.request(method, url, headers=headers, **kwargs)
         if resp.status_code == 401:
-            # Access token rejected -- try one forced refresh, then re-issue.
+            # Access token rejected -- forced refresh under the lock, with a
+            # double-check so concurrent 401s trigger only one refresh (the others
+            # reuse the token the first thread already rotated to).
             log.warning("questrade.access_token.rejected.retry")
-            self._tokens = self._refresh(tokens.refresh_token)
-            headers["Authorization"] = f"{self._tokens.token_type} {self._tokens.access_token}"
+            with self._token_lock:
+                if self._tokens is None or self._tokens.access_token == tokens.access_token:
+                    self._tokens = self._refresh(tokens.refresh_token)
+                current = self._tokens
+            # Rebuild the URL too: a refresh can return a *different* api_server, and
+            # retrying the new token against the old host 401s again. This was the
+            # cause of the monitor crash (api07 token retried against api05).
+            url = f"{current.api_server}{API_VERSION}/{endpoint.lstrip('/')}"
+            headers["Authorization"] = f"{current.token_type} {current.access_token}"
             resp = self._client.request(method, url, headers=headers, **kwargs)
         if resp.status_code >= 400:
             raise BrokerError(f"{method} {endpoint} -> {resp.status_code}: {resp.text[:400]}")
@@ -213,6 +229,6 @@ class QuestradeBroker(Broker):
     # ----- helpers ---------------------------------------------------------
 
     @classmethod
-    def from_settings(cls, *, refresh_token: str, encryption_key: str, state_dir: Path) -> "QuestradeBroker":
+    def from_settings(cls, *, refresh_token: str, encryption_key: str, state_dir: Path) -> QuestradeBroker:
         store = TokenStore(state_dir / "tokens.json.enc", encryption_key)
         return cls(initial_refresh_token=refresh_token, token_store=store)

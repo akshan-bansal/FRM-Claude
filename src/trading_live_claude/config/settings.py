@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_pass: str = ""
     alert_email_to: str = ""
+    quantconnect_user_id: str = ""
+    quantconnect_api_token: str = ""
 
     # === Trading knobs (yaml-managed) ===
     execution_mode: ExecutionMode = "paper"

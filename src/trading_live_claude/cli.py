@@ -9,27 +9,43 @@ import os
 import sys
 from pathlib import Path
 
+import pandas as pd
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from .analysis import build_signal_matrix, render_matrix_markdown
 from .backtest import BacktestEngine
-from .brokers import PaperBroker, QuestradeBroker, TokenStore
+from .brokers import PaperBroker, QuestradeBroker
 from .config import get_settings
 from .daemon import AutonomousDaemon
 from .data import CandleCache, MarketData
 from .execution import AUTONOMOUS_ENV_VAR, AutonomousNotEnabled, LiveModeNotConfirmed, Router
+from .execution.asset_router import ASSET_CLASSES, AssetRouter
 from .execution.daily_budget import DailyBudget
+from .integrations import (
+    QuantConnectClient,
+    QuantConnectError,
+    analyze_library,
+    list_library,
+    pull_algorithm,
+)
+from .integrations.lean_algorithm import DEFAULT_LEAN_ALGORITHM, render_lean_algorithm
 from .logging_setup import configure_logging, get_logger
 from .monitor import Alerter, LiveMonitor
 from .monitor.alerter import AlertConfig
 from .risk import KillSwitch, PositionSizer
-from .strategies import STRATEGIES
+from .scoring.objective import DEFAULT_METRIC_WEIGHTS, OBJECTIVES, make_dot_product
+from .scoring.qc_bridge import rank_qc_library
+from .scoring.selection import rank_cells
+from .strategies import STRATEGIES, Strategy
 from .tune import DEFAULT_TUNE_STRATEGIES, DEFAULT_TUNE_UNIVERSE, apply_tune, run_tune
 
 app = typer.Typer(help="Claude Code algorithmic trading CLI (paper-first; live behind explicit flag).")
 console = Console()
 log = get_logger(__name__)
+
+_DEFAULT_REPORTS_DIR = Path("reports")
 
 
 # ----- helpers ---------------------------------------------------------------
@@ -47,6 +63,43 @@ def _make_questrade(settings) -> QuestradeBroker:
         encryption_key=settings.token_encryption_key,
         state_dir=settings.state_dir,
     )
+
+
+def _make_qc(settings) -> QuantConnectClient:
+    if not settings.quantconnect_user_id or not settings.quantconnect_api_token:
+        console.print(
+            "[red]QUANTCONNECT_USER_ID / QUANTCONNECT_API_TOKEN missing in .env. "
+            "Get them at https://www.quantconnect.com/account.[/red]"
+        )
+        raise typer.Exit(code=2)
+    return QuantConnectClient(settings.quantconnect_user_id, settings.quantconnect_api_token)
+
+
+def _run_qc_flow(
+    client: QuantConnectClient, project: str, content: str, name: str, timeout: float
+) -> tuple[int, str, dict[str, object]]:
+    """Create project → upload → compile → backtest on QC cloud; return ids + result."""
+    if not client.authenticate():
+        console.print("[red]QuantConnect authentication failed.[/red]")
+        raise typer.Exit(code=1)
+    proj = client.create_project(project, language="Py")
+    projects = proj.get("projects")
+    project_id = 0
+    if isinstance(projects, list) and projects and isinstance(projects[0], dict):
+        project_id = int(str(projects[0].get("projectId", 0)))
+    console.print(f"[dim]project {project_id} created[/dim]")
+
+    client.put_file(project_id, "main.py", content)
+    compile_id = str(client.compile_project(project_id).get("compileId", ""))
+    console.print(f"[dim]compiling ({compile_id})…[/dim]")
+    client.wait_for_compile(project_id, compile_id)
+
+    bt = client.create_backtest(project_id, compile_id, name)
+    backtest = bt.get("backtest", {})
+    backtest_id = str(backtest.get("backtestId", "")) if isinstance(backtest, dict) else ""
+    console.print(f"[dim]backtest {backtest_id} running…[/dim]")
+    result = client.wait_for_backtest(project_id, backtest_id, timeout_seconds=timeout)
+    return project_id, backtest_id, result
 
 
 def _strategy_or_die(name: str):
@@ -89,7 +142,7 @@ def backtest(
     symbol: str = typer.Option(..., help="Ticker, e.g. AAPL or SHOP.TO"),
     years: float = typer.Option(3.0, help="Years of history to fetch"),
     interval: str = typer.Option("1d", help="Candle interval: 1d, 1h, 30m, 15m, 5m, 1m"),
-    out: Path = typer.Option(Path("reports"), help="Output dir for report"),
+    out: Path = typer.Option(_DEFAULT_REPORTS_DIR, help="Output dir for report"),
 ) -> None:
     """Run a single-symbol backtest and save a markdown report."""
     settings = get_settings()
@@ -114,20 +167,41 @@ def backtest(
 
 @app.command()
 def signal(
-    strategy: str = typer.Option(..., help="Strategy key"),
+    strategy: str = typer.Option(..., help="Default/fallback strategy key"),
     symbols: str = typer.Option(..., help="Comma-separated symbols"),
     interval: int = typer.Option(60, help="Poll interval (seconds)"),
     iterations: int = typer.Option(0, help="Run N iterations and stop. 0 = forever."),
+    strategy_map: str = typer.Option(
+        "", help="Per-symbol strategy overrides, e.g. 'XIC.TO=bollinger,BNS.TO=momentum_breakout'"
+    ),
 ) -> None:
     """Live-signal monitor. Never places orders (dry-run router).
 
-    Article skill #5 ("live-signal-monitor"): output signal only.
+    Article skill #5 ("live-signal-monitor"): output signal only. Use --strategy-map
+    to monitor each symbol with its own strategy (e.g. the tuner's best-per-symbol);
+    symbols not in the map use --strategy as the fallback.
     """
     settings = get_settings()
     broker = _make_questrade(settings)
     market = MarketData(broker, cache=CandleCache(settings.data_cache_dir))
     strat = _strategy_or_die(strategy)
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
+
+    smap: dict[str, Strategy] = {}
+    for pair in strategy_map.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            console.print(f"[red]Bad --strategy-map entry '{pair}'. Use SYMBOL=strategy.[/red]")
+            raise typer.Exit(code=2)
+        sym, sname = pair.split("=", 1)
+        smap[sym.strip().upper()] = _strategy_or_die(sname.strip())
+
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    for sym in smap:  # include map-only symbols in what we monitor
+        if sym not in sym_list:
+            sym_list.append(sym)
 
     accounts = broker.accounts()
     if not accounts:
@@ -159,8 +233,9 @@ def signal(
 
     def _emit(ev) -> None:
         if ev.kind in {"entry", "exit"}:
+            sname = smap[ev.symbol].name if ev.symbol in smap else strat.name
             alerter.send(
-                f"{strategy} {ev.kind.upper()}: {ev.symbol}",
+                f"{sname} {ev.kind.upper()}: {ev.symbol}",
                 f"price={ev.price:.4f} detail={ev.detail}",
             )
 
@@ -171,10 +246,11 @@ def signal(
         sizer=sizer,
         router=router,
         account_number=account_number,
-        symbols=[s.strip().upper() for s in symbols.split(",") if s.strip()],
+        symbols=sym_list,
         interval_seconds=interval,
         on_event=_emit,
         account_currency=settings.account_currency,
+        strategy_map=smap,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
@@ -410,6 +486,312 @@ def tune(
         )
 
 
+@app.command(name="qc-backtest")
+def qc_backtest(
+    project: str = typer.Option("frm-claude-backtest", help="QuantConnect project name to create"),
+    algorithm: str = typer.Option("", help="Path to a LEAN algorithm .py (empty = bundled EMA-cross starter)"),
+    name: str = typer.Option("frm-claude run", help="Backtest name"),
+    timeout: float = typer.Option(900.0, help="Seconds to wait for the backtest to finish"),
+) -> None:
+    """Push a LEAN algorithm to QuantConnect, compile, backtest, and print stats.
+
+    Runs on QuantConnect's cloud via the REST API (needs QUANTCONNECT_USER_ID /
+    QUANTCONNECT_API_TOKEN in .env). This drives a LEAN algorithm — it does NOT
+    translate this repo's pandas strategies. Pass --algorithm to use your own
+    LEAN file; otherwise a bundled EMA-cross starter is used.
+    """
+    settings = get_settings()
+    client = _make_qc(settings)
+
+    if algorithm:
+        path = Path(algorithm)
+        if not path.is_file():
+            console.print(f"[red]Algorithm file not found: {path}[/red]")
+            raise typer.Exit(code=2)
+        content = path.read_text(encoding="utf-8")
+    else:
+        content = DEFAULT_LEAN_ALGORITHM
+
+    try:
+        project_id, backtest_id, result = _run_qc_flow(client, project, content, name, timeout)
+    except QuantConnectError as e:
+        console.print(f"[red]QuantConnect error: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    finally:
+        client.close()
+
+    final = result.get("backtest", {})
+    stats = final.get("statistics", {}) if isinstance(final, dict) else {}
+    table = Table(title=f"QuantConnect backtest — {name}")
+    table.add_column("statistic")
+    table.add_column("value", justify="right")
+    if isinstance(stats, dict) and stats:
+        for k, v in stats.items():
+            table.add_row(str(k), str(v))
+    else:
+        table.add_row("(no statistics returned)", "-")
+    console.print(table)
+    console.print(f"[green]Done.[/green] project={project_id} backtest={backtest_id}")
+
+
+@app.command(name="qc-library")
+def qc_library(
+    pull: int = typer.Option(0, help="Project id to pull LEAN source for (0 = just list)"),
+    analyze: bool = typer.Option(False, help="Read source to detect indicators/asset-class/family"),
+) -> None:
+    """List the QuantConnect projects in your account (your cloned strategy library).
+
+    Alpha Streams is retired and the global library has no search API, so this reads
+    your own account's projects via the base API. --pull <id> prints LEAN source;
+    --analyze reads every project's code and detects its signals + family.
+    """
+    settings = get_settings()
+    client = _make_qc(settings)
+    try:
+        if pull:
+            sources = pull_algorithm(client, pull)
+            if not sources:
+                console.print(f"[yellow]No files in project {pull}.[/yellow]")
+                raise typer.Exit(code=1)
+            for fname, src in sources.items():
+                console.print(f"[bold cyan]--- {fname} ---[/bold cyan]")
+                console.print(src)
+            return
+
+        if analyze:
+            analyses = analyze_library(client)
+            if not analyses:
+                console.print("[yellow]No projects found.[/yellow]")
+                raise typer.Exit(code=1)
+            table = Table(title=f"QC library — signal analysis ({len(analyses)} projects)")
+            for col in ("projectId", "name", "family", "indicators", "assets", "symbols"):
+                table.add_column(col)
+            for a in sorted(analyses, key=lambda x: x.family):
+                table.add_row(
+                    str(a.project_id), a.name[:32], a.family,
+                    ", ".join(a.indicators) or "-",
+                    ", ".join(a.asset_classes) or "-",
+                    ", ".join(a.symbols[:4]) or "-",
+                )
+            console.print(table)
+            return
+
+        strategies = list_library(client)
+    finally:
+        client.close()
+
+    if not strategies:
+        console.print("[yellow]No projects found in your QuantConnect account.[/yellow]")
+        raise typer.Exit(code=1)
+    table = Table(title=f"QuantConnect library ({len(strategies)} projects)")
+    for col in ("projectId", "name", "lang", "category"):
+        table.add_column(col)
+    for s in sorted(strategies, key=lambda x: x.category):
+        table.add_row(str(s.project_id), s.name[:60], s.language, s.category)
+    console.print(table)
+
+
+@app.command(name="signal-matrix")
+def signal_matrix(
+    symbols: str = typer.Option("", help="Comma-separated symbols (empty = curated tune universe)"),
+    strategies: str = typer.Option("", help="Comma-separated strategies (empty = all single-symbol)"),
+    years: float = typer.Option(5.0, help="Years of history per symbol"),
+    horizon: int = typer.Option(10, help="Label horizon in bars (the forward window)"),
+    up_threshold: float = typer.Option(0.03, help="Forward-return threshold that defines a real move"),
+    rank: str = typer.Option(
+        "", help="Rank cells by an objective (e.g. dot_product, roc_auc, precision); empty = sensitivity x specificity"
+    ),
+    rank_weights: str = typer.Option(
+        "", help="Custom dot_product axis weights, e.g. 'precision=0.4,fidelity=0.3,sensitivity=0.1,specificity=0.1,risk=0.1'"
+    ),
+) -> None:
+    """Build the sensitivity x specificity x risk report across strategy x universe.
+
+    Sensitivity (recall) = real +move events caught; specificity = non-moves avoided;
+    risk = max drawdown. Writes reports/signal_matrix.md and prints the top cells.
+    Use --rank <objective> to order by any scoring objective (5-D dot_product, roc_auc,
+    …); --rank-weights overrides the dot_product axis weights for bespoke ranking.
+    """
+    if rank and rank not in OBJECTIVES:
+        console.print(f"[red]Unknown --rank objective '{rank}'. Options: {sorted(OBJECTIVES)}[/red]")
+        raise typer.Exit(code=2)
+
+    weights: dict[str, float] | None = None
+    if rank_weights:
+        if rank and rank != "dot_product":
+            console.print(f"[red]--rank-weights only applies to dot_product, not '{rank}'.[/red]")
+            raise typer.Exit(code=2)
+        known = set(DEFAULT_METRIC_WEIGHTS)
+        weights = {}
+        for pair in rank_weights.split(","):
+            pair = pair.strip()
+            if not pair:
+                continue
+            if "=" not in pair:
+                console.print(f"[red]Bad --rank-weights entry '{pair}'. Use axis=weight.[/red]")
+                raise typer.Exit(code=2)
+            axis, val = pair.split("=", 1)
+            axis = axis.strip()
+            if axis not in known:
+                console.print(f"[red]Unknown axis '{axis}'. Known axes: {sorted(known)}[/red]")
+                raise typer.Exit(code=2)
+            weights[axis] = float(val)
+        rank = "dot_product"  # weights imply the dot-product objective
+    settings = get_settings()
+    broker = _make_questrade(settings)
+    market = MarketData(broker, cache=CandleCache(settings.data_cache_dir))
+
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] or list(DEFAULT_TUNE_UNIVERSE)
+    strat_list = [s.strip() for s in strategies.split(",") if s.strip()] or None
+
+    frames: dict[str, pd.DataFrame] = {}
+    for sym in sym_list:
+        try:
+            frames[sym] = market.history(symbol=sym, years=years, interval="1d")
+        except Exception as e:
+            console.print(f"[yellow]skip {sym}: {e}[/yellow]")
+
+    cells = build_signal_matrix(frames, strategies=strat_list, horizon=horizon, up_threshold=up_threshold)
+    if not cells:
+        console.print("[red]No cells produced (no symbol had enough history).[/red]")
+        raise typer.Exit(code=1)
+
+    out = _DEFAULT_REPORTS_DIR / "signal_matrix.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render_matrix_markdown(cells), encoding="utf-8")
+
+    if rank:
+        objective_fn = make_dot_product(weights) if weights is not None else rank
+        ranked = rank_cells(cells, objective=objective_fn)[:15]
+        label = f"dot_product {weights}" if weights is not None else rank
+        title = f"Signal matrix — ranked by {label} ({len(cells)} cells)"
+        table = Table(title=title)
+        for col in ("score", "strategy", "symbol", "sens", "spec", "prec", "auc", "fid", "maxDD"):
+            table.add_column(col)
+        for c, sc in ranked:
+            table.add_row(
+                f"{sc:.3f}", c.strategy, c.symbol, f"{c.recall:.1%}", f"{c.specificity:.1%}",
+                f"{c.precision:.1%}", f"{c.roc_auc:.2f}", f"{c.fidelity:+.2f}", f"{c.max_drawdown:.1%}",
+            )
+    else:
+        top = sorted(cells, key=lambda c: (c.recall * c.specificity, -abs(c.max_drawdown)), reverse=True)[:15]
+        table = Table(title=f"Signal matrix — sensitivity x specificity x risk ({len(cells)} cells)")
+        for col in ("strategy", "symbol", "sens", "spec", "prec", "auc", "fid", "maxDD"):
+            table.add_column(col)
+        for c in top:
+            table.add_row(
+                c.strategy, c.symbol, f"{c.recall:.1%}", f"{c.specificity:.1%}", f"{c.precision:.1%}",
+                f"{c.roc_auc:.2f}", f"{c.fidelity:+.2f}", f"{c.max_drawdown:.1%}",
+            )
+    console.print(table)
+    console.print(f"[green]Report written:[/green] {out}")
+
+
+@app.command(name="qc-rank")
+def qc_rank(
+    objective: str = typer.Option("sharpe_over_dd", help="Objective to rank by (scoring.objective registry)"),
+) -> None:
+    """Rank your QC-library strategies by their latest backtest, via the objective adapter.
+
+    Reads each project's most recent completed backtest and scores it (Sharpe / drawdown).
+    Projects without a saved backtest are skipped. Family is detected from source code so
+    these rank in the same taxonomy as native strategies.
+    """
+    settings = get_settings()
+    client = _make_qc(settings)
+    try:
+        scores = rank_qc_library(client, objective=objective)
+    except QuantConnectError as e:
+        console.print(f"[red]QuantConnect error: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    finally:
+        client.close()
+
+    if not scores:
+        console.print(
+            "[yellow]No QC projects with completed backtests to rank.[/yellow] "
+            "Run a backtest on a project in QuantConnect (or via qc-deploy), then retry."
+        )
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"QC library ranking — {objective} ({len(scores)} projects)")
+    for col in ("rank", "projectId", "name", "family", "Sharpe", "DD", "objective"):
+        table.add_column(col)
+    for i, s in enumerate(scores, start=1):
+        table.add_row(
+            str(i), str(s.project_id), s.name[:32], s.family,
+            f"{s.sharpe:.2f}", f"{s.drawdown:.2%}", f"{s.objective_value:.3f}",
+        )
+    console.print(table)
+
+
+@app.command(name="qc-deploy")
+def qc_deploy(
+    asset_class: str = typer.Option("equity", help=f"Asset class: one of {list(ASSET_CLASSES)}"),
+    symbols: str = typer.Option("SPY", help="Comma-separated symbols (first is used as primary)"),
+    project: str = typer.Option("frm-claude-deploy", help="QuantConnect project name"),
+    name: str = typer.Option("frm-claude deploy", help="Backtest name"),
+    dry_run: bool = typer.Option(True, help="Dry-run = generate+compile+backtest only (no live)"),
+    timeout: float = typer.Option(900.0, help="Seconds to wait for the backtest"),
+) -> None:
+    """Route an asset class to its brokerage, generate a LEAN algo, and dry-run it.
+
+    The asset-class→brokerage router picks the LEAN venue; the generator emits a
+    matching subscription (AddEquity/AddFuture/AddCrypto). --dry-run (default) runs a
+    cloud backtest only. LIVE deploy is intentionally gated (see below).
+    """
+    if asset_class not in ASSET_CLASSES:
+        console.print(f"[red]Unknown asset class '{asset_class}'. Choose from {list(ASSET_CLASSES)}.[/red]")
+        raise typer.Exit(code=2)
+
+    router = AssetRouter()
+    decision = router.route(asset_class)
+    console.print(
+        f"[bold]Routing[/bold] {asset_class} → brokerage [cyan]{decision.brokerage}[/cyan] "
+        f"(LEAN {decision.add_method}{', ' + decision.market if decision.market else ''})"
+    )
+
+    if not dry_run:
+        console.print(
+            "[red]LIVE deploy is gated.[/red] Live LEAN execution needs a QuantConnect "
+            "live node + a connected brokerage that supports this asset class "
+            f"([cyan]{decision.brokerage}[/cyan]). Set that up in QuantConnect, then deploy "
+            "from there. This command only performs cloud dry-run backtests."
+        )
+        raise typer.Exit(code=2)
+
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not sym_list:
+        console.print("[red]No symbols given.[/red]")
+        raise typer.Exit(code=2)
+    content = render_lean_algorithm(
+        symbol=sym_list[0], add_method=decision.add_method, market=decision.market
+    )
+
+    settings = get_settings()
+    client = _make_qc(settings)
+    try:
+        project_id, backtest_id, result = _run_qc_flow(client, project, content, name, timeout)
+    except QuantConnectError as e:
+        console.print(f"[red]QuantConnect error: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    finally:
+        client.close()
+
+    final = result.get("backtest", {})
+    stats = final.get("statistics", {}) if isinstance(final, dict) else {}
+    table = Table(title=f"QC dry-run — {asset_class}:{sym_list[0]} via {decision.brokerage}")
+    table.add_column("statistic")
+    table.add_column("value", justify="right")
+    if isinstance(stats, dict) and stats:
+        for k, v in stats.items():
+            table.add_row(str(k), str(v))
+    else:
+        table.add_row("(no statistics returned)", "-")
+    console.print(table)
+    console.print(f"[green]Dry-run done.[/green] project={project_id} backtest={backtest_id}")
+
+
 # ----- autonomous subcommands ------------------------------------------------
 
 autonomous_app = typer.Typer(help="Claude-driven autonomous trading loop. Background daemon process.")
@@ -632,6 +1014,7 @@ def place_order(
 ) -> None:
     """Place a single order. Claude calls this after analysis. All risk gates apply."""
     import json as _json
+
     from .brokers.models import OrderAction
     from .execution.router import OrderIntent
 

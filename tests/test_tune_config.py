@@ -5,12 +5,10 @@ from pathlib import Path
 import pytest
 
 from trading_live_claude.config.settings import (
-    DEFAULT_TRADING_YAML,
-    Settings,
     _load_trading_yaml,
     write_trading_yaml,
 )
-from trading_live_claude.tune import TuneResult, pick_config
+from trading_live_claude.tune import TuneResult, best_strategy_per_symbol, pick_config
 
 
 def test_write_then_load_yaml_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,6 +67,19 @@ def test_pick_config_filters_min_trades() -> None:
 def test_pick_config_filters_deep_drawdown() -> None:
     results = [_r("bollinger", "X", 1.5, -0.5, trades=30)]
     assert pick_config(results, max_drawdown_cap=-0.20) is None
+
+
+def test_best_strategy_per_symbol_picks_top_score() -> None:
+    results = [
+        _r("bollinger", "X", 1.5, -0.05, trades=20),      # score 30 — wins X
+        _r("macd", "X", 1.0, -0.05, trades=20),           # score 20
+        _r("ema_crossover", "Y", 2.0, -0.10, trades=20),  # wins Y
+        _r("rsi_meanrevert", "Z", 1.0, -0.05, trades=3),  # below min_trades → excluded
+    ]
+    m = best_strategy_per_symbol(results, min_trades=5)
+    assert m["X"] == "bollinger"
+    assert m["Y"] == "ema_crossover"
+    assert "Z" not in m  # too few trades to assign
 
 
 def test_pick_config_picks_top_3_symbols_same_strategy() -> None:

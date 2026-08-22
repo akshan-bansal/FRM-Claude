@@ -11,11 +11,9 @@ Designed to be safe to restart: state is reloaded from positions/fills journal.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Callable
-
-import pandas as pd
 
 from ..brokers.base import Broker
 from ..brokers.models import OrderAction
@@ -34,7 +32,7 @@ class MonitorEvent:
     symbol: str
     kind: str  # 'entry' | 'exit' | 'hold'
     price: float
-    detail: dict
+    detail: dict[str, object]
 
 
 class LiveMonitor:
@@ -51,10 +49,15 @@ class LiveMonitor:
         interval_seconds: int = 60,
         on_event: Callable[[MonitorEvent], None] | None = None,
         account_currency: str = "CAD",
+        emit_on_change_only: bool = True,
+        strategy_map: dict[str, Strategy] | None = None,
     ) -> None:
         self.broker = broker
         self.market = market
         self.strategy = strategy
+        # Per-symbol strategy overrides. A symbol not in the map uses ``strategy``
+        # as the fallback, so single-strategy monitoring stays backward compatible.
+        self.strategy_map = strategy_map or {}
         self.sizer = sizer
         self.router = router
         self.account_number = account_number
@@ -62,6 +65,16 @@ class LiveMonitor:
         self.interval_seconds = max(int(interval_seconds), 5)
         self.on_event = on_event or (lambda _: None)
         self.account_currency = account_currency
+        # Edge-triggering: when True, on_event fires only when a symbol's signal
+        # state (entry/exit/hold) changes from the previous poll, so a persistent
+        # signal alerts once instead of every interval. Order routing below is
+        # unaffected — only the notification callback is deduplicated.
+        self.emit_on_change_only = emit_on_change_only
+        self._last_kind: dict[str, str] = {}
+
+    def _strategy_for(self, symbol: str) -> Strategy:
+        """The per-symbol strategy, falling back to the default ``strategy``."""
+        return self.strategy_map.get(symbol, self.strategy)
 
     def _open_positions(self) -> dict[str, float]:
         positions = self.broker.positions(self.account_number)
@@ -78,14 +91,15 @@ class LiveMonitor:
             px = q.mid or q.lastTradePrice or 0.0
             existing_risk += abs(qty) * px * 0.02
 
-        bars_needed = self.strategy.required_history_bars()
         for symbol in self.symbols:
+            strat = self._strategy_for(symbol)
+            bars_needed = strat.required_history_bars()
             df = self.market.recent(symbol, bars=bars_needed + 5, interval="1d")
             if len(df) < bars_needed:
                 log.warning("monitor.insufficient_history", symbol=symbol, have=len(df), need=bars_needed)
                 continue
             ctx = StrategyContext(symbol=symbol, timeframe="1d")
-            signals = self.strategy.generate_signals(df, ctx)
+            signals = strat.generate_signals(df, ctx)
             last = signals.iloc[-1]
             quote = self.broker.quote(symbol)
             price = quote.mid or quote.lastTradePrice or float(last["close"])
@@ -106,7 +120,7 @@ class LiveMonitor:
                         entry=sized.entry,
                         stop=sized.stop,
                         target=sized.target,
-                        strategy=self.strategy.name,
+                        strategy=strat.name,
                         risk_dollars=sized.dollar_risk,
                         account_number=self.account_number,
                     )
@@ -126,7 +140,7 @@ class LiveMonitor:
                     entry=price,
                     stop=price * 1.10,  # protective; exits are market in v1
                     target=None,
-                    strategy=self.strategy.name,
+                    strategy=strat.name,
                     risk_dollars=0.0,
                     account_number=self.account_number,
                 )
@@ -141,6 +155,9 @@ class LiveMonitor:
                 events.append(MonitorEvent(datetime.now(UTC), symbol, "hold", price, {}))
 
         for ev in events:
+            if self.emit_on_change_only and self._last_kind.get(ev.symbol) == ev.kind:
+                continue  # same state as last poll — suppress duplicate notification
+            self._last_kind[ev.symbol] = ev.kind
             self.on_event(ev)
         return events
 

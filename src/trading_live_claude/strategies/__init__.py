@@ -1,20 +1,49 @@
 from __future__ import annotations
 
 from .base import Strategy, StrategyContext
+from .composite import CompositeStrategy, DefaultComposite
 from .examples.bollinger import BollingerMeanRevert
 from .examples.ema_crossover import EmaCrossover
 from .examples.macd import MacdSignalCross
+from .examples.mean_reversion import BbRsiCombo, Rsi2Connors, ZScoreOU
+from .examples.momentum import DualMa, High52wBreakout, TsMomentum
 from .examples.momentum_breakout import DonchianBreakout
 from .examples.pairs import PairsZScore
 from .examples.rsi_meanrevert import RsiMeanRevert
+from .examples.seasonality import DayOfWeek, MonthOfYear, TurnOfMonth
+from .examples.volatility import AtrChannel, BbWidthSqueeze, VolTarget
 
 STRATEGIES: dict[str, type[Strategy]] = {
+    # core (original)
     "ema_crossover": EmaCrossover,
     "rsi_meanrevert": RsiMeanRevert,
     "macd": MacdSignalCross,
     "bollinger": BollingerMeanRevert,
     "momentum_breakout": DonchianBreakout,
     "pairs": PairsZScore,
+    "composite": DefaultComposite,
+    # mean-reversion (advanced)
+    "rsi2_connors": Rsi2Connors,
+    "zscore_ou": ZScoreOU,
+    "bb_rsi_combo": BbRsiCombo,
+    # momentum (advanced)
+    "ts_momentum": TsMomentum,
+    "dual_ma": DualMa,
+    "high_52w_breakout": High52wBreakout,
+    # volatility
+    "atr_channel": AtrChannel,
+    "bbwidth_squeeze": BbWidthSqueeze,
+    "vol_target": VolTarget,
+    # seasonality
+    "turn_of_month": TurnOfMonth,
+    "day_of_week": DayOfWeek,
+    "month_of_year": MonthOfYear,
 }
 
-__all__ = ["STRATEGIES", "Strategy", "StrategyContext"]
+__all__ = [
+    "STRATEGIES",
+    "CompositeStrategy",
+    "DefaultComposite",
+    "Strategy",
+    "StrategyContext",
+]

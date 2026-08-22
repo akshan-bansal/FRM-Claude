@@ -5,19 +5,29 @@ The CLI command `trading tune` calls into this. Results are written to
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Iterable
 
+from .analysis.classification import confusion
+from .analysis.labeling import label_events
 from .backtest import BacktestEngine
+from .backtest.metrics import Metrics
 from .brokers.base import Broker
 from .config import write_trading_yaml
 from .data import CandleCache, MarketData
 from .logging_setup import get_logger
+from .scoring.objective import ObjectiveAdapter, ObjectiveInput
 from .strategies import STRATEGIES
+from .strategies.base import StrategyContext
 
 log = get_logger(__name__)
+
+# Default tuning objective. "sharpe_over_dd" preserves the historical P&L ranking;
+# swap to "precision", "f_beta", or "precision_at_recall" to tune the pipeline for
+# the scoring stage instead. See scoring.objective for the full registry.
+DEFAULT_OBJECTIVE = "sharpe_over_dd"
 
 
 @dataclass
@@ -30,12 +40,32 @@ class TuneResult:
     win_rate: float
     num_trades: int
     score: float
+    precision: float | None = None
+    recall: float | None = None
 
     @classmethod
-    def from_backtest(cls, strategy: str, symbol: str, m) -> "TuneResult":
-        # Score = Sharpe / |max_drawdown|, with a small floor so flat-line cases don't divide-by-zero
-        dd = abs(m.max_drawdown) if m.max_drawdown else 0.0
-        score = m.sharpe / max(dd, 1e-4)
+    def from_backtest(
+        cls,
+        strategy: str,
+        symbol: str,
+        m: Metrics,
+        *,
+        precision: float | None = None,
+        recall: float | None = None,
+        objective: str = DEFAULT_OBJECTIVE,
+    ) -> TuneResult:
+        # Score comes from the swappable objective adapter, so the optimization
+        # target is a config string rather than a hardcoded Sharpe/DD ratio.
+        oi = ObjectiveInput(
+            sharpe=float(m.sharpe),
+            max_drawdown=float(m.max_drawdown),
+            cagr=float(m.cagr),
+            win_rate=float(m.win_rate),
+            num_trades=int(m.num_trades),
+            precision=precision,
+            recall=recall,
+        )
+        score = ObjectiveAdapter.from_name(objective).score(oi)
         return cls(
             strategy=strategy,
             symbol=symbol,
@@ -45,6 +75,8 @@ class TuneResult:
             win_rate=float(m.win_rate),
             num_trades=int(m.num_trades),
             score=float(score),
+            precision=precision,
+            recall=recall,
         )
 
 
@@ -69,8 +101,16 @@ def run_tune(
     strategies: Iterable[str] = DEFAULT_TUNE_STRATEGIES,
     years: float = 5.0,
     parallel: int = 4,
+    objective: str = DEFAULT_OBJECTIVE,
+    label_horizon: int = 10,
+    label_up_threshold: float = 0.03,
 ) -> list[TuneResult]:
-    """Run every (strategy, symbol) combo and return ranked results."""
+    """Run every (strategy, symbol) combo and return ranked results.
+
+    Each combo is scored on ``objective`` (a name in ``scoring.objective``) and
+    carries its signal-quality precision/recall computed against forward-return
+    labels, so the scoreboard shows both stages' health next to P&L.
+    """
     market = MarketData(broker, cache=cache)
     engine = BacktestEngine()
 
@@ -80,8 +120,18 @@ def run_tune(
             if df.empty or len(df) < 252:
                 return None
             strat = STRATEGIES[strategy_name]()
+            signals = strat.generate_signals(df, StrategyContext(symbol=symbol))
+            labels = label_events(df, horizon=label_horizon, up_threshold=label_up_threshold)
+            rep = confusion(signals["entry"], labels)
             result = engine.run(strategy=strat, df=df, symbol=symbol, timeframe="1d")
-            return TuneResult.from_backtest(strategy_name, symbol, result.metrics)
+            return TuneResult.from_backtest(
+                strategy_name,
+                symbol,
+                result.metrics,
+                precision=rep.precision,
+                recall=rep.recall,
+                objective=objective,
+            )
         except Exception as e:
             log.warning("tune.combo.failed", strategy=strategy_name, symbol=symbol, error=str(e))
             return None
@@ -97,7 +147,23 @@ def run_tune(
     return out
 
 
-def pick_config(results: list[TuneResult], *, min_trades: int = 15, max_drawdown_cap: float = -0.20) -> dict | None:
+def best_strategy_per_symbol(results: list[TuneResult], *, min_trades: int = 5) -> dict[str, str]:
+    """Map each symbol to its highest-scoring strategy (for per-symbol monitoring).
+
+    Only combos with at least ``min_trades`` are eligible, so a symbol isn't assigned
+    a strategy that barely traded. Symbols with no eligible combo are omitted.
+    """
+    best: dict[str, TuneResult] = {}
+    for r in results:
+        if r.num_trades < min_trades:
+            continue
+        cur = best.get(r.symbol)
+        if cur is None or r.score > cur.score:
+            best[r.symbol] = r
+    return {symbol: r.strategy for symbol, r in best.items()}
+
+
+def pick_config(results: list[TuneResult], *, min_trades: int = 15, max_drawdown_cap: float = -0.20) -> dict[str, object] | None:
     """From ranked results pick: best strategy, top 3 symbols for that strategy.
 
     Filters: require >= min_trades and max_drawdown >= max_drawdown_cap (i.e. not worse than -20%).
@@ -111,7 +177,7 @@ def pick_config(results: list[TuneResult], *, min_trades: int = 15, max_drawdown
     same_strategy = [r for r in eligible if r.strategy == winner.strategy][:3]
     picked_symbols = [r.symbol for r in same_strategy] or [winner.symbol]
 
-    update = {
+    update: dict[str, object] = {
         "default_strategy": winner.strategy,
         "default_symbols": ",".join(picked_symbols),
         "autonomous_strategy": winner.strategy,
@@ -126,7 +192,7 @@ def pick_config(results: list[TuneResult], *, min_trades: int = 15, max_drawdown
     return update
 
 
-def apply_tune(results: list[TuneResult], *, dry_run: bool = False) -> dict | None:
+def apply_tune(results: list[TuneResult], *, dry_run: bool = False) -> dict[str, object] | None:
     update = pick_config(results)
     if update is None:
         return None

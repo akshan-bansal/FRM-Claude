@@ -18,6 +18,13 @@ class Metrics:
     num_trades: int
     avg_trade_pct: float
     exposure_pct: float
+    # Signal-quality (classification) metrics — populated only when forward-return
+    # labels are supplied to the backtest/tune layer. None when unmeasured, so the
+    # pure-P&L path is unchanged and backward compatible.
+    precision: float | None = None
+    recall: float | None = None
+    specificity: float | None = None
+    f1: float | None = None
 
 
 def compute_metrics(

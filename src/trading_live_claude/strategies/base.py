@@ -3,6 +3,9 @@
 Implementers override ``generate_signals(df)`` to add at least the columns:
   * ``entry``  -> 0/1  (long entry trigger on next-bar open)
   * ``exit``   -> 0/1  (long exit trigger on next-bar open)
+  * optional ``signal_strength`` -> float in [0, 1]; a *graded* candidate strength
+    used by the scoring/precision stage. Defaults to the binary ``entry`` value
+    when absent (see ``candidate_strength`` in ``signals.generator``).
   * optional ``size_hint`` -> float in [0, 1], conviction weight
   * optional ``atr``       -> float; used by the position sizer
 

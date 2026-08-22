@@ -27,7 +27,6 @@ class SignalSet:
         """
         entry = self.df["entry"].shift(1).fillna(0).astype(int)
         exit_ = self.df["exit"].shift(1).fillna(0).astype(int)
-        position = pd.Series(0, index=self.df.index, dtype=int)
         in_market = 0
         out = []
         for e, x in zip(entry.values, exit_.values, strict=False):
@@ -37,6 +36,22 @@ class SignalSet:
                 in_market = 0
             out.append(in_market)
         return pd.Series(out, index=self.df.index, name="position")
+
+
+def candidate_strength(df: pd.DataFrame) -> pd.Series:
+    """Graded [0, 1] strength for each bar, for the scoring/precision stage.
+
+    Uses the strategy-supplied ``signal_strength`` column when present, otherwise
+    falls back to the binary ``entry`` value as a float. Always clipped to [0, 1]
+    so downstream scorers can treat it as a bounded feature.
+    """
+    if "signal_strength" in df.columns:
+        s = df["signal_strength"]
+    elif "entry" in df.columns:
+        s = df["entry"].astype(float)
+    else:
+        raise ValueError("candidate_strength requires a 'signal_strength' or 'entry' column")
+    return s.fillna(0.0).clip(0.0, 1.0).rename("signal_strength")
 
 
 def no_lookahead_check(df: pd.DataFrame, signal_col: str = "entry") -> bool:
