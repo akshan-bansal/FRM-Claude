@@ -51,7 +51,7 @@ class PositionSizer:
             target = entry - self.target_r * stop_distance
 
         dollar_risk = equity * self.risk_pct
-        shares = max(int(math.floor(dollar_risk / stop_distance)), 0)
+        shares = max(math.floor(dollar_risk / stop_distance), 0)
         return SizingResult(
             shares=shares,
             entry=entry,

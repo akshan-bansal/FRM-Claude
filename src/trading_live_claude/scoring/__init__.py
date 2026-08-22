@@ -14,6 +14,15 @@ from .objective import (
     register_objective,
 )
 from .qc_bridge import QcBacktestScore, rank_qc_library, stats_to_objective_input
+from .routing import (
+    RouteEntry,
+    assets_for_strategy,
+    render_routing_markdown,
+    route_symbols_to_strategies,
+    strategy_asset_plan,
+    to_strategy_map,
+    to_strategy_map_string,
+)
 from .scorer import Scorer, ScorerConfig, ThresholdChoice, calibrate_threshold
 from .selection import (
     STRATEGY_FAMILY,
@@ -36,10 +45,12 @@ __all__ = [
     "ObjectiveAdapter",
     "ObjectiveInput",
     "QcBacktestScore",
+    "RouteEntry",
     "Scorer",
     "ScorerConfig",
     "StrategyScore",
     "ThresholdChoice",
+    "assets_for_strategy",
     "calibrate_threshold",
     "cell_objective_input",
     "combine_scores",
@@ -49,8 +60,13 @@ __all__ = [
     "rank_qc_library",
     "register_objective",
     "render_combined_scoreboard",
+    "render_routing_markdown",
     "render_scoreboard_markdown",
+    "route_symbols_to_strategies",
     "score_strategies",
     "select_portfolio",
     "stats_to_objective_input",
+    "strategy_asset_plan",
+    "to_strategy_map",
+    "to_strategy_map_string",
 ]

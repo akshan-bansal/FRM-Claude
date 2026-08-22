@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from ..backtest.engine import BacktestEngine
+from ..risk.tail import expected_shortfall
 from ..signals.generator import candidate_strength
 from ..strategies import STRATEGIES
 from ..strategies.base import StrategyContext
@@ -40,6 +41,7 @@ class MatrixCell:
     support: int
     roc_auc: float = 0.5   # threshold-independent ranking quality (0.5 = chance)
     fidelity: float = 0.0  # 5th axis: temporal stability of the signal↔return edge
+    cvar: float = 0.0      # tail risk: Expected Shortfall (mean loss in the worst 5%)
 
     def as_dict(self) -> dict[str, float | int | str]:
         return {
@@ -51,6 +53,7 @@ class MatrixCell:
             "roc_auc": round(self.roc_auc, 4),
             "fidelity": round(self.fidelity, 4),
             "max_drawdown": round(self.max_drawdown, 4),
+            "cvar": round(self.cvar, 4),
             "num_trades": self.num_trades,
             "support": self.support,
         }
@@ -87,7 +90,9 @@ def build_signal_matrix(
             rep = confusion(signals["entry"], labels)
             auc = roc_auc(strength, labels)
             fid = fidelity(strength, fwd)
-            metrics = engine.run(strat, df, symbol=symbol).metrics
+            result = engine.run(strat, df, symbol=symbol)
+            metrics = result.metrics
+            es = expected_shortfall(result.returns)
             cells.append(
                 MatrixCell(
                     strategy=name,
@@ -100,6 +105,7 @@ def build_signal_matrix(
                     support=rep.support,
                     roc_auc=auc,
                     fidelity=fid,
+                    cvar=es,
                 )
             )
     return cells
@@ -117,12 +123,12 @@ def render_matrix_markdown(cells: list[MatrixCell]) -> str:
         "Specificity = fraction of non-moves it correctly avoided. Precision = of the "
         "signals fired, how many were real. Risk = max drawdown. "
         "Sorted by sensitivity x specificity, then shallowest risk.\n\n"
-        "| Strategy | Symbol | Sensitivity | Specificity | Precision | ROC AUC | Fidelity | Max DD |\n"
-        "|---|---|---:|---:|---:|---:|---:|---:|\n"
+        "| Strategy | Symbol | Sensitivity | Specificity | Precision | ROC AUC | Fidelity | Max DD | CVaR |\n"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|\n"
     )
     rows = [
         f"| {c.strategy} | {c.symbol} | {c.recall:.2%} | {c.specificity:.2%} | {c.precision:.2%} "
-        f"| {c.roc_auc:.3f} | {c.fidelity:+.3f} | {c.max_drawdown:.2%} |"
+        f"| {c.roc_auc:.3f} | {c.fidelity:+.3f} | {c.max_drawdown:.2%} | {c.cvar:.2%} |"
         for c in ordered
     ]
     return header + "\n".join(rows) + "\n"

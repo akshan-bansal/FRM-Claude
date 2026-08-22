@@ -47,6 +47,7 @@ class ObjectiveInput:
     f1: float | None = None
     roc_auc: float | None = None
     fidelity: float | None = None
+    cvar: float | None = None  # Expected Shortfall (positive loss magnitude)
 
     @classmethod
     def from_metrics(cls, m: Metrics) -> ObjectiveInput:
@@ -181,14 +182,18 @@ DEFAULT_METRIC_WEIGHTS: dict[str, float] = {
 }
 
 
-def make_dot_product(weights: dict[str, float] | None = None) -> ObjectiveFn:
+def make_dot_product(
+    weights: dict[str, float] | None = None, *, risk_source: str = "drawdown"
+) -> ObjectiveFn:
     """Weighted dot product of the 5-D metric vector.
 
     Vector = [sensitivity, specificity, precision, risk, fidelity], each mapped into
     [0, 1] before the dot product: sensitivity=recall, specificity/precision as-is,
-    risk = ``1 + max_drawdown`` (shallower drawdown scores higher), and fidelity =
-    ``max(0, mean rolling correlation)`` (only a persistent positive edge counts). The
-    score is ``weights · vector``. Returns ``MISSING_PENALTY`` when unmeasured.
+    and fidelity = ``max(0, mean rolling correlation)``. The **risk** axis is chosen by
+    ``risk_source``: ``"drawdown"`` uses ``1 + max_drawdown`` (shallower is better);
+    ``"cvar"`` uses ``1 - min(1, CVaR)`` so a thinner tail (smaller Expected Shortfall)
+    scores higher — the tail-risk-aware variant. Returns ``MISSING_PENALTY`` when
+    unmeasured.
     """
     w = dict(DEFAULT_METRIC_WEIGHTS if weights is None else weights)
 
@@ -197,11 +202,16 @@ def make_dot_product(weights: dict[str, float] | None = None) -> ObjectiveFn:
             return MISSING_PENALTY
         spec = x.specificity if x.specificity is not None else 0.0
         fid = max(0.0, x.fidelity) if x.fidelity is not None else 0.0
+        if risk_source == "cvar":
+            cvar = x.cvar if x.cvar is not None else 0.0
+            risk = 1.0 - min(1.0, max(0.0, cvar))
+        else:
+            risk = 1.0 + x.max_drawdown
         vector = {
             "sensitivity": x.recall,
             "specificity": spec,
             "precision": x.precision,
-            "risk": 1.0 + x.max_drawdown,
+            "risk": risk,
             "fidelity": fid,
         }
         return sum(w.get(name, 0.0) * value for name, value in vector.items())
@@ -231,4 +241,5 @@ register_objective("f_beta", make_f_beta(0.5))
 register_objective("precision_at_recall", make_precision_at_recall(0.30))
 register_objective("expected_value", expected_value)
 register_objective("dot_product", make_dot_product())
+register_objective("dot_product_cvar", make_dot_product(risk_source="cvar"))
 register_objective("roc_auc", lambda x: x.roc_auc if x.roc_auc is not None else MISSING_PENALTY)

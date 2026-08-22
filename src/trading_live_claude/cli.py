@@ -37,6 +37,11 @@ from .monitor.alerter import AlertConfig
 from .risk import KillSwitch, PositionSizer
 from .scoring.objective import DEFAULT_METRIC_WEIGHTS, OBJECTIVES, make_dot_product
 from .scoring.qc_bridge import rank_qc_library
+from .scoring.routing import (
+    route_symbols_to_strategies,
+    strategy_asset_plan,
+    to_strategy_map_string,
+)
 from .scoring.selection import rank_cells
 from .strategies import STRATEGIES, Strategy
 from .tune import DEFAULT_TUNE_STRATEGIES, DEFAULT_TUNE_UNIVERSE, apply_tune, run_tune
@@ -685,6 +690,68 @@ def signal_matrix(
             )
     console.print(table)
     console.print(f"[green]Report written:[/green] {out}")
+
+
+@app.command(name="route")
+def route(
+    symbols: str = typer.Option("", help="Comma-separated symbols (empty = curated tune universe)"),
+    strategies: str = typer.Option("", help="Comma-separated strategies (empty = all single-symbol)"),
+    objective: str = typer.Option("dot_product", help="Objective to route by (dot_product, roc_auc, precision, …)"),
+    years: float = typer.Option(5.0, help="Years of history per symbol"),
+    top_n: int = typer.Option(3, help="Assets to list per strategy"),
+    min_score: float = typer.Option(0.0, help="Drop symbols whose best score is below this floor"),
+) -> None:
+    """Strategy-conditioned asset selection + per-symbol routing.
+
+    Prints (1) each strategy's best assets and (2) each symbol routed to its single
+    best strategy, plus a ready-to-paste --strategy-map string for `trading signal`.
+    """
+    if objective not in OBJECTIVES:
+        console.print(f"[red]Unknown objective '{objective}'. Options: {sorted(OBJECTIVES)}[/red]")
+        raise typer.Exit(code=2)
+
+    settings = get_settings()
+    broker = _make_questrade(settings)
+    market = MarketData(broker, cache=CandleCache(settings.data_cache_dir))
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] or list(DEFAULT_TUNE_UNIVERSE)
+    strat_list = [s.strip() for s in strategies.split(",") if s.strip()] or None
+
+    frames: dict[str, pd.DataFrame] = {}
+    for sym in sym_list:
+        try:
+            frames[sym] = market.history(symbol=sym, years=years, interval="1d")
+        except Exception as e:
+            console.print(f"[yellow]skip {sym}: {e}[/yellow]")
+
+    cells = build_signal_matrix(frames, strategies=strat_list)
+    if not cells:
+        console.print("[red]No cells produced.[/red]")
+        raise typer.Exit(code=1)
+
+    floor = min_score if min_score != 0.0 else None
+    plan = strategy_asset_plan(cells, objective=objective, top_n=top_n, min_score=floor)
+    routing = route_symbols_to_strategies(cells, objective=objective, min_score=floor)
+
+    sel = Table(title=f"Asset selection by strategy — {objective}")
+    for col in ("strategy", "family", "best assets (score)"):
+        sel.add_column(col)
+    for strat, entries in plan.items():
+        if not entries:
+            continue
+        assets = "  ".join(f"{e.symbol}({e.score:.2f})" for e in entries)
+        sel.add_row(strat, entries[0].family, assets)
+    console.print(sel)
+
+    rte = Table(title=f"Routing — symbol → best strategy ({len(routing)} routed)")
+    for col in ("symbol", "strategy", "family", "score"):
+        rte.add_column(col)
+    for e in sorted(routing.values(), key=lambda e: e.score, reverse=True):
+        rte.add_row(e.symbol, e.strategy, e.family, f"{e.score:.3f}")
+    console.print(rte)
+
+    map_str = to_strategy_map_string(routing)
+    console.print("\n[bold]Deploy to the monitor:[/bold]")
+    console.print(f"[dim]trading signal --strategy rsi_meanrevert --symbols \"{','.join(routing)}\" --strategy-map \"{map_str}\"[/dim]")
 
 
 @app.command(name="qc-rank")

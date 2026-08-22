@@ -68,6 +68,14 @@ def test_rank_cells_by_roc_auc() -> None:
     assert [c.strategy for c, _ in ranked] == ["hi", "lo"]
 
 
+def test_dot_product_cvar_prefers_thinner_tail() -> None:
+    base = dict(sharpe=0.0, max_drawdown=-0.5, recall=0.5, specificity=0.5, precision=0.5, fidelity=0.0)
+    thin = ObjectiveInput(**base, cvar=0.02)
+    fat = ObjectiveInput(**base, cvar=0.40)
+    fn = get_objective("dot_product_cvar")
+    assert fn(thin) > fn(fat)  # smaller Expected Shortfall → higher score
+
+
 def test_rank_cells_accepts_custom_weighted_callable() -> None:
     # Custom weights: precision only → the high-precision cell must win regardless
     # of its (deliberately worse) other axes.

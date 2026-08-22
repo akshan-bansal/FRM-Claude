@@ -43,6 +43,7 @@ def test_matrix_rates_are_bounded() -> None:
         assert 0.0 <= c.specificity <= 1.0  # sensitivity/specificity/risk axes
         assert 0.0 <= c.precision <= 1.0
         assert c.max_drawdown <= 0.0  # drawdown is negative-or-zero
+        assert c.cvar >= 0.0  # Expected Shortfall is a positive loss magnitude
         assert c.support >= 0
 
 

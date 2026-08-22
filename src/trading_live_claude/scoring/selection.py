@@ -205,6 +205,7 @@ def cell_objective_input(cell: MatrixCell) -> ObjectiveInput:
         specificity=cell.specificity,
         roc_auc=cell.roc_auc,
         fidelity=cell.fidelity,
+        cvar=cell.cvar,
     )
 
 
