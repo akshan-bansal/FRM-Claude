@@ -24,10 +24,9 @@ from .strategies.base import StrategyContext
 
 log = get_logger(__name__)
 
-# Default tuning objective. "sharpe_over_dd" preserves the historical P&L ranking;
-# swap to "precision", "f_beta", or "precision_at_recall" to tune the pipeline for
-# the scoring stage instead. See scoring.objective for the full registry.
-DEFAULT_OBJECTIVE = "sharpe_over_dd"
+# Default tuning objective: Sortino / |max drawdown| — downside-risk-adjusted return.
+# Swap to "sharpe_over_dd", "precision", "f_beta", … via the scoring.objective registry.
+DEFAULT_OBJECTIVE = "sortino_over_dd"
 
 
 @dataclass
@@ -40,6 +39,7 @@ class TuneResult:
     win_rate: float
     num_trades: int
     score: float
+    sortino: float = 0.0
     precision: float | None = None
     recall: float | None = None
 
@@ -55,10 +55,11 @@ class TuneResult:
         objective: str = DEFAULT_OBJECTIVE,
     ) -> TuneResult:
         # Score comes from the swappable objective adapter, so the optimization
-        # target is a config string rather than a hardcoded Sharpe/DD ratio.
+        # target is a config string rather than a hardcoded ratio (default Sortino/DD).
         oi = ObjectiveInput(
             sharpe=float(m.sharpe),
             max_drawdown=float(m.max_drawdown),
+            sortino=float(m.sortino),
             cagr=float(m.cagr),
             win_rate=float(m.win_rate),
             num_trades=int(m.num_trades),
@@ -75,6 +76,7 @@ class TuneResult:
             win_rate=float(m.win_rate),
             num_trades=int(m.num_trades),
             score=float(score),
+            sortino=float(m.sortino),
             precision=precision,
             recall=recall,
         )

@@ -30,7 +30,12 @@ from .integrations import (
     list_library,
     pull_algorithm,
 )
-from .integrations.lean_algorithm import DEFAULT_LEAN_ALGORITHM, render_lean_algorithm
+from .integrations.lean_algorithm import (
+    DEFAULT_LEAN_ALGORITHM,
+    LEAN_CANDLESTICK_MAP,
+    render_candlestick_lean_algorithm,
+    render_lean_algorithm,
+)
 from .logging_setup import configure_logging, get_logger
 from .monitor import Alerter, LiveMonitor
 from .monitor.alerter import AlertConfig
@@ -460,13 +465,14 @@ def tune(
         console.print("[red]No backtests succeeded.[/red]")
         raise typer.Exit(code=1)
 
-    table = Table(title="Scoreboard (top 15)")
-    for col in ("strategy", "symbol", "Sharpe", "MaxDD", "CAGR", "Win%", "trades", "score"):
+    table = Table(title="Scoreboard (top 15) — scored by Sortino / |maxDD|")
+    for col in ("strategy", "symbol", "Sortino", "Sharpe", "MaxDD", "CAGR", "Win%", "trades", "score"):
         table.add_column(col)
     for r in results[:15]:
         table.add_row(
             r.strategy,
             r.symbol,
+            f"{r.sortino:.2f}",
             f"{r.sharpe:.2f}",
             f"{r.max_drawdown:.2%}",
             f"{r.cagr:.2%}",
@@ -800,6 +806,7 @@ def qc_deploy(
     name: str = typer.Option("frm-claude deploy", help="Backtest name"),
     dry_run: bool = typer.Option(True, help="Dry-run = generate+compile+backtest only (no live)"),
     timeout: float = typer.Option(900.0, help="Seconds to wait for the backtest"),
+    pattern: str = typer.Option("", help="Candlestick pattern to trade via QC CandlestickPatterns (e.g. hammer)"),
 ) -> None:
     """Route an asset class to its brokerage, generate a LEAN algo, and dry-run it.
 
@@ -831,9 +838,21 @@ def qc_deploy(
     if not sym_list:
         console.print("[red]No symbols given.[/red]")
         raise typer.Exit(code=2)
-    content = render_lean_algorithm(
-        symbol=sym_list[0], add_method=decision.add_method, market=decision.market
-    )
+    if pattern:
+        if pattern not in LEAN_CANDLESTICK_MAP:
+            console.print(
+                f"[red]Pattern '{pattern}' has no LEAN equivalent. QC-deployable: "
+                f"{sorted(LEAN_CANDLESTICK_MAP)}[/red]"
+            )
+            raise typer.Exit(code=2)
+        console.print(f"[dim]using QC CandlestickPatterns.{LEAN_CANDLESTICK_MAP[pattern]} for '{pattern}'[/dim]")
+        content = render_candlestick_lean_algorithm(
+            pattern=pattern, symbol=sym_list[0], add_method=decision.add_method, market=decision.market
+        )
+    else:
+        content = render_lean_algorithm(
+            symbol=sym_list[0], add_method=decision.add_method, market=decision.market
+        )
 
     settings = get_settings()
     client = _make_qc(settings)

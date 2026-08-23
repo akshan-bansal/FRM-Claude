@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .base import Strategy, StrategyContext
+from .candlestick import CANDLE_STRATEGIES, CandlestickStrategy
 from .composite import CompositeStrategy, DefaultComposite
 from .examples.bollinger import BollingerMeanRevert
 from .examples.ema_crossover import EmaCrossover
@@ -40,8 +41,12 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "month_of_year": MonthOfYear,
 }
 
+# Candlestick-pattern strategies (one per bullish pattern) join the pipeline.
+STRATEGIES.update(CANDLE_STRATEGIES)
+
 __all__ = [
     "STRATEGIES",
+    "CandlestickStrategy",
     "CompositeStrategy",
     "DefaultComposite",
     "Strategy",

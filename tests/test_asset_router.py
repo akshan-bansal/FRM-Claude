@@ -64,3 +64,24 @@ def test_generator_dates_and_cash_parameterized() -> None:
 
 def test_default_algorithm_is_equity_spy() -> None:
     assert 'self.AddEquity("SPY", Resolution.Daily).Symbol' in DEFAULT_LEAN_ALGORITHM
+
+
+def test_candlestick_lean_generator_maps_to_qc() -> None:
+    from trading_live_claude.integrations.lean_algorithm import (
+        render_candlestick_lean_algorithm,
+    )
+
+    src = render_candlestick_lean_algorithm(pattern="hammer", symbol="SPY")
+    assert "self.CandlestickPatterns.Hammer(self.sym)" in src
+    assert "self.pattern.Current.Value > 0" in src  # bullish entry
+    src2 = render_candlestick_lean_algorithm(pattern="bullish_engulfing", symbol="QQQ")
+    assert "self.CandlestickPatterns.Engulfing(self.sym)" in src2
+
+
+def test_candlestick_lean_generator_rejects_unmapped() -> None:
+    from trading_live_claude.integrations.lean_algorithm import (
+        render_candlestick_lean_algorithm,
+    )
+
+    with pytest.raises(KeyError):
+        render_candlestick_lean_algorithm(pattern="tweezer_bottom", symbol="SPY")  # no LEAN equiv

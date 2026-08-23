@@ -37,6 +37,11 @@ def test_sharpe_over_dd_matches_legacy_formula() -> None:
     assert get_objective("sharpe_over_dd")(x) == pytest.approx(2.0 / 0.2)
 
 
+def test_sortino_over_dd_uses_downside_ratio() -> None:
+    x = _inp(sortino=3.0, sharpe=1.0, max_drawdown=-0.2)
+    assert get_objective("sortino_over_dd")(x) == pytest.approx(3.0 / 0.2)
+
+
 def test_classification_objectives_penalize_unmeasured_runs() -> None:
     x = _inp(precision=None, recall=None)  # no labels supplied
     for name in ("precision", "recall", "f1", "f_beta", "expected_value"):

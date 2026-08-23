@@ -38,6 +38,7 @@ class ObjectiveInput:
 
     sharpe: float
     max_drawdown: float
+    sortino: float = 0.0
     cagr: float = 0.0
     win_rate: float = 0.0
     num_trades: int = 0
@@ -54,6 +55,7 @@ class ObjectiveInput:
         return cls(
             sharpe=m.sharpe,
             max_drawdown=m.max_drawdown,
+            sortino=m.sortino,
             cagr=m.cagr,
             win_rate=m.win_rate,
             num_trades=m.num_trades,
@@ -119,13 +121,20 @@ class ObjectiveAdapter:
 
 
 def sharpe_over_dd(x: ObjectiveInput) -> float:
-    """Legacy P&L objective: Sharpe / |max drawdown|, drawdown floored to avoid /0.
-
-    Ported verbatim from ``tune.TuneResult.from_backtest`` so switching the default
-    away from — and back to — this objective is behaviour-preserving.
-    """
+    """P&L objective: Sharpe / |max drawdown|, drawdown floored to avoid /0."""
     dd = abs(x.max_drawdown) if x.max_drawdown else 0.0
     return x.sharpe / max(dd, 1e-4)
+
+
+def sortino_over_dd(x: ObjectiveInput) -> float:
+    """P&L objective using Sortino (downside-only risk) / |max drawdown|.
+
+    Sortino replaces Sharpe's total volatility with downside deviation, so a strategy
+    is not penalized for upside variance — the default tuning objective.
+    """
+    dd = abs(x.max_drawdown) if x.max_drawdown else 0.0
+    sortino = x.sortino if x.sortino is not None else 0.0
+    return sortino / max(dd, 1e-4)
 
 
 def precision_objective(x: ObjectiveInput) -> float:
@@ -234,6 +243,7 @@ def expected_value(x: ObjectiveInput) -> float:
 # Pre-register canonical names. Defaults chosen precision-first: ``f_beta`` uses
 # beta=0.5 (weights precision above recall), matching the scoring stage's job.
 register_objective("sharpe_over_dd", sharpe_over_dd)
+register_objective("sortino_over_dd", sortino_over_dd)
 register_objective("precision", precision_objective)
 register_objective("recall", recall_objective)
 register_objective("f1", make_f_beta(1.0))
