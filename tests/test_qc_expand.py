@@ -69,6 +69,33 @@ def test_family_from_indicators() -> None:
     assert family_from_indicators(set()) == "uncategorized"
 
 
+def test_candlestick_and_std_detection() -> None:
+    assert categorize_source("x = self.CandlestickPatterns.Hammer(sym)", "Foo") == "candlestick"
+    assert detect_indicators("self.STD(sym, 20)") == {"stddev"}
+
+
+def test_gap_templates_categorize_to_their_family() -> None:
+    from trading_live_claude.integrations.lean_algorithm import gap_family_algorithms
+    from trading_live_claude.integrations.qc_library import analyze_source
+
+    for fam, (name, src) in gap_family_algorithms().items():
+        a = analyze_source(1, name, {"main.py": src})
+        assert a.family == fam, f"{fam} template categorized as {a.family}"
+
+
+def test_comprehensive_templates_categorize_and_are_tunable() -> None:
+    from trading_live_claude.integrations.lean_algorithm import comprehensive_lean_algorithms
+    from trading_live_claude.integrations.qc_library import analyze_source
+
+    algos = comprehensive_lean_algorithms()
+    families = {fam for _, (fam, _) in algos.items()}
+    assert {"momentum", "mean_reversion", "volatility", "seasonality", "candlestick"} <= families
+    for name, (fam, src) in algos.items():
+        a = analyze_source(1, name, {"main.py": src})
+        assert a.family == fam, f"{name}: {a.family} != {fam}"
+        assert "GetParameter" in src, f"{name} exposes no tunable knobs"
+
+
 def test_categorize_source_is_code_first() -> None:
     # Auto-named project, but the CODE reveals mean-reversion.
     assert categorize_source(BOLLINGER_SRC, "Adaptable Light Brown Crocodile") == "mean_reversion"

@@ -33,6 +33,8 @@ from .integrations import (
 from .integrations.lean_algorithm import (
     DEFAULT_LEAN_ALGORITHM,
     LEAN_CANDLESTICK_MAP,
+    comprehensive_lean_algorithms,
+    gap_family_algorithms,
     render_candlestick_lean_algorithm,
     render_lean_algorithm,
 )
@@ -47,7 +49,13 @@ from .scoring.routing import (
     strategy_asset_plan,
     to_strategy_map_string,
 )
-from .scoring.selection import rank_cells
+from .scoring.selection import (
+    combine_scores,
+    family_coverage,
+    rank_cells,
+    render_combined_scoreboard,
+    score_strategies,
+)
 from .strategies import STRATEGIES, Strategy
 from .tune import DEFAULT_TUNE_STRATEGIES, DEFAULT_TUNE_UNIVERSE, apply_tune, run_tune
 
@@ -758,6 +766,170 @@ def route(
     map_str = to_strategy_map_string(routing)
     console.print("\n[bold]Deploy to the monitor:[/bold]")
     console.print(f"[dim]trading signal --strategy rsi_meanrevert --symbols \"{','.join(routing)}\" --strategy-map \"{map_str}\"[/dim]")
+
+
+@app.command(name="qc-seed")
+def qc_seed(
+    dry_run: bool = typer.Option(False, help="Show the plan without creating projects"),
+    limit: int = typer.Option(0, help="Max projects to create (0 = all)"),
+) -> None:
+    """Seed the QC account with a comprehensive, tunable strategy set across all domains.
+
+    Creates one detectable LEAN project per template spanning momentum, mean-reversion,
+    volatility, seasonality, and every QC-mappable candlestick pattern. All knobs are
+    exposed via self.GetParameter(...) so you can run QC parameter optimization + your
+    own universe selection over the pool later.
+    """
+    from collections import Counter
+
+    algos = list(comprehensive_lean_algorithms().items())
+    if limit:
+        algos = algos[:limit]
+    by_family = Counter(fam for _, (fam, _) in algos)
+    console.print(f"[bold]Seeding {len(algos)} tunable strategies[/bold] by family: {dict(by_family)}")
+
+    settings = get_settings()
+    client = _make_qc(settings)
+    try:
+        existing = {str(p.get("name", "")) for p in client.list_projects()}
+        for proj_name, (fam, source) in algos:
+            if proj_name in existing:
+                console.print(f"[dim]{fam}: '{proj_name}' already exists — skip[/dim]")
+                continue
+            if dry_run:
+                console.print(f"[dim]{fam}: would create '{proj_name}'[/dim]")
+                continue
+            resp = client.create_project(proj_name, language="Py")
+            projects = resp.get("projects")
+            pid = 0
+            if isinstance(projects, list) and projects and isinstance(projects[0], dict):
+                pid = int(str(projects[0].get("projectId", 0)))
+            client.put_file(pid, "main.py", source)
+            console.print(f"[green]{fam:14}[/green] {proj_name} → project {pid}")
+    except QuantConnectError as e:
+        console.print(f"[red]QuantConnect error: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    finally:
+        client.close()
+
+    if not dry_run:
+        console.print("[dim]Re-run `trading qc-ingest` to see the full pool + coverage.[/dim]")
+
+
+@app.command(name="qc-fill-gaps")
+def qc_fill_gaps(
+    dry_run: bool = typer.Option(False, help="Show what would be created without creating"),
+) -> None:
+    """Create gap-filling strategies in your QC account, one per missing family.
+
+    QC's base API has no clone-from-library call, so this generates a detectable LEAN
+    strategy for each family with no QC coverage (mean-reversion / volatility /
+    seasonality / candlestick) and creates it as a project. Re-run `qc-ingest` after.
+    """
+    settings = get_settings()
+    client = _make_qc(settings)
+    try:
+        analyses = analyze_library(client)
+        coverage = family_coverage(STRATEGIES.keys(), [a.family for a in analyses])
+        gaps = {fc.family for fc in coverage if fc.gap and fc.family != "other"}
+        templates = gap_family_algorithms()
+        to_create = {fam: nv for fam, nv in templates.items() if fam in gaps}
+
+        if not to_create:
+            console.print("[green]No gap families with an available template — nothing to create.[/green]")
+            return
+
+        console.print(f"[bold]Filling {len(to_create)} gap families:[/bold] {sorted(to_create)}")
+        for fam, (proj_name, source) in to_create.items():
+            if dry_run:
+                console.print(f"[dim]{fam}: would create '{proj_name}'[/dim]")
+                continue
+            resp = client.create_project(proj_name, language="Py")
+            projects = resp.get("projects")
+            pid = 0
+            if isinstance(projects, list) and projects and isinstance(projects[0], dict):
+                pid = int(str(projects[0].get("projectId", 0)))
+            client.put_file(pid, "main.py", source)
+            console.print(f"[green]{fam}[/green] → created '{proj_name}' (project {pid})")
+    except QuantConnectError as e:
+        console.print(f"[red]QuantConnect error: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    finally:
+        client.close()
+
+    if not dry_run:
+        console.print("[dim]Re-run `trading qc-ingest` to see the gaps filled.[/dim]")
+
+
+@app.command(name="qc-ingest")
+def qc_ingest(
+    symbols: str = typer.Option("", help="Universe for the native pool (empty = curated tune universe)"),
+    with_native: bool = typer.Option(True, help="Also build the native scoreboard and merge into one ranked pool"),
+    objective: str = typer.Option("dot_product", help="Objective for native scoring / combined ranking"),
+) -> None:
+    """Ingest cloned QC strategies, categorize + rank them, and report diversity gaps.
+
+    Reads every project in your QC account, detects its family from the code, ranks it
+    by its QC backtest, and (with --with-native) merges it with the native 36 into one
+    ranked pool. The family-coverage table flags which families have no QC coverage —
+    the ones to clone more of before going live.
+    """
+    settings = get_settings()
+    client = _make_qc(settings)
+    try:
+        analyses = analyze_library(client)
+        qc_scores = rank_qc_library(client, objective="sharpe_over_dd")
+    except QuantConnectError as e:
+        console.print(f"[red]QuantConnect error: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    finally:
+        client.close()
+
+    if not analyses:
+        console.print("[yellow]No QC projects found to ingest.[/yellow]")
+        raise typer.Exit(code=1)
+
+    ingest = Table(title=f"Ingested QC strategies ({len(analyses)} projects)")
+    for col in ("projectId", "name", "family", "indicators"):
+        ingest.add_column(col)
+    for a in sorted(analyses, key=lambda x: x.family):
+        ingest.add_row(str(a.project_id), a.name[:30], a.family, ", ".join(a.indicators) or "-")
+    console.print(ingest)
+
+    # Family-coverage gap report: native vs ingested QC.
+    coverage = family_coverage(STRATEGIES.keys(), [a.family for a in analyses])
+    cov = Table(title="Family coverage — native vs QC (gap = no QC strategy in that family)")
+    for col in ("family", "native", "qc", "gap"):
+        cov.add_column(col)
+    for fc in coverage:
+        cov.add_row(fc.family, str(fc.native), str(fc.qc), "[red]GAP[/red]" if fc.gap else "ok")
+    console.print(cov)
+    gaps = [fc.family for fc in coverage if fc.gap and fc.family != "other"]
+    if gaps:
+        console.print(f"[yellow]Clone QC strategies for these thin families before live:[/yellow] {gaps}")
+
+    if with_native:
+        broker = _make_questrade(settings)
+        market = MarketData(broker, cache=CandleCache(settings.data_cache_dir))
+        sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] or list(DEFAULT_TUNE_UNIVERSE)
+        frames: dict[str, pd.DataFrame] = {}
+        for sym in sym_list:
+            try:
+                frames[sym] = market.history(symbol=sym, years=5.0, interval="1d")
+            except Exception as e:
+                console.print(f"[yellow]skip {sym}: {e}[/yellow]")
+        native = score_strategies(build_signal_matrix(frames), objective=objective)
+        combined = combine_scores(native, qc_scores)
+        out = _DEFAULT_REPORTS_DIR / "combined_pool.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(render_combined_scoreboard(combined), encoding="utf-8")
+        pool = Table(title=f"Combined pool — native + QC (top 15 of {len(combined)})")
+        for col in ("source", "name", "family", "objective", "value"):
+            pool.add_column(col)
+        for c in combined[:15]:
+            pool.add_row(c.source, c.name[:24], c.family, c.objective, f"{c.objective_value:.3f}")
+        console.print(pool)
+        console.print(f"[green]Combined pool written:[/green] {out}")
 
 
 @app.command(name="qc-rank")

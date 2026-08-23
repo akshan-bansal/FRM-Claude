@@ -20,6 +20,8 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "momentum": ("momentum", "trend", "breakout", "macd", "crossover", "moving average"),
     "volatility": ("volatilit", "atr", "keltner", "squeeze", "vix", "garch"),
     "seasonality": ("season", "calendar", "turn of month", "day of week", "month of year"),
+    "candlestick": ("candlestick", "candle", "hammer", "engulfing", "doji", "morning star",
+                    "evening star", "harami", "kicker", "three white", "three black"),
 }
 
 # Indicator detection from LEAN source. LEAN exposes both snake_case helpers
@@ -34,7 +36,7 @@ _INDICATOR_PATTERNS: dict[str, str] = {
     "atr": r"\batr\s*\(|AverageTrueRange\s*\(",
     "momentum": r"\bmomentum\s*\(|MomentumPercent\s*\(|\bmom\s*\(",
     "donchian": r"Donchian\s*\(|Maximum\s*\(|Minimum\s*\(",
-    "stddev": r"StandardDeviation\s*\(",
+    "stddev": r"StandardDeviation\s*\(|\bstd\s*\(",
     "stochastic": r"Stochastic\s*\(|\bsto\s*\(",
 }
 
@@ -83,6 +85,8 @@ def categorize_source(source: str, name: str = "") -> str:
     Code-first because QC auto-names projects ('Adaptable Light Brown Crocodile'),
     so the source is the reliable signal of what the strategy actually does.
     """
+    if "candlestickpatterns" in source.lower():
+        return "candlestick"
     fam = family_from_indicators(detect_indicators(source))
     if fam != "uncategorized":
         return fam

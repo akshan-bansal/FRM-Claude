@@ -4,6 +4,8 @@ from trading_live_claude.analysis.matrix import MatrixCell
 from trading_live_claude.scoring.qc_bridge import QcBacktestScore
 from trading_live_claude.scoring.selection import (
     combine_scores,
+    family_coverage,
+    family_of,
     render_combined_scoreboard,
     render_scoreboard_markdown,
     score_strategies,
@@ -103,3 +105,17 @@ def test_combined_scoreboard_shows_both_bases() -> None:
 
 def test_combined_empty_graceful() -> None:
     assert "No strategies" in render_combined_scoreboard([])
+
+
+def test_candlestick_family_recognized() -> None:
+    assert family_of("candle_hammer") == "candlestick"
+    assert family_of("bollinger") == "mean_reversion"
+
+
+def test_family_coverage_flags_gaps() -> None:
+    # Native has momentum + mean_reversion; QC only supplies mean_reversion.
+    cov = family_coverage(["ema_crossover", "bollinger"], ["mean_reversion"])
+    by = {c.family: c for c in cov}
+    assert by["momentum"].native == 1 and by["momentum"].qc == 0
+    assert by["momentum"].gap is True   # no QC momentum → gap
+    assert by["mean_reversion"].qc == 1 and by["mean_reversion"].gap is False

@@ -11,6 +11,7 @@ under different objectives, and the winner set respects family diversification.
 """
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -43,6 +44,8 @@ STRATEGY_FAMILY: dict[str, str] = {
 
 
 def family_of(strategy: str) -> str:
+    if strategy.startswith("candle_"):
+        return "candlestick"
     return STRATEGY_FAMILY.get(strategy, "other")
 
 
@@ -193,6 +196,33 @@ def render_combined_scoreboard(combined: list[CombinedScore]) -> str:
         for c in combined
     ]
     return header + "\n".join(rows) + "\n"
+
+
+@dataclass(frozen=True)
+class FamilyCoverage:
+    family: str
+    native: int  # native strategies in this family
+    qc: int      # ingested QC strategies in this family
+
+    @property
+    def gap(self) -> bool:
+        """True when the family has no QC representation — a diversity gap to fill."""
+        return self.qc == 0
+
+
+def family_coverage(
+    native_strategies: Iterable[str], qc_families: Iterable[str]
+) -> list[FamilyCoverage]:
+    """Count native vs ingested-QC strategies per family, to expose diversity gaps.
+
+    ``native_strategies`` are strategy keys (mapped through the family taxonomy);
+    ``qc_families`` are the detected families of the cloned QC projects. Families with
+    zero QC coverage are the ones to clone more of before going live.
+    """
+    native_counts = Counter(family_of(s) for s in native_strategies)
+    qc_counts = Counter(qc_families)
+    families = sorted(set(native_counts) | set(qc_counts) | set(STRATEGY_FAMILY.values()))
+    return [FamilyCoverage(f, native_counts.get(f, 0), qc_counts.get(f, 0)) for f in families]
 
 
 def cell_objective_input(cell: MatrixCell) -> ObjectiveInput:
