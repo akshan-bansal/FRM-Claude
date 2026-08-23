@@ -46,6 +46,9 @@ STRATEGY_FAMILY: dict[str, str] = {
 def family_of(strategy: str) -> str:
     if strategy.startswith("candle_"):
         return "candlestick"
+    if strategy.startswith("confirm_"):
+        # Candlestick-confirmed overlays are configured only over mean-reversion bases.
+        return "mean_reversion"
     return STRATEGY_FAMILY.get(strategy, "other")
 
 

@@ -41,6 +41,7 @@ from .integrations.lean_algorithm import (
 from .logging_setup import configure_logging, get_logger
 from .monitor import Alerter, LiveMonitor
 from .monitor.alerter import AlertConfig
+from .optimize import PARAM_GRIDS, optimize_parameters
 from .risk import KillSwitch, PositionSizer
 from .scoring.objective import DEFAULT_METRIC_WEIGHTS, OBJECTIVES, make_dot_product
 from .scoring.qc_bridge import rank_qc_library
@@ -608,6 +609,48 @@ def qc_library(
     for s in sorted(strategies, key=lambda x: x.category):
         table.add_row(str(s.project_id), s.name[:60], s.language, s.category)
     console.print(table)
+
+
+@app.command()
+def optimize(
+    strategy: str = typer.Option(..., help="Strategy key (must have a parameter grid)"),
+    symbol: str = typer.Option(..., help="Ticker, e.g. ATD.TO"),
+    objective: str = typer.Option("sortino_over_dd", help="Objective to optimize (scoring.objective registry)"),
+    years: float = typer.Option(5.0, help="Years of history"),
+) -> None:
+    """Grid-search a strategy's tunable parameters on one symbol; print the best combos.
+
+    Free, native alternative to QC's paid cloud optimizer — sweeps the strategy's knobs
+    over Questrade data and ranks by the chosen objective (default Sortino/|maxDD|).
+    """
+    if strategy not in PARAM_GRIDS:
+        console.print(f"[red]No parameter grid for '{strategy}'. Available: {sorted(PARAM_GRIDS)}[/red]")
+        raise typer.Exit(code=2)
+    if objective not in OBJECTIVES:
+        console.print(f"[red]Unknown objective '{objective}'. Options: {sorted(OBJECTIVES)}[/red]")
+        raise typer.Exit(code=2)
+
+    settings = get_settings()
+    broker = _make_questrade(settings)
+    cache = CandleCache(settings.data_cache_dir)
+    results = optimize_parameters(
+        broker, cache, strategy=strategy, symbol=symbol, objective=objective, years=years
+    )
+    if not results:
+        console.print("[red]No results (insufficient data or no combo met the trade minimum).[/red]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Parameter optimization — {strategy} on {symbol} ({objective}, {len(results)} combos)")
+    for col in ("params", "Sortino", "Sharpe", "MaxDD", "trades", "score"):
+        table.add_column(col)
+    for r in results[:15]:
+        table.add_row(
+            str(r.params), f"{r.sortino:.2f}", f"{r.sharpe:.2f}",
+            f"{r.max_drawdown:.1%}", str(r.num_trades), f"{r.score:.2f}",
+        )
+    console.print(table)
+    best = results[0]
+    console.print(f"[green]Best params:[/green] {best.params}  (score {best.score:.2f}, Sortino {best.sortino:.2f})")
 
 
 @app.command(name="signal-matrix")

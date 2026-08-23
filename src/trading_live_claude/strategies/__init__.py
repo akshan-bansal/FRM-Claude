@@ -13,6 +13,7 @@ from .examples.pairs import PairsZScore
 from .examples.rsi_meanrevert import RsiMeanRevert
 from .examples.seasonality import DayOfWeek, MonthOfYear, TurnOfMonth
 from .examples.volatility import AtrChannel, BbWidthSqueeze, VolTarget
+from .overlay import CONFIRM_STRATEGIES, ConfirmOverlay
 
 STRATEGIES: dict[str, type[Strategy]] = {
     # core (original)
@@ -43,11 +44,14 @@ STRATEGIES: dict[str, type[Strategy]] = {
 
 # Candlestick-pattern strategies (one per bullish pattern) join the pipeline.
 STRATEGIES.update(CANDLE_STRATEGIES)
+# Candlestick confirmation overlays over the entire mean-reversion set (precision stage).
+STRATEGIES.update(CONFIRM_STRATEGIES)
 
 __all__ = [
     "STRATEGIES",
     "CandlestickStrategy",
     "CompositeStrategy",
+    "ConfirmOverlay",
     "DefaultComposite",
     "Strategy",
     "StrategyContext",
