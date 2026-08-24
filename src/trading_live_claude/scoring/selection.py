@@ -49,6 +49,9 @@ def family_of(strategy: str) -> str:
     if strategy.startswith("confirm_"):
         # Candlestick-confirmed overlays are configured only over mean-reversion bases.
         return "mean_reversion"
+    if strategy.startswith("val_"):
+        # Equity-valuation strategies: mean-reversion run on P/B, and its price overlaps.
+        return "valuation"
     return STRATEGY_FAMILY.get(strategy, "other")
 
 

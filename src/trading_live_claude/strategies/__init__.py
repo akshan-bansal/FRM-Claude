@@ -14,6 +14,7 @@ from .examples.rsi_meanrevert import RsiMeanRevert
 from .examples.seasonality import DayOfWeek, MonthOfYear, TurnOfMonth
 from .examples.volatility import AtrChannel, BbWidthSqueeze, VolTarget
 from .overlay import CONFIRM_STRATEGIES, ConfirmOverlay
+from .valuation import VALUATION_STRATEGIES, ValuationStrategy
 
 STRATEGIES: dict[str, type[Strategy]] = {
     # core (original)
@@ -46,6 +47,8 @@ STRATEGIES: dict[str, type[Strategy]] = {
 STRATEGIES.update(CANDLE_STRATEGIES)
 # Candlestick confirmation overlays over the entire mean-reversion set (precision stage).
 STRATEGIES.update(CONFIRM_STRATEGIES)
+# Valuation strategies: mean-reversion run on equity-valuation ratios + price overlaps.
+STRATEGIES.update(VALUATION_STRATEGIES)
 
 __all__ = [
     "STRATEGIES",
@@ -55,4 +58,5 @@ __all__ = [
     "DefaultComposite",
     "Strategy",
     "StrategyContext",
+    "ValuationStrategy",
 ]
