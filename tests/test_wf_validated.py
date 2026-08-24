@@ -28,12 +28,22 @@ def test_robust_tier_meets_all_three_bars() -> None:
             assert rec.oos_trades >= 10, rec.symbol
 
 
-def test_expected_counts_and_requested_names_present() -> None:
-    assert len(validated_symbols("robust")) == 12
-    assert len(WALK_FORWARD_VALIDATED) == 16
-    # Names carried in by explicit request live in the watch tier.
+def test_expected_counts_and_watch_names() -> None:
+    # Pool ordered by OOS score and truncated at KEY.TO: 6 robust + 3 watch.
+    assert len(validated_symbols("robust")) == 6
+    assert len(WALK_FORWARD_VALIDATED) == 9
     watch = set(validated_symbols("watch"))
-    assert {"WCP.TO", "LNR.TO", "EFN.TO", "VFV.TO"} == watch
+    assert {"VFV.TO", "WCP.TO", "KEY.TO"} == watch
+
+
+def test_truncated_at_key_to() -> None:
+    """KEY.TO is the lowest-scoring wired name; nothing below its OOS score is kept."""
+    key = validated_for("KEY.TO")
+    assert key is not None
+    assert min(v.oos_score for v in WALK_FORWARD_VALIDATED.values()) == key.oos_score
+    # Names dropped by the truncation must be gone.
+    for dropped in ("HBM.TO", "AVGO", "NVDA", "AZO", "AMD", "META", "EFN.TO", "LNR.TO"):
+        assert dropped not in WALK_FORWARD_VALIDATED
 
 
 def test_all_validated_symbols_are_in_the_equity_seed() -> None:
@@ -48,6 +58,5 @@ def test_validated_for_lookup() -> None:
     assert validated_for("NOT_A_TICKER") is None
 
 
-def test_confirm_bollinger_watch_names_use_the_overlay() -> None:
-    for sym in ("WCP.TO", "LNR.TO"):
-        assert validated_for(sym).strategy == "confirm_bollinger"
+def test_confirm_bollinger_watch_name_uses_the_overlay() -> None:
+    assert validated_for("WCP.TO").strategy == "confirm_bollinger"

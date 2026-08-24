@@ -28,8 +28,7 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         "XIC.TO", "VFV.TO", "XEF.TO", "VOO", "SPY", "QQQ", "IWM", "VTI",
         "AAPL", "MSFT", "GOOGL", "NVDA", "AMZN", "RY.TO", "TD.TO",
         # Walk-forward-validated names (see WALK_FORWARD_VALIDATED below).
-        "XLE", "SMH", "ARX.TO", "DFY.TO", "EQB.TO", "HBM.TO", "AVGO", "AZO",
-        "AMD", "META", "WCP.TO", "EFN.TO", "LNR.TO",
+        "XLE", "SMH", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
     ),
     "future": ("ES", "NQ", "YM", "RTY", "ZN", "ZB"),
     "commodity": ("GLD", "SLV", "USO", "UNG", "DBC", "CORN", "WEAT"),
@@ -173,27 +172,20 @@ def _wf(
     )
 
 
-# Symbol -> validated recommendation. The 12 "robust" names cleared WFE>=0.5, OOS>0, and
-# >=10 OOS trades; the 4 "watch" names (WCP.TO, EFN.TO, LNR.TO via confirmation/momentum,
-# and VFV.TO on a thin 2-trade sample) are carried by explicit request as candidates.
+# Symbol -> validated recommendation, ordered by out-of-sample score and truncated at
+# KEY.TO (OOS 6.11) — every name scores at least as high. The 6 "robust" names cleared
+# WFE>=0.5, OOS>0, and >=10 OOS trades; the 3 "watch" names are carried on thinner
+# evidence (VFV.TO on a 2-trade sample; WCP.TO and KEY.TO on 5 OOS trades each).
 WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     "XLE": _wf("XLE", "rsi_meanrevert", {"window": 21, "oversold": 35}, 24.19, 2.53, 0.4189, -0.0487, 16, "robust"),
     "XIC.TO": _wf("XIC.TO", "rsi_meanrevert", {"window": 7, "oversold": 35}, 19.60, 1.21, 0.2946, -0.0505, 17, "robust"),
+    "VFV.TO": _wf("VFV.TO", "high_52w_breakout", {"high_window": 126, "exit_window": 63}, 18.90, 1.07, 0.1590, -0.0660, 2, "watch"),
     "ARX.TO": _wf("ARX.TO", "bollinger", {"window": 20, "n_std": 3.0}, 8.82, 0.72, 0.5757, -0.1131, 15, "robust"),
     "EQB.TO": _wf("EQB.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 8.17, 1.36, 0.4588, -0.1605, 11, "robust"),
     "SMH": _wf("SMH", "ts_momentum", {"lookback": 189, "threshold": 0.0}, 7.10, 1.22, 2.3069, -0.2547, 14, "robust"),
-    "DFY.TO": _wf("DFY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.62, 0.65, 0.2544, -0.0974, 14, "robust"),
-    "HBM.TO": _wf("HBM.TO", "ts_momentum", {"lookback": 189, "threshold": 0.05}, 5.27, 1.55, 4.7238, -0.3837, 11, "robust"),
-    "AVGO": _wf("AVGO", "ts_momentum", {"lookback": 126, "threshold": 0.02}, 4.17, 1.05, 1.4051, -0.2822, 16, "robust"),
-    "NVDA": _wf("NVDA", "ts_momentum", {"lookback": 189, "threshold": 0.05}, 3.83, 0.58, 1.6618, -0.3453, 17, "robust"),
-    "AZO": _wf("AZO", "bollinger", {"window": 15, "n_std": 2.5}, 3.19, 0.72, 0.1675, -0.1282, 14, "robust"),
-    "AMD": _wf("AMD", "ts_momentum", {"lookback": 189, "threshold": 0.0}, 2.47, 0.93, 1.9207, -0.5337, 10, "robust"),
-    "META": _wf("META", "ts_momentum", {"lookback": 63, "threshold": 0.02}, 2.27, 0.52, 0.5229, -0.3528, 13, "robust"),
-    # Watch tier — carried by explicit request, thinner evidence.
-    "VFV.TO": _wf("VFV.TO", "high_52w_breakout", {"high_window": 126, "exit_window": 63}, 18.90, 1.07, 0.1590, -0.0660, 2, "watch"),
     "WCP.TO": _wf("WCP.TO", "confirm_bollinger", {"window": 30, "n_std": 3.0}, 6.62, 0.17, 0.3289, -0.0882, 5, "watch"),
-    "EFN.TO": _wf("EFN.TO", "ts_momentum", {"lookback": 63, "threshold": 0.05}, 3.30, 0.38, 0.2740, -0.2053, 15, "watch"),
-    "LNR.TO": _wf("LNR.TO", "confirm_bollinger", {"window": 20, "n_std": 2.5}, 2.08, 0.28, 0.0595, -0.0660, 4, "watch"),
+    "DFY.TO": _wf("DFY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.62, 0.65, 0.2544, -0.0974, 14, "robust"),
+    "KEY.TO": _wf("KEY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.11, 0.63, 0.1700, -0.0710, 5, "watch"),
 }
 
 
