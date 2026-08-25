@@ -14,9 +14,9 @@ class DonchianBreakout(Strategy):
     """
 
     name = "momentum_breakout"
-    description = "Donchian N-bar breakout, long/short"
+    description = "Donchian N-bar breakout (long; short opt-in)"
 
-    def __init__(self, entry_window: int = 55, exit_window: int = 20, allow_short: bool = True, atr_window: int = 14) -> None:
+    def __init__(self, entry_window: int = 55, exit_window: int = 20, allow_short: bool = False, atr_window: int = 14) -> None:
         super().__init__(entry_window=entry_window, exit_window=exit_window, allow_short=allow_short, atr_window=atr_window)
         self.entry_window = entry_window
         self.exit_window = exit_window

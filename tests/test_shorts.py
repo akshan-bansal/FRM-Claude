@@ -21,29 +21,27 @@ def _down_then_flat(n: int = 320) -> pd.DataFrame:
     })
 
 
-def test_shortable_strategies_emit_the_short_channel() -> None:
+def test_short_channel_is_opt_in() -> None:
     df = _down_then_flat()
     for name in SHORTABLE:
-        out = STRATEGIES[name]().generate_signals(df, CTX)
-        assert {"short_entry", "short_exit"}.issubset(out.columns), name
-        assert out["short_entry"].dropna().isin([0, 1]).all(), name
+        # Default is long-only (the test showed shorts hurt on a bull-market equity basket).
+        default_out = STRATEGIES[name]().generate_signals(df, CTX)
+        assert "short_entry" not in default_out.columns, name
+        # Opting in emits the short channel.
+        opted = STRATEGIES[name](allow_short=True).generate_signals(df, CTX)
+        assert {"short_entry", "short_exit"}.issubset(opted.columns), name
+        assert opted["short_entry"].dropna().isin([0, 1]).all(), name
 
 
-def test_allow_short_false_is_long_only() -> None:
-    out = EmaCrossover(allow_short=False).generate_signals(_down_then_flat(), CTX)
-    assert "short_entry" not in out.columns and "short_exit" not in out.columns
-
-
-def test_downtrend_actually_opens_a_profitable_short() -> None:
-    res = BacktestEngine().run(EmaCrossover(fast=10, slow=30), _down_then_flat(), symbol="T")
+def test_downtrend_opens_a_profitable_short_when_opted_in() -> None:
+    res = BacktestEngine().run(EmaCrossover(fast=10, slow=30, allow_short=True), _down_then_flat(), symbol="T")
     assert (res.positions == -1).any(), "a sustained decline should open a short"
-    # Shorting a falling market makes money — the ceiling the long-only design left on the table.
     assert res.metrics.total_return > 0.0
 
 
-def test_long_only_and_short_positions_differ_in_backtest() -> None:
+def test_long_only_default_never_shorts() -> None:
     df = _down_then_flat()
-    short_pos = BacktestEngine().run(EmaCrossover(fast=10, slow=30), df, symbol="T").positions
-    long_only = BacktestEngine().run(EmaCrossover(fast=10, slow=30, allow_short=False), df, symbol="T").positions
+    short_pos = BacktestEngine().run(EmaCrossover(fast=10, slow=30, allow_short=True), df, symbol="T").positions
+    long_only = BacktestEngine().run(EmaCrossover(fast=10, slow=30), df, symbol="T").positions
     assert (short_pos == -1).any()
-    assert not (long_only == -1).any()  # long-only never shorts
+    assert not (long_only == -1).any()  # default (opt-in off) never shorts

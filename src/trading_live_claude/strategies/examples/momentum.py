@@ -49,7 +49,7 @@ class DualMa(Strategy):
     name = "dual_ma"
     description = "Fast/slow SMA trend crossover"
 
-    def __init__(self, fast: int = 50, slow: int = 200, scale: float = 0.1, band: float = 0.01, allow_short: bool = True, atr_window: int = 14) -> None:
+    def __init__(self, fast: int = 50, slow: int = 200, scale: float = 0.1, band: float = 0.01, allow_short: bool = False, atr_window: int = 14) -> None:
         super().__init__(fast=fast, slow=slow, scale=scale, band=band, allow_short=allow_short, atr_window=atr_window)
         self.fast = fast
         self.slow = slow

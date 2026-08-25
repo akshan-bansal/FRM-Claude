@@ -12,7 +12,7 @@ class MacdSignalCross(Strategy):
     name = "macd"
     description = "MACD line crosses signal line"
 
-    def __init__(self, fast: int = 12, slow: int = 26, signal: int = 9, allow_short: bool = True, atr_window: int = 14) -> None:
+    def __init__(self, fast: int = 12, slow: int = 26, signal: int = 9, allow_short: bool = False, atr_window: int = 14) -> None:
         super().__init__(fast=fast, slow=slow, signal=signal, allow_short=allow_short, atr_window=atr_window)
         self.fast = fast
         self.slow = slow

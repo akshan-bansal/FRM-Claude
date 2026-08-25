@@ -14,9 +14,9 @@ class EmaCrossover(Strategy):
     """
 
     name = "ema_crossover"
-    description = "Fast/slow EMA crossover, long/short"
+    description = "Fast/slow EMA crossover (long; short opt-in)"
 
-    def __init__(self, fast: int = 20, slow: int = 50, allow_short: bool = True, atr_window: int = 14) -> None:
+    def __init__(self, fast: int = 20, slow: int = 50, allow_short: bool = False, atr_window: int = 14) -> None:
         super().__init__(fast=fast, slow=slow, allow_short=allow_short, atr_window=atr_window)
         self.fast = fast
         self.slow = slow
