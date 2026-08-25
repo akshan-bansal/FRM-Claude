@@ -166,7 +166,10 @@ class LiveMonitor:
                         existing_risk=existing_risk,
                         open_positions=len(open_positions),
                     )
-                    events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, {"sized": sized.shares}))
+                # Alert on the entry SIGNAL regardless of sizeability — the monitor is an
+                # alerter, so a real signal must surface even when the account is too small
+                # to size a position (0 shares); only the order routing is gated by shares.
+                events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, {"sized": sized.shares}))
             elif exit_ and holds:
                 qty = open_positions[symbol]
                 intent = OrderIntent(
