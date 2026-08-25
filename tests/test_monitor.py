@@ -162,3 +162,38 @@ def test_per_symbol_strategy_names_the_routed_order() -> None:
     )
     mon.step()
     assert any(getattr(i, "strategy", None) == "special_strat" for i in router.intents)
+
+
+def _hedge_monitor(events: list[MonitorEvent]) -> LiveMonitor:
+    return LiveMonitor(
+        broker=_Broker(),          # type: ignore[arg-type]
+        market=_Market(),          # type: ignore[arg-type]
+        strategy=_ToggleStrategy(),
+        sizer=None,                # type: ignore[arg-type]
+        router=_Router(),          # type: ignore[arg-type]
+        account_number="X",
+        symbols=["AAA"],
+        on_event=events.append,
+        hedge_symbol="UUP",
+    )
+
+
+def test_hedge_overlay_emits_rebalance_on_drawdown() -> None:
+    events: list[MonitorEvent] = []
+    mon = _hedge_monitor(events)
+    mon._equity_peak = 120_000.0  # prior high vs the fixture's 100k equity → ~17% drawdown
+    mon.step()
+    hedges = [e for e in events if e.kind == "hedge"]
+    assert len(hedges) == 1
+    h = hedges[0]
+    assert h.symbol == "UUP"
+    assert h.detail["delta"] > 0        # buy the dollar sleeve as the book draws down
+    assert h.detail["weight"] > 0.0
+    assert h.detail["drawdown"] < -0.1
+
+
+def test_hedge_overlay_quiet_at_the_highs() -> None:
+    events: list[MonitorEvent] = []
+    mon = _hedge_monitor(events)
+    mon.step()  # peak == equity → 0 drawdown → weight 0 → no hedge rebalance
+    assert not [e for e in events if e.kind == "hedge"]

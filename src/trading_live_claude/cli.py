@@ -199,6 +199,12 @@ def signal(
         help="Alert whenever a name is AT an entry/exit level each poll (persistent), "
         "not only when it flips into one. --edge (default) alerts on transitions only.",
     ),
+    hedge: bool = typer.Option(
+        False,
+        "--hedge/--no-hedge",
+        help="Enable the dynamic dollar-hedge overlay (UUP): scales a hedge sleeve up as "
+        "the book draws down and surfaces rebalance alerts. Off by default.",
+    ),
 ) -> None:
     """Live-signal monitor. Never places orders (dry-run router).
 
@@ -257,7 +263,13 @@ def signal(
     )
 
     def _emit(ev) -> None:
-        if ev.kind in {"entry", "exit"}:
+        if ev.kind == "hedge":
+            d = ev.detail
+            alerter.send(
+                f"HEDGE rebalance: {ev.symbol} {'BUY' if d.get('delta', 0) > 0 else 'SELL'} {abs(d.get('delta', 0))}",
+                f"target weight={d.get('weight')} shares={d.get('target')} at drawdown={d.get('drawdown')} price={ev.price:.4f}",
+            )
+        elif ev.kind in {"entry", "exit"}:
             sname = smap[ev.symbol].name if ev.symbol in smap else strat.name
             alerter.send(
                 f"{sname} {ev.kind.upper()}: {ev.symbol}",
@@ -279,6 +291,7 @@ def signal(
         heat_aggregation=settings.heat_aggregation,
         strategy_map=smap,
         emit_on_change_only=not level,
+        hedge_symbol="UUP" if hedge else None,
     )
     monitor.run_forever(max_iterations=iterations or None)
 

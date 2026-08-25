@@ -23,6 +23,7 @@ from ..brokers.models import OrderAction
 from ..data.market import MarketData
 from ..execution.router import OrderIntent, Router
 from ..logging_setup import get_logger
+from ..risk.hedge import HedgePolicy, hedge_shares, hedge_weight, rebalance_delta
 from ..risk.risk_model import HeatAggregation, RiskModel, per_trade_risk, portfolio_risk
 from ..risk.sizing import PositionSizer
 from ..strategies.base import Strategy, StrategyContext
@@ -57,6 +58,8 @@ class LiveMonitor:
         strategy_map: dict[str, Strategy] | None = None,
         risk_model: str = "cvar",
         heat_aggregation: str = "corr",
+        hedge_symbol: str | None = None,
+        hedge_policy: HedgePolicy | None = None,
     ) -> None:
         self.broker = broker
         self.market = market
@@ -82,6 +85,12 @@ class LiveMonitor:
         # unaffected — only the notification callback is deduplicated.
         self.emit_on_change_only = emit_on_change_only
         self._last_kind: dict[str, str] = {}
+        # Dynamic dollar-hedge overlay (opt-in): scale a UUP sleeve up as the book draws
+        # down. ``_equity_peak`` is tracked in-memory (resets on restart → hedge starts at
+        # 0 and re-ramps as fresh drawdown develops).
+        self.hedge_symbol = hedge_symbol
+        self.hedge_policy = hedge_policy or (HedgePolicy(symbol=hedge_symbol) if hedge_symbol else None)
+        self._equity_peak = 0.0
 
     def _strategy_for(self, symbol: str) -> Strategy:
         """The per-symbol strategy, falling back to the default ``strategy``."""
@@ -198,6 +207,41 @@ class LiveMonitor:
                 continue  # same state as last poll — suppress duplicate notification
             self._last_kind[ev.symbol] = ev.kind
             self.on_event(ev)
+
+        # Dynamic dollar-hedge overlay: size the hedge sleeve from the book's drawdown and
+        # heat, and surface a rebalance when the target position drifts past the no-trade
+        # band. A rebalance is an action (not a persistent state), so it bypasses the
+        # edge-dedup and always surfaces when due.
+        if self.hedge_symbol and self.hedge_policy:
+            self._equity_peak = max(self._equity_peak, equity)
+            drawdown = equity / self._equity_peak - 1.0 if self._equity_peak > 0 else 0.0
+            heat = existing_risk / equity if equity > 0 else 0.0
+            target_w = hedge_weight(drawdown, policy=self.hedge_policy, heat=heat)
+            try:
+                hq = self.broker.quote(self.hedge_symbol)
+                hpx = hq.mid or hq.lastTradePrice or 0.0
+            except Exception:  # pragma: no cover - broker hiccup shouldn't break the poll
+                hpx = 0.0
+            if hpx > 0:
+                target = hedge_shares(equity=equity, hedge_price=hpx, target_weight=target_w)
+                current = int(open_positions.get(self.hedge_symbol, 0.0))
+                delta = rebalance_delta(current, target)
+                if delta != 0:
+                    action = OrderAction.BUY if delta > 0 else OrderAction.SELL
+                    intent = OrderIntent(
+                        symbol=self.hedge_symbol, action=action, shares=abs(delta), entry=hpx,
+                        stop=hpx * 0.9 if delta > 0 else hpx * 1.1, target=None,
+                        strategy="dollar_hedge", risk_dollars=abs(delta) * hpx * 0.02,
+                        account_number=self.account_number,
+                    )
+                    try:
+                        self.router.submit(intent, equity=equity, existing_risk=existing_risk,
+                                            open_positions=len(open_positions))
+                    except Exception as e:  # pragma: no cover
+                        log.warning("monitor.hedge.route_failed", error=str(e))
+                    self.on_event(MonitorEvent(datetime.now(UTC), self.hedge_symbol, "hedge", hpx,
+                        {"weight": round(target_w, 3), "target": target, "delta": delta,
+                         "drawdown": round(drawdown, 3)}))
         return events
 
     def run_forever(self, max_iterations: int | None = None) -> None:
