@@ -29,9 +29,9 @@ def test_robust_tier_meets_all_three_bars() -> None:
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # 11 robust + 3 watch after wiring the widened-search survivors.
-    assert len(validated_symbols("robust")) == 11
-    assert len(WALK_FORWARD_VALIDATED) == 14
+    # 12 robust + 3 watch after wiring the widened-search survivors and CEW.TO.
+    assert len(validated_symbols("robust")) == 12
+    assert len(WALK_FORWARD_VALIDATED) == 15
     watch = set(validated_symbols("watch"))
     assert {"VFV.TO", "WCP.TO", "KEY.TO"} == watch
 
