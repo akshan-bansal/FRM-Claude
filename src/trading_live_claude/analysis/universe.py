@@ -29,6 +29,7 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         "AAPL", "MSFT", "GOOGL", "NVDA", "AMZN", "RY.TO", "TD.TO",
         # Walk-forward-validated names (see WALK_FORWARD_VALIDATED below).
         "XLE", "SMH", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
+        "XLB", "QQQ", "IWM", "RS", "DBA",
     ),
     "future": ("ES", "NQ", "YM", "RTY", "ZN", "ZB"),
     "commodity": ("GLD", "SLV", "USO", "UNG", "DBC", "CORN", "WEAT"),
@@ -172,20 +173,27 @@ def _wf(
     )
 
 
-# Symbol -> validated recommendation, ordered by out-of-sample score and truncated at
-# KEY.TO (OOS 6.11) — every name scores at least as high. The 6 "robust" names cleared
-# WFE>=0.5, OOS>0, and >=10 OOS trades; the 3 "watch" names are carried on thinner
-# evidence (VFV.TO on a 2-trade sample; WCP.TO and KEY.TO on 5 OOS trades each).
+# Symbol -> validated recommendation, ordered by out-of-sample score. "robust" names
+# cleared WFE>=0.5, OOS>0, and >=10 OOS trades; "watch" names are carried on thinner
+# evidence (VFV.TO on a 2-trade sample; WCP.TO and KEY.TO on 5 OOS trades each). The
+# cyclical-sector, broad-index and seasonal names (XLE, XLB, QQQ, IWM, RS, DBA) come from
+# the widened ~180-asset search and its walk-forward — the two standouts, XLE (energy) and
+# XLB (materials), score higher out-of-sample than in-sample.
 WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
-    "XLE": _wf("XLE", "rsi_meanrevert", {"window": 21, "oversold": 35}, 24.19, 2.53, 0.4189, -0.0487, 16, "robust"),
+    "XLE": _wf("XLE", "rsi_meanrevert", {"window": 7, "oversold": 35}, 28.39, 2.60, 0.4620, -0.0480, 24, "robust"),
+    "XLB": _wf("XLB", "bollinger", {"window": 20, "n_std": 2.0}, 20.95, 1.22, 0.3580, -0.0550, 16, "robust"),
     "XIC.TO": _wf("XIC.TO", "rsi_meanrevert", {"window": 7, "oversold": 35}, 19.60, 1.21, 0.2946, -0.0505, 17, "robust"),
     "VFV.TO": _wf("VFV.TO", "high_52w_breakout", {"high_window": 126, "exit_window": 63}, 18.90, 1.07, 0.1590, -0.0660, 2, "watch"),
     "ARX.TO": _wf("ARX.TO", "bollinger", {"window": 20, "n_std": 3.0}, 8.82, 0.72, 0.5757, -0.1131, 15, "robust"),
     "EQB.TO": _wf("EQB.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 8.17, 1.36, 0.4588, -0.1605, 11, "robust"),
+    "QQQ": _wf("QQQ", "ts_momentum", {"lookback": 189, "threshold": 0.02}, 7.70, 2.72, 0.5030, -0.1420, 16, "robust"),
     "SMH": _wf("SMH", "ts_momentum", {"lookback": 189, "threshold": 0.0}, 7.10, 1.22, 2.3069, -0.2547, 14, "robust"),
     "WCP.TO": _wf("WCP.TO", "confirm_bollinger", {"window": 30, "n_std": 3.0}, 6.62, 0.17, 0.3289, -0.0882, 5, "watch"),
     "DFY.TO": _wf("DFY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.62, 0.65, 0.2544, -0.0974, 14, "robust"),
     "KEY.TO": _wf("KEY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.11, 0.63, 0.1700, -0.0710, 5, "watch"),
+    "IWM": _wf("IWM", "bollinger", {"window": 30, "n_std": 2.0}, 5.82, 0.93, 0.1600, -0.0810, 14, "robust"),
+    "RS": _wf("RS", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.75, 0.88, 0.0780, -0.0610, 12, "robust"),
+    "DBA": _wf("DBA", "rsi_meanrevert", {"window": 14, "oversold": 35}, 3.17, 0.57, 0.0530, -0.0500, 11, "robust"),
 }
 
 

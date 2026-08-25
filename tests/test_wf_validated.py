@@ -29,21 +29,22 @@ def test_robust_tier_meets_all_three_bars() -> None:
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # Pool ordered by OOS score and truncated at KEY.TO: 6 robust + 3 watch.
-    assert len(validated_symbols("robust")) == 6
-    assert len(WALK_FORWARD_VALIDATED) == 9
+    # 11 robust + 3 watch after wiring the widened-search survivors.
+    assert len(validated_symbols("robust")) == 11
+    assert len(WALK_FORWARD_VALIDATED) == 14
     watch = set(validated_symbols("watch"))
     assert {"VFV.TO", "WCP.TO", "KEY.TO"} == watch
 
 
-def test_truncated_at_key_to() -> None:
-    """KEY.TO is the lowest-scoring wired name; nothing below its OOS score is kept."""
-    key = validated_for("KEY.TO")
-    assert key is not None
-    assert min(v.oos_score for v in WALK_FORWARD_VALIDATED.values()) == key.oos_score
-    # Names dropped by the truncation must be gone.
-    for dropped in ("HBM.TO", "AVGO", "NVDA", "AZO", "AMD", "META", "EFN.TO", "LNR.TO"):
-        assert dropped not in WALK_FORWARD_VALIDATED
+def test_widened_search_robust_names_are_wired() -> None:
+    """The 6 walk-forward survivors from the ~180-asset search are present and robust."""
+    for sym in ("XLE", "XLB", "QQQ", "IWM", "RS", "DBA"):
+        rec = validated_for(sym)
+        assert rec is not None, sym
+        assert rec.tier == "robust", sym
+    # XLE (energy) and XLB (materials) are the standouts — OOS beats in-sample (WFE > 1).
+    assert validated_for("XLE").wfe > 1.0
+    assert validated_for("XLB").wfe > 1.0
 
 
 def test_all_validated_symbols_are_in_the_equity_seed() -> None:
