@@ -87,7 +87,7 @@ class BacktestEngine:
             raise ValueError("DataFrame must contain a 'close' column.")
         ctx = StrategyContext(symbol=symbol, timeframe=timeframe)
         signals = strategy.generate_signals(df, ctx)
-        position = SignalSet(signals).to_positions()
+        position = SignalSet(signals).to_positions(atr_stop_mult=strategy.stop_atr_mult)
 
         slip = self.slippage_bps / 10_000.0
         bar_ret = signals["close"].pct_change().fillna(0.0)
@@ -134,28 +134,36 @@ class BacktestEngine:
         )
 
     def _build_trade_ledger(self, signals: pd.DataFrame, position: pd.Series) -> list[Trade]:
+        """Round-trips from the position track. Handles longs (+1) and shorts (-1),
+        including a direct long↔short flip, which closes one trade and opens the next."""
         trades: list[Trade] = []
-        in_pos = False
+        side = 0  # current position sign
         entry_idx = -1
         entry_price = 0.0
+
+        def close(i: int) -> None:
+            nonlocal side
+            exit_price = float(signals["close"].iloc[i])
+            # long: exit/entry - 1;  short: inverse. ``side`` carries the sign.
+            pnl_pct = (exit_price / entry_price - 1.0) * side if entry_price > 0 else 0.0
+            trades.append(
+                Trade(
+                    entry_time=pd.Timestamp(signals["time"].iloc[entry_idx]).to_pydatetime() if "time" in signals.columns else datetime.now(),
+                    exit_time=pd.Timestamp(signals["time"].iloc[i]).to_pydatetime() if "time" in signals.columns else datetime.now(),
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    pnl_pct=pnl_pct,
+                    bars_held=i - entry_idx,
+                )
+            )
+            side = 0
+
         for i in range(len(position)):
             pos = int(position.iloc[i])
-            if not in_pos and pos == 1:
-                in_pos = True
+            if side != 0 and pos != side:
+                close(i)
+            if side == 0 and pos != 0:
+                side = pos
                 entry_idx = i
                 entry_price = float(signals["close"].iloc[i])
-            elif in_pos and pos == 0:
-                in_pos = False
-                exit_price = float(signals["close"].iloc[i])
-                pnl_pct = exit_price / entry_price - 1.0 if entry_price > 0 else 0.0
-                trades.append(
-                    Trade(
-                        entry_time=pd.Timestamp(signals["time"].iloc[entry_idx]).to_pydatetime() if "time" in signals.columns else datetime.now(),
-                        exit_time=pd.Timestamp(signals["time"].iloc[i]).to_pydatetime() if "time" in signals.columns else datetime.now(),
-                        entry_price=entry_price,
-                        exit_price=exit_price,
-                        pnl_pct=pnl_pct,
-                        bars_held=i - entry_idx,
-                    )
-                )
         return trades

@@ -26,12 +26,16 @@ class StrategyContext:
 
     symbol: str
     timeframe: str = "1d"
-    params: dict = field(default_factory=dict)
+    params: dict[str, object] = field(default_factory=dict)
 
 
 class Strategy(ABC):
     name: str = "abstract"
     description: str = ""
+    # Per-trade ATR stop distance (in ATRs). ``None`` = no strategy-level stop (default,
+    # so the backtest is unchanged). Set on a subclass to floor each trade's downside;
+    # the backtest engine reads it and hands it to ``SignalSet.to_positions``.
+    stop_atr_mult: float | None = None
 
     def __init__(self, **params: object) -> None:
         self.params = params

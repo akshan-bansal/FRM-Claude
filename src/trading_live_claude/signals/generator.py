@@ -19,23 +19,60 @@ class SignalSet:
 
     df: pd.DataFrame  # must contain: close, entry, exit, optionally size_hint
 
-    def to_positions(self) -> pd.Series:
-        """Materialize a position track from entry/exit signals.
+    def to_positions(self, *, atr_stop_mult: float | None = None) -> pd.Series:
+        """Materialize a position track in ``{-1, 0, +1}`` from entry/exit signals.
 
-        BUY on entry==1 and currently flat; CLOSE on exit==1 and currently long.
-        Signals are shifted by 1 bar so we trade on the open of the *next* bar.
+        * **Long** — BUY on ``entry`` while flat, CLOSE on ``exit`` while long.
+        * **Short** (optional) — SELL on ``short_entry`` while flat, COVER on ``short_exit``
+          while short. Active only when the strategy supplies both ``short_entry`` and
+          ``short_exit`` columns; absent them the track is long-only, exactly as before.
+        * **ATR stop** (optional) — when ``atr_stop_mult`` is set and an ``atr`` column is
+          present, a position is force-closed once price moves ``atr_stop_mult x ATR-at-
+          entry`` against it. This is the per-trade downside floor the strategies' own
+          mean-reversion exits lack.
+        * A bar that fires ``entry`` and ``exit`` together while flat is a completed round
+          trip and opens no position (so a single-bar cross can't leave a stuck exit).
+
+        Signals and the ATR are shifted one bar (trade on the next bar; the stop distance is
+        known at entry, never from a future bar), so no lookahead is introduced.
         """
-        entry = self.df["entry"].shift(1).fillna(0).astype(int)
-        exit_ = self.df["exit"].shift(1).fillna(0).astype(int)
-        in_market = 0
-        out = []
-        for e, x in zip(entry.values, exit_.values, strict=False):
-            if not in_market and e == 1:
-                in_market = 1
-            elif in_market and x == 1:
-                in_market = 0
-            out.append(in_market)
-        return pd.Series(out, index=self.df.index, name="position")
+        df = self.df
+        n = len(df)
+        entry = df["entry"].shift(1).fillna(0).astype(int).to_numpy()
+        exit_ = df["exit"].shift(1).fillna(0).astype(int).to_numpy()
+        has_short = "short_entry" in df.columns and "short_exit" in df.columns
+        s_entry = df["short_entry"].shift(1).fillna(0).astype(int).to_numpy() if has_short else None
+        s_exit = df["short_exit"].shift(1).fillna(0).astype(int).to_numpy() if has_short else None
+        close = df["close"].to_numpy(dtype=float)
+        use_stop = atr_stop_mult is not None and atr_stop_mult > 0 and "atr" in df.columns
+        atr_arr = df["atr"].shift(1).fillna(0.0).to_numpy(dtype=float) if use_stop else None
+
+        pos = 0
+        entry_px = 0.0
+        entry_atr = 0.0
+        out = [0] * n
+        for i in range(n):
+            if pos == 1:
+                stopped = atr_arr is not None and entry_atr > 0.0 and close[i] <= entry_px - atr_stop_mult * entry_atr  # type: ignore[operator]
+                if exit_[i] == 1 or stopped:
+                    pos = 0
+            elif pos == -1:
+                stopped = atr_arr is not None and entry_atr > 0.0 and close[i] >= entry_px + atr_stop_mult * entry_atr  # type: ignore[operator]
+                if (s_exit is not None and s_exit[i] == 1) or stopped:
+                    pos = 0
+            if pos == 0:
+                long_sig = entry[i] == 1
+                short_sig = s_entry is not None and s_entry[i] == 1
+                if long_sig and exit_[i] == 1:
+                    pass  # entry+exit on the same bar → completed move, no trade
+                elif long_sig:
+                    pos, entry_px = 1, close[i]
+                    entry_atr = atr_arr[i] if atr_arr is not None else 0.0
+                elif short_sig and not (s_exit is not None and s_exit[i] == 1):
+                    pos, entry_px = -1, close[i]
+                    entry_atr = atr_arr[i] if atr_arr is not None else 0.0
+            out[i] = pos
+        return pd.Series(out, index=df.index, name="position")
 
 
 def candidate_strength(df: pd.DataFrame) -> pd.Series:
