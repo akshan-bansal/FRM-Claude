@@ -5,6 +5,7 @@ from .allocation import (
     risk_weighted_allocation,
 )
 from .heat import PortfolioHeat
+from .hedge import HedgePolicy, hedge_shares, hedge_weight, rebalance_delta
 from .kill_switch import KillSwitch
 from .sizing import PositionSizer, SizingResult
 from .tail import (
@@ -23,6 +24,7 @@ from .var import historical_var
 __all__ = [
     "AllocatedPosition",
     "Candidate",
+    "HedgePolicy",
     "KillSwitch",
     "PortfolioHeat",
     "PositionSizer",
@@ -32,9 +34,12 @@ __all__ = [
     "cornish_fisher_var",
     "downside_deviation",
     "expected_shortfall",
+    "hedge_shares",
+    "hedge_weight",
     "historical_var",
     "loss_probability",
     "omega_ratio",
+    "rebalance_delta",
     "risk_weighted_allocation",
     "tail_ratio",
     "ulcer_index",
