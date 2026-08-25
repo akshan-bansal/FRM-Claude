@@ -72,7 +72,10 @@ class ConfirmOverlay(Strategy):
         self.base = base
         self.patterns = tuple(patterns)
         self.lookback = lookback
-        self.stop_atr_mult = base.stop_atr_mult  # keep the base's per-trade downside floor
+        # Carry the base's opt-in exits through the wrapper (stop / trailing / time stop).
+        self.stop_atr_mult = base.stop_atr_mult
+        self.trail_atr_mult = base.trail_atr_mult
+        self.time_stop_bars = base.time_stop_bars
 
     def required_history_bars(self) -> int:
         return self.base.required_history_bars()

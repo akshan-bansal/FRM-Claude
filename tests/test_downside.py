@@ -21,18 +21,28 @@ def test_stop_is_opt_in_for_mean_reversion() -> None:
     assert s.stop_atr_mult == 2.0  # opting in is respected (engine reads this attr)
 
 
+def test_bollinger_carries_the_tested_time_stop() -> None:
+    # A 15-bar time stop tested as a clean win on bollinger, so it's on by default there.
+    assert STRATEGIES["bollinger"]().time_stop_bars == 15
+    # rsi keeps no time stop (it was mixed for rsi in the test).
+    assert STRATEGIES["rsi_meanrevert"]().time_stop_bars is None
+
+
 def test_candlestick_keeps_a_stop_as_its_only_downside_exit() -> None:
     # The fade exit only fires after a rise above the SMA, so a stop is candlestick's
     # sole floor for a trade that never recovers — kept on by design.
     assert STRATEGIES["candle_hammer"]().stop_atr_mult == 3.0
 
 
-def test_overlays_forward_an_opted_in_base_stop() -> None:
+def test_overlays_forward_base_exits() -> None:
     base = BollingerMeanRevert()
     base.stop_atr_mult = 2.5
-    assert ConfirmOverlay(base).stop_atr_mult == 2.5
-    # Registered confirm_* inherit the base default (None — opt-in).
+    base.trail_atr_mult = 3.0
+    ov = ConfirmOverlay(base)
+    assert ov.stop_atr_mult == 2.5 and ov.trail_atr_mult == 3.0
+    # Registered confirm_bollinger inherits bollinger's defaults: no ATR stop, time stop 15.
     assert STRATEGIES["confirm_bollinger"]().stop_atr_mult is None
+    assert STRATEGIES["confirm_bollinger"]().time_stop_bars == 15
 
 
 def test_candlestick_exit_needs_a_prior_close_above_the_sma(random_walk_df: pd.DataFrame) -> None:

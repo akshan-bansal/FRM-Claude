@@ -36,6 +36,18 @@ def test_vol_target_leverage_cap_and_conviction() -> None:
     assert conv.shares == 250             # 0.5 scale x 0.5 conviction = 0.25 → 250 sh
 
 
+def test_size_uses_vol_targeting_when_annual_vol_given() -> None:
+    s = PositionSizer()
+    # annual_vol path: notional = equity x (0.15/0.30) x conviction, shares = notional/entry.
+    r = s.size(equity=100_000, entry=100, atr_value=2.0, annual_vol=0.30)
+    assert r.shares == 500                       # 0.5 scale → $50k → 500 sh
+    assert r.stop == 96.0 and r.target == 108.0  # ATR stop/target still defined for the gate
+    # Conviction scales the vol-targeted count too.
+    assert s.size(equity=100_000, entry=100, atr_value=2.0, annual_vol=0.30, conviction=0.5).shares == 250
+    # Omitting annual_vol falls back to fixed-fractional (unchanged).
+    assert s.size(equity=100_000, entry=100, atr_value=2.0).shares == 250
+
+
 def test_vol_target_rejects_bad_inputs() -> None:
     s = PositionSizer()
     for bad in (dict(equity=0, price=100, annual_vol=0.2), dict(equity=1e5, price=100, annual_vol=0.0)):

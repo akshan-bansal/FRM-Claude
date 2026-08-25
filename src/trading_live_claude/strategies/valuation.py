@@ -47,6 +47,8 @@ class ValuationStrategy(Strategy):
         self.bvps = bvps
         self.atr_window = atr_window
         self.stop_atr_mult = base.stop_atr_mult
+        self.trail_atr_mult = base.trail_atr_mult
+        self.time_stop_bars = base.time_stop_bars
 
     def required_history_bars(self) -> int:
         return max(self.base.required_history_bars(), 60)
@@ -93,6 +95,8 @@ class ValuationGateOverlay(Strategy):
         self.z_window = z_window
         self.max_z = max_z
         self.stop_atr_mult = base.stop_atr_mult
+        self.trail_atr_mult = base.trail_atr_mult
+        self.time_stop_bars = base.time_stop_bars
 
     def required_history_bars(self) -> int:
         return max(self.base.required_history_bars(), self.z_window + 5)

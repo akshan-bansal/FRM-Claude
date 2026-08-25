@@ -11,6 +11,9 @@ class BollingerMeanRevert(Strategy):
 
     name = "bollinger"
     description = "Mean-revert at 2 sigma Bollinger bands"
+    # A 15-bar time stop tested as a clean win (better score, drawdown, and return): a
+    # dip that hasn't reverted in 15 bars is a stale thesis. Fixed ATR stops hurt here.
+    time_stop_bars: int | None = 15
 
     def __init__(self, window: int = 20, n_std: float = 2.0, atr_window: int = 14) -> None:
         super().__init__(window=window, n_std=n_std, atr_window=atr_window)

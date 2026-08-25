@@ -15,6 +15,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import pandas as pd
+
 from ..brokers.base import Broker
 from ..brokers.models import OrderAction
 from ..data.market import MarketData
@@ -111,7 +113,16 @@ class LiveMonitor:
             holds = open_positions.get(symbol, 0.0) > 0
 
             if entry and not holds:
-                sized = self.sizer.size(equity=equity, entry=price, atr_value=atr_value, side="long")
+                # Volatility targeting (annualized daily vol) + conviction from the strategy's
+                # graded signal_strength; the ATR still defines the protective stop.
+                rets = df["close"].pct_change().dropna()
+                annual_vol = float(rets.tail(63).std(ddof=0) * (252.0 ** 0.5)) if len(rets) >= 20 else None
+                ss = last.get("signal_strength", 1.0)
+                conviction = 1.0 if (ss is None or pd.isna(ss)) else float(ss)
+                sized = self.sizer.size(
+                    equity=equity, entry=price, atr_value=atr_value, side="long",
+                    annual_vol=annual_vol, conviction=conviction,
+                )
                 if sized.shares > 0:
                     intent = OrderIntent(
                         symbol=symbol,

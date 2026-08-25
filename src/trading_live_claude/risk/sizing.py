@@ -27,6 +27,11 @@ def _clip01(x: float) -> float:
     return min(max(x, 0.0), 1.0)
 
 
+def _vol_scale(annual_vol: float, target_vol: float, conviction: float, max_leverage: float) -> float:
+    """Volatility-target exposure fraction: target_vol / annual_vol, conviction-scaled, capped."""
+    return min((target_vol / annual_vol) * _clip01(conviction), max_leverage)
+
+
 class PositionSizer:
     """Compute share quantity given equity, ATR, and risk % per trade.
 
@@ -51,9 +56,21 @@ class PositionSizer:
         atr_value: float,
         side: str = "long",
         conviction: float = 1.0,
+        annual_vol: float | None = None,
+        target_vol: float = 0.15,
+        max_leverage: float = 1.0,
     ) -> SizingResult:
-        """ATR fixed-fractional size. ``conviction`` in [0, 1] scales the risk budget, so a
-        strategy's graded ``signal_strength`` sizes weak setups smaller than strong ones."""
+        """Position size with the ATR stop/target always defined for the risk gate.
+
+        The **share count** follows one of two philosophies:
+          * ``annual_vol`` given -> **volatility targeting**: notional = equity x
+            (target_vol / annual_vol), conviction-scaled and leverage-capped, so every
+            position contributes roughly equal risk regardless of the name's volatility.
+          * ``annual_vol`` omitted -> **ATR fixed-fractional**: risk ``risk_pct`` of equity
+            to the stop.
+        ``conviction`` in [0, 1] scales either path, so a strategy's graded
+        ``signal_strength`` sizes weak setups smaller than strong ones.
+        """
         if equity <= 0 or entry <= 0 or atr_value <= 0:
             raise ValueError("equity, entry, atr_value must be positive")
 
@@ -65,8 +82,10 @@ class PositionSizer:
             stop = entry + stop_distance
             target = entry - self.target_r * stop_distance
 
-        dollar_risk = equity * self.risk_pct * _clip01(conviction)
-        shares = max(math.floor(dollar_risk / stop_distance), 0)
+        if annual_vol is not None and annual_vol > 0:
+            shares = max(math.floor(equity * _vol_scale(annual_vol, target_vol, conviction, max_leverage) / entry), 0)
+        else:
+            shares = max(math.floor(equity * self.risk_pct * _clip01(conviction) / stop_distance), 0)
         return SizingResult(
             shares=shares,
             entry=entry,
@@ -94,7 +113,7 @@ class PositionSizer:
         is the name's annualized return volatility (e.g. daily std x sqrt(252))."""
         if equity <= 0 or price <= 0 or annual_vol <= 0:
             raise ValueError("equity, price, annual_vol must be positive")
-        vol_scale = min((target_vol / annual_vol) * _clip01(conviction), max_leverage)
+        vol_scale = _vol_scale(annual_vol, target_vol, conviction, max_leverage)
         notional = equity * vol_scale
         shares = max(math.floor(notional / price), 0)
         return VolTargetResult(shares=shares, notional=shares * price, vol_scale=vol_scale, conviction=_clip01(conviction))
