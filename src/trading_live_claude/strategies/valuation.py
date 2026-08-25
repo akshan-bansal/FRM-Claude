@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from ..data.fundamentals import FundamentalsStore
 from ..signals.indicators import atr
 from ..signals.valuation import VALUATION_METRICS, BvpsSource, rolling_zscore, valuation_series
 from .base import Strategy, StrategyContext
@@ -37,7 +38,12 @@ class ValuationStrategy(Strategy):
     description = "Mean-reversion base run on an equity-valuation ratio (P/B by default)"
 
     def __init__(
-        self, base: Strategy, metric: str = "price_to_book", bvps: BvpsSource = None, atr_window: int = 14
+        self,
+        base: Strategy,
+        metric: str = "price_to_book",
+        bvps: BvpsSource = None,
+        atr_window: int = 14,
+        store: FundamentalsStore | None = None,
     ) -> None:
         super().__init__(base=base.name, metric=metric)
         if metric not in VALUATION_METRICS:
@@ -46,6 +52,7 @@ class ValuationStrategy(Strategy):
         self.metric = metric
         self.bvps = bvps
         self.atr_window = atr_window
+        self.store = store
         self.stop_atr_mult = base.stop_atr_mult
         self.trail_atr_mult = base.trail_atr_mult
         self.time_stop_bars = base.time_stop_bars
@@ -53,8 +60,19 @@ class ValuationStrategy(Strategy):
     def required_history_bars(self) -> int:
         return max(self.base.required_history_bars(), 60)
 
+    def _bvps(self, df: pd.DataFrame, ctx: StrategyContext) -> BvpsSource:
+        """Explicit bvps if given, else the fundamentals store keyed by symbol, else None
+        (which collapses to the price level — see signals.valuation.DEFAULT_BVPS)."""
+        if self.bvps is not None:
+            return self.bvps
+        if self.store is not None:
+            series = self.store.bvps_series(df, ctx.symbol)
+            if series is not None:
+                return series
+        return None
+
     def generate_signals(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
-        ratio = valuation_series(df, self.metric, self.bvps)
+        ratio = valuation_series(df, self.metric, self._bvps(df, ctx))
         # Feed the ratio to the base as if it were the price series.
         vdf = df.copy()
         for col in ("open", "high", "low", "close"):
@@ -85,6 +103,7 @@ class ValuationGateOverlay(Strategy):
         bvps: BvpsSource = None,
         z_window: int = 63,
         max_z: float = 0.0,
+        store: FundamentalsStore | None = None,
     ) -> None:
         super().__init__(base=base.name, metric=metric, z_window=z_window, max_z=max_z)
         if metric not in VALUATION_METRICS:
@@ -94,6 +113,7 @@ class ValuationGateOverlay(Strategy):
         self.bvps = bvps
         self.z_window = z_window
         self.max_z = max_z
+        self.store = store
         self.stop_atr_mult = base.stop_atr_mult
         self.trail_atr_mult = base.trail_atr_mult
         self.time_stop_bars = base.time_stop_bars
@@ -101,9 +121,18 @@ class ValuationGateOverlay(Strategy):
     def required_history_bars(self) -> int:
         return max(self.base.required_history_bars(), self.z_window + 5)
 
+    def _bvps(self, df: pd.DataFrame, ctx: StrategyContext) -> BvpsSource:
+        if self.bvps is not None:
+            return self.bvps
+        if self.store is not None:
+            series = self.store.bvps_series(df, ctx.symbol)
+            if series is not None:
+                return series
+        return None
+
     def generate_signals(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
         out = self.base.generate_signals(df, ctx).copy()
-        ratio = valuation_series(df, self.metric, self.bvps)
+        ratio = valuation_series(df, self.metric, self._bvps(df, ctx))
         z = rolling_zscore(ratio, self.z_window)
         # Cheap = below the trailing mean on P/B (low), or above it on B/M (high).
         cheap = (z <= self.max_z) if self.metric == "price_to_book" else (z >= -self.max_z)
@@ -131,13 +160,18 @@ def valuation_composite(
 
 # --- ready-made, zero-arg registrations (robust params baked in; P/B by default) --- #
 
+# Default fundamentals store: the registered val_* read book values from
+# data/fundamentals/{SYMBOL}.csv per traded symbol, falling back to the price level for any
+# name without a file. Drop quarterly book-value-per-share files there to light them up.
+_FUNDAMENTALS = FundamentalsStore()
+
 
 class _ValBollinger(ValuationStrategy):
     name = "val_bollinger"
     description = "Bollinger mean-reversion run on price-to-book (buy when cheap)"
 
     def __init__(self) -> None:
-        super().__init__(base=BollingerMeanRevert(window=30, n_std=3.0), metric="price_to_book")
+        super().__init__(base=BollingerMeanRevert(window=30, n_std=3.0), metric="price_to_book", store=_FUNDAMENTALS)
 
 
 class _ValRsi(ValuationStrategy):
@@ -145,7 +179,7 @@ class _ValRsi(ValuationStrategy):
     description = "RSI mean-reversion run on price-to-book (buy when cheap)"
 
     def __init__(self) -> None:
-        super().__init__(base=RsiMeanRevert(window=14, oversold=35.0), metric="price_to_book")
+        super().__init__(base=RsiMeanRevert(window=14, oversold=35.0), metric="price_to_book", store=_FUNDAMENTALS)
 
 
 class _ValGateBollinger(ValuationGateOverlay):
@@ -153,7 +187,7 @@ class _ValGateBollinger(ValuationGateOverlay):
     description = "Price Bollinger entries confirmed only when P/B is cheap"
 
     def __init__(self) -> None:
-        super().__init__(base=BollingerMeanRevert(window=30, n_std=3.0), metric="price_to_book")
+        super().__init__(base=BollingerMeanRevert(window=30, n_std=3.0), metric="price_to_book", store=_FUNDAMENTALS)
 
 
 class _ValComposite(CompositeStrategy):
@@ -164,7 +198,7 @@ class _ValComposite(CompositeStrategy):
         super().__init__(
             members=[
                 BollingerMeanRevert(window=30, n_std=3.0),
-                ValuationStrategy(BollingerMeanRevert(window=30, n_std=3.0), metric="price_to_book"),
+                ValuationStrategy(BollingerMeanRevert(window=30, n_std=3.0), metric="price_to_book", store=_FUNDAMENTALS),
             ]
         )
 
