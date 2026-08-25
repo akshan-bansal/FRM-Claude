@@ -4,7 +4,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from trading_live_claude.config.settings import Settings
 from trading_live_claude.risk.risk_model import per_trade_risk, portfolio_risk
+
+
+def test_shipped_defaults_are_tail_and_correlation_aware() -> None:
+    s = Settings()
+    assert s.risk_model == "cvar"        # tail-aware per-trade risk
+    assert s.heat_aggregation == "corr"  # covariance-aware heat
 
 
 def _rets(n: int = 120, seed: int = 0, scale: float = 0.02) -> pd.Series:

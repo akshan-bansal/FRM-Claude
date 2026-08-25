@@ -55,8 +55,8 @@ class LiveMonitor:
         account_currency: str = "CAD",
         emit_on_change_only: bool = True,
         strategy_map: dict[str, Strategy] | None = None,
-        risk_model: str = "atr",
-        heat_aggregation: str = "sum",
+        risk_model: str = "cvar",
+        heat_aggregation: str = "corr",
     ) -> None:
         self.broker = broker
         self.market = market
@@ -69,7 +69,8 @@ class LiveMonitor:
         self.account_number = account_number
         self.symbols = symbols
         # How the heat gate estimates risk: per-trade model (atr/var/cvar) and aggregation
-        # (sum/corr). Defaults reproduce the original ATR-stop, correlation-blind behaviour.
+        # (sum/corr). Default is tail-aware (CVaR) + covariance-aware (corr); set to
+        # atr/sum for the original ATR-stop, correlation-blind behaviour.
         self.risk_model: RiskModel = cast(RiskModel, risk_model)
         self.heat_aggregation: HeatAggregation = cast(HeatAggregation, heat_aggregation)
         self.interval_seconds = max(int(interval_seconds), 5)
