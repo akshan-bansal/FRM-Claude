@@ -35,4 +35,6 @@ class RsiMeanRevert(Strategy):
         out["entry"] = ((prev <= self.oversold) & (out["rsi"] > self.oversold)).astype(int)
         out["exit"] = ((prev <= self.neutral) & (out["rsi"] > self.neutral)).astype(int)
         out["size_hint"] = 1.0
+        # Graded conviction: how far below the neutral line RSI sits (more oversold = stronger).
+        out["signal_strength"] = ((self.neutral - out["rsi"]) / self.neutral).clip(0.0, 1.0).fillna(0.0)
         return out

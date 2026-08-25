@@ -31,4 +31,7 @@ class BollingerMeanRevert(Strategy):
         out["entry"] = ((prev_close < out["bb_lower"].shift(1)) & (out["close"] >= out["bb_lower"])).astype(int)
         out["exit"] = (out["close"] >= out["bb_mid"]).astype(int)
         out["size_hint"] = 1.0
+        # Graded conviction: depth of the dip, mid->lower band mapped to [0, 1].
+        span = (out["bb_mid"] - out["bb_lower"]).replace(0.0, pd.NA)
+        out["signal_strength"] = ((out["bb_mid"] - out["close"]) / span).clip(0.0, 1.0).fillna(0.0)
         return out

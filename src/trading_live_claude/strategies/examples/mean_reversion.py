@@ -80,7 +80,8 @@ class ZScoreOU(Strategy):
         out = df.copy()
         z = zscore(out["close"], self.window)
         out["atr"] = atr(out, self.atr_window)
-        out["entry"] = (z < -self.entry_z).astype(int)
+        # Confirmed reversal: z crosses back UP through -entry_z (was stretched, now turning).
+        out["entry"] = ((z.shift(1) < -self.entry_z) & (z >= -self.entry_z)).astype(int)
         out["exit"] = (z > self.exit_z).astype(int)
         out["signal_strength"] = (-z / (self.entry_z * 1.5)).clip(0.0, 1.0).fillna(0.0)
         return out
@@ -116,7 +117,11 @@ class BbRsiCombo(Strategy):
         out = pd.concat([out, b], axis=1)
         r = rsi(out["close"], self.rsi_window)
         out["atr"] = atr(out, self.atr_window)
-        out["entry"] = ((out["close"] < out["bb_lower"]) & (r < self.rsi_th)).astype(int)
+        # Confirmed reversal: close crosses back above the lower band with RSI still oversold.
+        prev_close = out["close"].shift(1)
+        out["entry"] = (
+            (prev_close < out["bb_lower"].shift(1)) & (out["close"] >= out["bb_lower"]) & (r < self.rsi_th)
+        ).astype(int)
         out["exit"] = (out["close"] > out["bb_mid"]).astype(int)
         band = (out["bb_upper"] - out["bb_lower"]).replace(0, pd.NA)
         depth = ((out["bb_lower"] - out["close"]) / band).clip(0.0, 1.0)

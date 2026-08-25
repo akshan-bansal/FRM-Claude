@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ...signals.indicators import atr
+from ...signals.indicators import atr, sma
 from ..base import Strategy, StrategyContext
+
+# Entries are gated on price above this trailing SMA, so a seasonal window never buys
+# into a downtrend (e.g. the first of the month in the middle of a crash).
+TREND_WINDOW = 100
 
 
 def _times(out: pd.DataFrame) -> pd.Series:
@@ -35,7 +39,7 @@ class TurnOfMonth(Strategy):
         self.atr_window = atr_window
 
     def required_history_bars(self) -> int:
-        return 60
+        return max(120, TREND_WINDOW + 20)
 
     def generate_signals(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
         out = df.copy()
@@ -45,7 +49,8 @@ class TurnOfMonth(Strategy):
         in_win = (dom >= (dim - self.pre + 1)) | (dom <= self.post)
         out["atr"] = atr(out, self.atr_window)
         prev = in_win.shift(1, fill_value=False)
-        out["entry"] = (in_win & ~prev).astype(int)
+        trend_ok = out["close"] > sma(out["close"], TREND_WINDOW)
+        out["entry"] = (in_win & ~prev & trend_ok).astype(int)
         out["exit"] = (~in_win & prev).astype(int)
         out["signal_strength"] = in_win.astype(float)
         return out
@@ -64,13 +69,14 @@ class DayOfWeek(Strategy):
         self.atr_window = atr_window
 
     def required_history_bars(self) -> int:
-        return 60
+        return max(120, TREND_WINDOW + 20)
 
     def generate_signals(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
         out = df.copy()
         dow = _times(out).dt.dayofweek
         out["atr"] = atr(out, self.atr_window)
-        out["entry"] = (dow == self.entry_dow).astype(int)
+        trend_ok = out["close"] > sma(out["close"], TREND_WINDOW)
+        out["entry"] = ((dow == self.entry_dow) & trend_ok).astype(int)
         out["exit"] = (dow == self.exit_dow).astype(int)
         out["signal_strength"] = (dow == self.entry_dow).astype(float)
         return out
@@ -92,7 +98,7 @@ class MonthOfYear(Strategy):
         self.atr_window = atr_window
 
     def required_history_bars(self) -> int:
-        return 60
+        return max(120, TREND_WINDOW + 20)
 
     def generate_signals(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
         out = df.copy()
@@ -100,7 +106,8 @@ class MonthOfYear(Strategy):
         favorable = month.isin(self.months)
         out["atr"] = atr(out, self.atr_window)
         prev = favorable.shift(1, fill_value=False)
-        out["entry"] = (favorable & ~prev).astype(int)
+        trend_ok = out["close"] > sma(out["close"], TREND_WINDOW)
+        out["entry"] = (favorable & ~prev & trend_ok).astype(int)
         out["exit"] = (~favorable & prev).astype(int)
         out["signal_strength"] = favorable.astype(float)
         return out
