@@ -32,14 +32,29 @@ def test_unknown_objective_lists_options() -> None:
     assert "precision" in str(ei.value)
 
 
-def test_sharpe_over_dd_matches_legacy_formula() -> None:
-    x = _inp(sharpe=2.0, max_drawdown=-0.2)
-    assert get_objective("sharpe_over_dd")(x) == pytest.approx(2.0 / 0.2)
+def test_sharpe_over_dd_floors_dd_and_shrinks_by_trades() -> None:
+    x = _inp(sharpe=2.0, max_drawdown=-0.2, num_trades=30)
+    assert get_objective("sharpe_over_dd")(x) == pytest.approx((2.0 / 0.2) * (30 / 40))
 
 
 def test_sortino_over_dd_uses_downside_ratio() -> None:
-    x = _inp(sortino=3.0, sharpe=1.0, max_drawdown=-0.2)
-    assert get_objective("sortino_over_dd")(x) == pytest.approx(3.0 / 0.2)
+    x = _inp(sortino=3.0, sharpe=1.0, max_drawdown=-0.2, num_trades=30)
+    assert get_objective("sortino_over_dd")(x) == pytest.approx((3.0 / 0.2) * (30 / 40))
+
+
+def test_ratio_objectives_floor_tiny_drawdown_and_shrink_few_trades() -> None:
+    fluke = _inp(sortino=3.0, max_drawdown=-0.0005, num_trades=2)
+    # Drawdown floored at 0.02 (not 0.0005) and shrunk by 2/12.
+    assert get_objective("sortino_over_dd")(fluke) == pytest.approx((3.0 / 0.02) * (2 / 12))
+    # The floor+shrink collapse the fluke: legacy 3.0/0.0005 = 6000, now ~25.
+    assert get_objective("sortino_over_dd")(fluke) < 30.0
+    # Same ratio, more trades → strictly higher (shrink is monotone in trade count).
+    a = _inp(sortino=2.0, max_drawdown=-0.1, num_trades=8)
+    b = _inp(sortino=2.0, max_drawdown=-0.1, num_trades=40)
+    assert get_objective("sortino_over_dd")(b) > get_objective("sortino_over_dd")(a)
+    # num_trades == 0 is treated as unknown (no shrink), so callers without a trade
+    # count aren't zeroed; the floored ratio comes through unscaled.
+    assert get_objective("sortino_over_dd")(_inp(sortino=2.0, max_drawdown=-0.1, num_trades=0)) == pytest.approx(20.0)
 
 
 def test_classification_objectives_penalize_unmeasured_runs() -> None:

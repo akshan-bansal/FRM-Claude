@@ -14,7 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
 from ..signals.generator import SignalSet
@@ -91,8 +90,6 @@ class BacktestEngine:
         position = SignalSet(signals).to_positions()
 
         slip = self.slippage_bps / 10_000.0
-        entries_at = signals["close"].shift(-1).where(signals["entry"].astype(bool))
-        # ^ trade on next bar's close (vectorized proxy for "next bar open")
         bar_ret = signals["close"].pct_change().fillna(0.0)
         # apply slippage: cost on transition bars
         transition = position.diff().abs().fillna(0)

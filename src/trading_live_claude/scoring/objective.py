@@ -120,21 +120,46 @@ class ObjectiveAdapter:
 # --------------------------------------------------------------------------- #
 
 
+# Guards shared by the risk-adjusted ratio objectives. Two failure modes they close:
+#   * a near-zero max drawdown made the ratio explode (a 2-trade fluke with a 0.1%
+#     drawdown outscoring a real strategy) — so |drawdown| is floored at ``DD_FLOOR``;
+#   * a handful of lucky trades produced a huge ratio on no statistical basis — so the
+#     score is shrunk toward zero by ``n / (n + TRADE_SHRINK_K)``, which is ~0.09 at
+#     1 trade, ~0.5 at 10, ~0.75 at 30, approaching 1 only with a real sample.
+DD_FLOOR: float = 0.02
+TRADE_SHRINK_K: float = 10.0
+
+
+def _trade_shrink(num_trades: int) -> float:
+    """Low-sample shrinkage factor in [0, 1): ``n / (n + TRADE_SHRINK_K)``.
+
+    ``num_trades == 0`` is treated as *unknown* (factor 1.0, no shrink) so callers that
+    don't supply a trade count — QC-library ranking, matrix cells — are not zeroed; a
+    genuinely tradeless backtest already scores ~0 through its zero Sortino/Sharpe.
+    """
+    n = int(num_trades)
+    if n <= 0:
+        return 1.0
+    return n / (n + TRADE_SHRINK_K)
+
+
 def sharpe_over_dd(x: ObjectiveInput) -> float:
-    """P&L objective: Sharpe / |max drawdown|, drawdown floored to avoid /0."""
-    dd = abs(x.max_drawdown) if x.max_drawdown else 0.0
-    return x.sharpe / max(dd, 1e-4)
+    """P&L objective: Sharpe / |max drawdown|, drawdown-floored and trade-count-shrunk."""
+    dd = max(abs(x.max_drawdown), DD_FLOOR)
+    return (x.sharpe / dd) * _trade_shrink(x.num_trades)
 
 
 def sortino_over_dd(x: ObjectiveInput) -> float:
     """P&L objective using Sortino (downside-only risk) / |max drawdown|.
 
     Sortino replaces Sharpe's total volatility with downside deviation, so a strategy
-    is not penalized for upside variance — the default tuning objective.
+    is not penalized for upside variance — the default tuning objective. The drawdown is
+    floored at ``DD_FLOOR`` and the ratio is shrunk by ``_trade_shrink`` so a tiny
+    drawdown or a few lucky trades cannot dominate the ranking.
     """
-    dd = abs(x.max_drawdown) if x.max_drawdown else 0.0
+    dd = max(abs(x.max_drawdown), DD_FLOOR)
     sortino = x.sortino if x.sortino is not None else 0.0
-    return sortino / max(dd, 1e-4)
+    return (sortino / dd) * _trade_shrink(x.num_trades)
 
 
 def precision_objective(x: ObjectiveInput) -> float:
