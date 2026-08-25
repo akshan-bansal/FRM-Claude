@@ -32,10 +32,15 @@ class StrategyContext:
 class Strategy(ABC):
     name: str = "abstract"
     description: str = ""
-    # Per-trade ATR stop distance (in ATRs). ``None`` = no strategy-level stop (default,
-    # so the backtest is unchanged). Set on a subclass to floor each trade's downside;
-    # the backtest engine reads it and hands it to ``SignalSet.to_positions``.
+    # Opt-in per-trade exits, all ``None`` by default so the backtest is unchanged. The
+    # engine reads these and hands them to ``SignalSet.to_positions``:
+    #   stop_atr_mult  — fixed stop at entry -/+ N*ATR (best for trending assets)
+    #   trail_atr_mult — Chandelier trailing stop N*ATR from the best close (lets winners run)
+    #   time_stop_bars — force-close after N bars (best for mean-reversion; avoids bailing on
+    #                    a dip that was about to revert)
     stop_atr_mult: float | None = None
+    trail_atr_mult: float | None = None
+    time_stop_bars: int | None = None
 
     def __init__(self, **params: object) -> None:
         self.params = params

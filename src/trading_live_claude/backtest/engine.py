@@ -87,7 +87,11 @@ class BacktestEngine:
             raise ValueError("DataFrame must contain a 'close' column.")
         ctx = StrategyContext(symbol=symbol, timeframe=timeframe)
         signals = strategy.generate_signals(df, ctx)
-        position = SignalSet(signals).to_positions(atr_stop_mult=strategy.stop_atr_mult)
+        position = SignalSet(signals).to_positions(
+            atr_stop_mult=strategy.stop_atr_mult,
+            trail_atr_mult=strategy.trail_atr_mult,
+            time_stop_bars=strategy.time_stop_bars,
+        )
 
         slip = self.slippage_bps / 10_000.0
         bar_ret = signals["close"].pct_change().fillna(0.0)

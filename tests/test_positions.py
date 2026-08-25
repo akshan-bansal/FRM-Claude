@@ -41,6 +41,25 @@ def test_atr_stop_force_closes_a_losing_long() -> None:
     assert SignalSet(f).to_positions().tolist()[2] == 1
 
 
+def test_time_stop_closes_after_n_bars() -> None:
+    # A long that never exits by signal is force-closed 5 bars after entry.
+    f = _frame([100] * 8, [1, 0, 0, 0, 0, 0, 0, 0], [0] * 8, atr=[5] * 8)
+    assert SignalSet(f).to_positions(time_stop_bars=5).tolist() == [0, 1, 1, 1, 1, 1, 0, 0]
+
+
+def test_trailing_stop_ratchets_up_and_exits_on_pullback() -> None:
+    # Peak reaches 120; a 2xATR (=10) retrace to 110 hasn't triggered, but 100 does.
+    f = _frame([100, 100, 110, 120, 115, 100, 100], [1, 0, 0, 0, 0, 0, 0], [0] * 7, atr=[5] * 7)
+    pos = SignalSet(f).to_positions(trail_atr_mult=2.0).tolist()
+    assert pos[4] == 1 and pos[5] == 0
+
+
+def test_trailing_stop_lets_a_monotonic_winner_run() -> None:
+    f = _frame([100, 100, 110, 120, 130, 140, 150], [1, 0, 0, 0, 0, 0, 0], [0] * 7, atr=[5] * 7)
+    pos = SignalSet(f).to_positions(trail_atr_mult=2.0).tolist()
+    assert all(p == 1 for p in pos[1:])  # a pure uptrend never trips the trailing stop
+
+
 def test_short_channel_opens_and_covers() -> None:
     f = _frame([100] * 4, [0] * 4, [0] * 4, short_entry=[1, 0, 0, 0], short_exit=[0, 0, 1, 0])
     assert SignalSet(f).to_positions().tolist() == [0, -1, -1, 0]
