@@ -18,6 +18,13 @@ account_currency: CAD
 # === Risk gates (apply to every order, all modes) ===
 risk_pct_per_trade: 0.01            # 1% account risk per trade
 portfolio_heat_cap: 0.05            # 5% aggregate open-risk cap
+risk_model: atr                     # how the heat gate estimates per-trade risk:
+                                    #   atr  = ATR-stop loss (default)
+                                    #   var  = 95% Value-at-Risk of the name's returns
+                                    #   cvar = Expected Shortfall (fat left tail)
+heat_aggregation: sum               # how open positions combine for the heat gate:
+                                    #   sum  = naive total, correlation-blind (default)
+                                    #   corr = covariance-aware, credits diversification
 daily_loss_limit_pct: 0.03          # -3% halts new entries today
 max_drawdown_kill_switch: 0.08      # -8% trips kill-switch automatically
 max_open_positions: 3

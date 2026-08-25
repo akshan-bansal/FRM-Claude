@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 
 import pandas as pd
 
@@ -22,6 +23,7 @@ from ..brokers.models import OrderAction
 from ..data.market import MarketData
 from ..execution.router import OrderIntent, Router
 from ..logging_setup import get_logger
+from ..risk.risk_model import HeatAggregation, RiskModel, per_trade_risk, portfolio_risk
 from ..risk.sizing import PositionSizer
 from ..strategies.base import Strategy, StrategyContext
 
@@ -53,6 +55,8 @@ class LiveMonitor:
         account_currency: str = "CAD",
         emit_on_change_only: bool = True,
         strategy_map: dict[str, Strategy] | None = None,
+        risk_model: str = "atr",
+        heat_aggregation: str = "sum",
     ) -> None:
         self.broker = broker
         self.market = market
@@ -64,6 +68,10 @@ class LiveMonitor:
         self.router = router
         self.account_number = account_number
         self.symbols = symbols
+        # How the heat gate estimates risk: per-trade model (atr/var/cvar) and aggregation
+        # (sum/corr). Defaults reproduce the original ATR-stop, correlation-blind behaviour.
+        self.risk_model: RiskModel = cast(RiskModel, risk_model)
+        self.heat_aggregation: HeatAggregation = cast(HeatAggregation, heat_aggregation)
         self.interval_seconds = max(int(interval_seconds), 5)
         self.on_event = on_event or (lambda _: None)
         self.account_currency = account_currency
@@ -86,12 +94,23 @@ class LiveMonitor:
         events: list[MonitorEvent] = []
         equity = self.broker.equity(self.account_number, currency=self.account_currency)
         open_positions = self._open_positions()
-        # rough existing risk: sum of |qty * 2% of price| (lacking real stops post-hoc)
-        existing_risk = 0.0
+        # Per-position risk (ATR-stop proxy by default, or a VaR/CVaR tail estimate of the
+        # name's returns), then aggregated for the heat gate — a naive sum by default or a
+        # covariance-aware combine that credits diversification.
+        pos_risk: dict[str, float] = {}
+        pos_rets: dict[str, pd.Series | None] = {}
         for sym, qty in open_positions.items():
             q = self.broker.quote(sym)
             px = q.mid or q.lastTradePrice or 0.0
-            existing_risk += abs(qty) * px * 0.02
+            rets: pd.Series | None = None
+            if self.risk_model != "atr" or self.heat_aggregation == "corr":
+                try:
+                    rets = self.market.recent(sym, bars=90, interval="1d")["close"].pct_change()
+                except Exception:
+                    rets = None
+            pos_rets[sym] = rets
+            pos_risk[sym] = per_trade_risk(qty, px, stop_distance=px * 0.02, returns=rets, model=self.risk_model)
+        existing_risk = portfolio_risk(pos_risk, pos_rets, method=self.heat_aggregation)
 
         for symbol in self.symbols:
             strat = self._strategy_for(symbol)
@@ -124,6 +143,11 @@ class LiveMonitor:
                     annual_vol=annual_vol, conviction=conviction,
                 )
                 if sized.shares > 0:
+                    entry_rets = df["close"].pct_change() if self.risk_model != "atr" else None
+                    risk_dollars = per_trade_risk(
+                        sized.shares, price, stop_distance=abs(price - sized.stop),
+                        returns=entry_rets, model=self.risk_model,
+                    )
                     intent = OrderIntent(
                         symbol=symbol,
                         action=OrderAction.BUY,
@@ -132,7 +156,7 @@ class LiveMonitor:
                         stop=sized.stop,
                         target=sized.target,
                         strategy=strat.name,
-                        risk_dollars=sized.dollar_risk,
+                        risk_dollars=risk_dollars,
                         account_number=self.account_number,
                     )
                     self.router.submit(

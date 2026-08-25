@@ -269,6 +269,8 @@ def signal(
         interval_seconds=interval,
         on_event=_emit,
         account_currency=settings.account_currency,
+        risk_model=settings.risk_model,
+        heat_aggregation=settings.heat_aggregation,
         strategy_map=smap,
     )
     monitor.run_forever(max_iterations=iterations or None)
@@ -309,6 +311,8 @@ def paper(
         symbols=[s.strip().upper() for s in symbols.split(",") if s.strip()],
         interval_seconds=interval,
         account_currency=settings.account_currency,
+        risk_model=settings.risk_model,
+        heat_aggregation=settings.heat_aggregation,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
@@ -366,6 +370,8 @@ def live(
         symbols=[s.strip().upper() for s in symbols.split(",") if s.strip()],
         interval_seconds=interval,
         account_currency=settings.account_currency,
+        risk_model=settings.risk_model,
+        heat_aggregation=settings.heat_aggregation,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
@@ -1261,6 +1267,8 @@ def autonomous_run() -> None:
         interval_seconds=settings.autonomous_interval_seconds,
         on_event=_emit,
         account_currency=settings.account_currency,
+        risk_model=settings.risk_model,
+        heat_aggregation=settings.heat_aggregation,
     )
     log.info(
         "autonomous.loop.start",

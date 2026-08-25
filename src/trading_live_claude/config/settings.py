@@ -59,6 +59,11 @@ class Settings(BaseSettings):
 
     risk_pct_per_trade: float = Field(default=0.01, ge=0.0001, le=0.05)
     portfolio_heat_cap: float = Field(default=0.05, ge=0.001, le=1.0)
+    # Risk estimate the heat gate budgets on. risk_model: "atr" (ATR-stop loss, default) |
+    # "var" | "cvar" (tail measures of the name's returns). heat_aggregation: "sum"
+    # (correlation-blind total, default) | "corr" (covariance-aware, credits diversification).
+    risk_model: str = Field(default="atr", pattern="^(atr|var|cvar)$")
+    heat_aggregation: str = Field(default="sum", pattern="^(sum|corr)$")
     daily_loss_limit_pct: float = Field(default=0.03, ge=0.001, le=0.2)
     max_drawdown_kill_switch: float = Field(default=0.10, ge=0.01, le=0.5)
     max_open_positions: int = Field(default=5, ge=1, le=50)
@@ -116,6 +121,8 @@ _TRADING_KNOB_FIELDS: tuple[str, ...] = (
     "questrade_account_number",
     "risk_pct_per_trade",
     "portfolio_heat_cap",
+    "risk_model",
+    "heat_aggregation",
     "daily_loss_limit_pct",
     "max_drawdown_kill_switch",
     "max_open_positions",
