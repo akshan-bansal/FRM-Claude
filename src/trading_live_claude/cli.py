@@ -296,6 +296,28 @@ def signal(
     monitor.run_forever(max_iterations=iterations or None)
 
 
+@app.command(name="fundamentals-fetch")
+def fundamentals_fetch(
+    ticker: str = typer.Option(..., help="EDGAR ticker (e.g. AAPL, or RY for a cross-listed CA name)"),
+    symbol: str = typer.Option(..., help="Store key = the traded symbol (e.g. AAPL, RY.TO)"),
+    user_agent: str = typer.Option("", help="SEC User-Agent with a contact; else the EDGAR_USER_AGENT env var"),
+) -> None:
+    """Pull quarterly book value per share from SEC EDGAR into data/fundamentals/{symbol}.csv,
+    lighting up that symbol's val_* strategies. US filers and SEC-cross-listed CA names only."""
+    from .data.fundamentals import FundamentalsStore
+    from .data.fundamentals_edgar import fetch_to_store
+
+    store = FundamentalsStore()
+    n = fetch_to_store(ticker, symbol, store, user_agent=user_agent or None)
+    if n:
+        console.print(f"[green]wrote {n} quarterly book-value rows[/green] to {store.path_for(symbol)}")
+    else:
+        console.print(
+            f"[yellow]no EDGAR data for {ticker!r}[/yellow] "
+            "(US / SEC-cross-listed only; drop a CSV into data/fundamentals/ by hand otherwise)"
+        )
+
+
 @app.command()
 def paper(
     strategy: str = typer.Option(..., help="Strategy key"),
