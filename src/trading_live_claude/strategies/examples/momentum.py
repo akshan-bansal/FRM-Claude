@@ -49,12 +49,13 @@ class DualMa(Strategy):
     name = "dual_ma"
     description = "Fast/slow SMA trend crossover"
 
-    def __init__(self, fast: int = 50, slow: int = 200, scale: float = 0.1, band: float = 0.01, atr_window: int = 14) -> None:
-        super().__init__(fast=fast, slow=slow, scale=scale, band=band, atr_window=atr_window)
+    def __init__(self, fast: int = 50, slow: int = 200, scale: float = 0.1, band: float = 0.01, allow_short: bool = True, atr_window: int = 14) -> None:
+        super().__init__(fast=fast, slow=slow, scale=scale, band=band, allow_short=allow_short, atr_window=atr_window)
         self.fast = fast
         self.slow = slow
         self.scale = scale
         self.band = band
+        self.allow_short = allow_short
         self.atr_window = atr_window
 
     def required_history_bars(self) -> int:
@@ -67,8 +68,13 @@ class DualMa(Strategy):
         out["atr"] = atr(out, self.atr_window)
         # Hysteresis band: enter above slow*(1+band), exit below slow*(1-band) — the dead
         # zone between them stops fast~slow chop from whipsawing in and out every bar.
-        out["entry"] = (fast > slow * (1.0 + self.band)).astype(int)
-        out["exit"] = (fast < slow * (1.0 - self.band)).astype(int)
+        long_ok = fast > slow * (1.0 + self.band)
+        short_ok = fast < slow * (1.0 - self.band)
+        out["entry"] = long_ok.astype(int)
+        out["exit"] = short_ok.astype(int)
+        if self.allow_short:
+            out["short_entry"] = short_ok.astype(int)
+            out["short_exit"] = long_ok.astype(int)
         gap = (fast - slow) / slow
         out["signal_strength"] = (gap / self.scale).clip(0.0, 1.0).fillna(0.0)
         return out
