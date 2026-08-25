@@ -15,6 +15,7 @@ class RsiMeanRevert(Strategy):
 
     name = "rsi_meanrevert"
     description = "Long when RSI exits oversold; flat when RSI reverts to mean"
+    stop_atr_mult: float | None = 3.0  # floor the downside if the bounce fails
 
     def __init__(self, window: int = 14, oversold: float = 30.0, neutral: float = 50.0, atr_window: int = 14) -> None:
         super().__init__(window=window, oversold=oversold, neutral=neutral, atr_window=atr_window)

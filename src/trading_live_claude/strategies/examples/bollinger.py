@@ -11,6 +11,7 @@ class BollingerMeanRevert(Strategy):
 
     name = "bollinger"
     description = "Mean-revert at 2 sigma Bollinger bands"
+    stop_atr_mult: float | None = 3.0  # floor the falling-knife downside on a dip buy
 
     def __init__(self, window: int = 20, n_std: float = 2.0, atr_window: int = 14) -> None:
         super().__init__(window=window, n_std=n_std, atr_window=atr_window)

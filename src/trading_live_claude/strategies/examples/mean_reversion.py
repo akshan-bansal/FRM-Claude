@@ -20,6 +20,7 @@ class Rsi2Connors(Strategy):
 
     name = "rsi2_connors"
     description = "RSI(2) pullback above the 200-SMA (Connors)"
+    stop_atr_mult: float | None = 3.0
 
     def __init__(
         self,
@@ -63,6 +64,7 @@ class ZScoreOU(Strategy):
 
     name = "zscore_ou"
     description = "Rolling z-score mean reversion"
+    stop_atr_mult: float | None = 3.0
 
     def __init__(self, window: int = 20, entry_z: float = 2.0, exit_z: float = 0.0, atr_window: int = 14) -> None:
         super().__init__(window=window, entry_z=entry_z, exit_z=exit_z, atr_window=atr_window)
@@ -93,6 +95,7 @@ class BbRsiCombo(Strategy):
 
     name = "bb_rsi_combo"
     description = "Bollinger lower-band tag confirmed by oversold RSI"
+    stop_atr_mult: float | None = 3.0
 
     def __init__(
         self, window: int = 20, n_std: float = 2.0, rsi_window: int = 14, rsi_th: float = 40.0, atr_window: int = 14

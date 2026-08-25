@@ -24,6 +24,7 @@ class CandlestickStrategy(Strategy):
 
     name = "candlestick"
     description = "Candlestick-pattern entry, momentum-fade exit"
+    stop_atr_mult: float | None = 3.0  # floor each trade if it never recovers above the SMA
 
     def __init__(self, pattern: str = "hammer", exit_ma: int = 10, atr_window: int = 14) -> None:
         super().__init__(pattern=pattern, exit_ma=exit_ma, atr_window=atr_window)
@@ -41,7 +42,14 @@ class CandlestickStrategy(Strategy):
         fires = CANDLESTICK_PATTERNS[self.pattern](out).astype(int)
         out["atr"] = atr(out, self.atr_window)
         out["entry"] = fires
-        out["exit"] = (out["close"] < sma(out["close"], self.exit_ma)).astype(int)
+        # Momentum fade: exit only once price has risen back above the short SMA and then
+        # closed below it. A bullish pattern fires at a low (price already below the SMA),
+        # so the old ``close < SMA`` test exited on the entry bar itself — this requires the
+        # up-move to happen first, and the ATR stop floors trades that never recover.
+        close = out["close"]
+        sma_exit = sma(close, self.exit_ma)
+        was_above = (close >= sma_exit).shift(1).fillna(False)
+        out["exit"] = (was_above & (close < sma_exit)).astype(int)
         out["signal_strength"] = fires.astype(float)
         return out
 

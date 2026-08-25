@@ -72,6 +72,7 @@ class ConfirmOverlay(Strategy):
         self.base = base
         self.patterns = tuple(patterns)
         self.lookback = lookback
+        self.stop_atr_mult = base.stop_atr_mult  # keep the base's per-trade downside floor
 
     def required_history_bars(self) -> int:
         return self.base.required_history_bars()
