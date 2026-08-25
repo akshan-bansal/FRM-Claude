@@ -193,6 +193,12 @@ def signal(
     strategy_map: str = typer.Option(
         "", help="Per-symbol strategy overrides, e.g. 'XIC.TO=bollinger,BNS.TO=momentum_breakout'"
     ),
+    level: bool = typer.Option(
+        False,
+        "--level/--edge",
+        help="Alert whenever a name is AT an entry/exit level each poll (persistent), "
+        "not only when it flips into one. --edge (default) alerts on transitions only.",
+    ),
 ) -> None:
     """Live-signal monitor. Never places orders (dry-run router).
 
@@ -272,6 +278,7 @@ def signal(
         risk_model=settings.risk_model,
         heat_aggregation=settings.heat_aggregation,
         strategy_map=smap,
+        emit_on_change_only=not level,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
