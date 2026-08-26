@@ -14,13 +14,14 @@ programmatic source (SEDAR+ is HTML/PDF only); for those, drop a CSV into the st
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import httpx
 import pandas as pd
 
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _EDGAR = "https://data.sec.gov"
-_DEFAULT_UA = "FRM-Claude research (contact: set EDGAR_USER_AGENT)"
+_DEFAULT_UA = "FRM-Claude/1.0 (+https://localhost; research; set EDGAR_USER_AGENT)"
 
 
 def _user_agent(explicit: str | None) -> str:
@@ -36,22 +37,23 @@ def _cik_for(ticker: str, client: httpx.Client) -> str | None:
     return None
 
 
-def _concept(cik: str, taxonomy: str, tag: str, client: httpx.Client) -> pd.Series:
-    """Latest-filed value per period-end date for one XBRL concept, as a date-indexed Series."""
-    r = client.get(f"{_EDGAR}/api/xbrl/companyconcept/CIK{cik}/{taxonomy}/{tag}.json")
-    if r.status_code != 200:
-        return pd.Series(dtype=float)
-    vals: dict[str, float] = {}
-    for rows in r.json().get("units", {}).values():
-        for row in rows:
-            end, val = row.get("end"), row.get("val")
-            if end is not None and val is not None:
-                vals[end] = float(val)  # later rows are more-recently filed → keep last
-    if not vals:
-        return pd.Series(dtype=float)
-    s = pd.Series(vals)
-    s.index = pd.to_datetime(s.index)
-    return s.sort_index()
+def _series(facts: dict[str, Any], taxonomy: str, tags: tuple[str, ...]) -> pd.Series:
+    """First non-empty XBRL concept among ``tags``, as a date-indexed Series (latest-filed per
+    period-end). Reads the one-shot ``companyfacts`` payload — the per-``companyconcept`` endpoint
+    returns empty ``units`` for some filers (e.g. RELIANCE) even when companyfacts has the data."""
+    node = facts.get(taxonomy, {})
+    for tag in tags:
+        vals: dict[str, float] = {}
+        for rows in node.get(tag, {}).get("units", {}).values():
+            for row in rows:
+                end, val = row.get("end"), row.get("val")
+                if end is not None and val is not None:
+                    vals[end] = float(val)  # later rows are more-recently filed → keep last
+        if vals:
+            s = pd.Series(vals)
+            s.index = pd.to_datetime(s.index)
+            return s.sort_index()
+    return pd.Series(dtype=float)
 
 
 def edgar_bvps(ticker: str, *, user_agent: str | None = None, timeout: float = 30.0) -> pd.DataFrame | None:
@@ -61,10 +63,15 @@ def edgar_bvps(ticker: str, *, user_agent: str | None = None, timeout: float = 3
         cik = _cik_for(ticker, client)
         if cik is None:
             return None
-        equity = _concept(cik, "us-gaap", "StockholdersEquity", client)
-        shares = _concept(cik, "us-gaap", "CommonStockSharesOutstanding", client)
+        r = client.get(f"{_EDGAR}/api/xbrl/companyfacts/CIK{cik}.json")
+        if r.status_code != 200:
+            return None
+        facts = r.json().get("facts", {})
+        equity = _series(facts, "us-gaap",
+                         ("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"))
+        shares = _series(facts, "us-gaap", ("CommonStockSharesOutstanding",))
         if shares.empty:
-            shares = _concept(cik, "dei", "EntityCommonStockSharesOutstanding", client)
+            shares = _series(facts, "dei", ("EntityCommonStockSharesOutstanding",))
         if equity.empty or shares.empty:
             return None
         # Align shares to each equity period-end by nearest date (shares' "as of" can differ).

@@ -9,22 +9,23 @@ from trading_live_claude.data.fundamentals import FundamentalsStore
 from trading_live_claude.data.fundamentals_edgar import edgar_bvps, fetch_to_store
 
 _TICKERS = "https://www.sec.gov/files/company_tickers.json"
-_EQ = "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/StockholdersEquity.json"
-_SH = "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/CommonStockSharesOutstanding.json"
+_FACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
 
 
 def _mock_edgar() -> None:
     respx.get(_TICKERS).mock(
         return_value=httpx.Response(200, json={"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple"}})
     )
-    respx.get(_EQ).mock(return_value=httpx.Response(200, json={"units": {"USD": [
-        {"end": "2023-12-31", "val": 60_000_000_000},
-        {"end": "2024-03-31", "val": 66_000_000_000},
-    ]}}))
-    respx.get(_SH).mock(return_value=httpx.Response(200, json={"units": {"shares": [
-        {"end": "2023-12-31", "val": 15_000_000_000},
-        {"end": "2024-03-31", "val": 15_000_000_000},
-    ]}}))
+    respx.get(_FACTS).mock(return_value=httpx.Response(200, json={"facts": {"us-gaap": {
+        "StockholdersEquity": {"units": {"USD": [
+            {"end": "2023-12-31", "val": 60_000_000_000},
+            {"end": "2024-03-31", "val": 66_000_000_000},
+        ]}},
+        "CommonStockSharesOutstanding": {"units": {"shares": [
+            {"end": "2023-12-31", "val": 15_000_000_000},
+            {"end": "2024-03-31", "val": 15_000_000_000},
+        ]}},
+    }}}))
 
 
 @respx.mock
