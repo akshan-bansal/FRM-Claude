@@ -29,7 +29,7 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         "AAPL", "MSFT", "GOOGL", "NVDA", "AMZN", "RY.TO", "TD.TO",
         # Walk-forward-validated names (see WALK_FORWARD_VALIDATED below).
         "XLE", "SMH", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
-        "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO",
+        "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO", "BTO.TO",
     ),
     "future": ("ES", "NQ", "YM", "RTY", "ZN", "ZB"),
     "commodity": ("GLD", "SLV", "USO", "UNG", "DBC", "CORN", "WEAT"),
@@ -187,6 +187,9 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     # CEW.TO is a CAD currency-hedged basket (not a pure FX pair); it cleared walk-forward.
     "CEW.TO": _wf("CEW.TO", "bollinger", {"window": 20, "n_std": 2.0}, 10.93, 0.76, 0.2000, -0.0620, 12, "robust"),
     "ARX.TO": _wf("ARX.TO", "bollinger", {"window": 20, "n_std": 3.0}, 8.82, 0.72, 0.5757, -0.1131, 15, "robust"),
+    # BTO.TO (B2Gold, ~$8) cleared walk-forward from the $1-$10 small-cap sleeve; low-priced,
+    # so commission drag is material at small position sizes.
+    "BTO.TO": _wf("BTO.TO", "rsi_meanrevert", {"window": 7, "oversold": 25}, 8.78, 2.69, 1.2100, -0.1580, 14, "robust"),
     "EQB.TO": _wf("EQB.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 8.17, 1.36, 0.4588, -0.1605, 11, "robust"),
     "QQQ": _wf("QQQ", "ts_momentum", {"lookback": 189, "threshold": 0.02}, 7.70, 2.72, 0.5030, -0.1420, 16, "robust"),
     "SMH": _wf("SMH", "ts_momentum", {"lookback": 189, "threshold": 0.0}, 7.10, 1.22, 2.3069, -0.2547, 14, "robust"),
