@@ -29,7 +29,7 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         "AAPL", "MSFT", "GOOGL", "NVDA", "AMZN", "RY.TO", "TD.TO",
         # Walk-forward-validated names (see WALK_FORWARD_VALIDATED below).
         "XLE", "SMH", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
-        "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO", "BTO.TO",
+        "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO", "BTO.TO", "ZEB.TO",
     ),
     "future": ("ES", "NQ", "YM", "RTY", "ZN", "ZB"),
     "commodity": ("GLD", "SLV", "USO", "UNG", "DBC", "CORN", "WEAT"),
@@ -184,6 +184,9 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     "XLB": _wf("XLB", "bollinger", {"window": 20, "n_std": 2.0}, 20.95, 1.22, 0.3580, -0.0550, 16, "robust"),
     "XIC.TO": _wf("XIC.TO", "rsi_meanrevert", {"window": 7, "oversold": 35}, 19.60, 1.21, 0.2946, -0.0505, 17, "robust"),
     "VFV.TO": _wf("VFV.TO", "high_52w_breakout", {"high_window": 126, "exit_window": 63}, 18.90, 1.07, 0.1590, -0.0660, 2, "watch"),
+    # ZEB.TO (BMO equal-weight Canadian banks) cleared walk-forward on an ATR-channel breakout —
+    # the first atr_channel name in the pool; OOS beat in-sample (WFE > 1), like XLE/XLB.
+    "ZEB.TO": _wf("ZEB.TO", "atr_channel", {"ema_window": 30, "k": 1.5}, 16.749, 1.123, 0.6086, -0.0924, 27, "robust"),
     # CEW.TO is a CAD currency-hedged basket (not a pure FX pair); it cleared walk-forward.
     "CEW.TO": _wf("CEW.TO", "bollinger", {"window": 20, "n_std": 2.0}, 10.93, 0.76, 0.2000, -0.0620, 12, "robust"),
     "ARX.TO": _wf("ARX.TO", "bollinger", {"window": 20, "n_std": 3.0}, 8.82, 0.72, 0.5757, -0.1131, 15, "robust"),

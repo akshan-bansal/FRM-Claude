@@ -29,9 +29,9 @@ def test_robust_tier_meets_all_three_bars() -> None:
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # 13 robust + 3 watch after wiring the widened-search survivors, CEW.TO and BTO.TO.
-    assert len(validated_symbols("robust")) == 13
-    assert len(WALK_FORWARD_VALIDATED) == 16
+    # 14 robust + 3 watch after wiring the widened-search survivors, CEW.TO, BTO.TO and ZEB.TO.
+    assert len(validated_symbols("robust")) == 14
+    assert len(WALK_FORWARD_VALIDATED) == 17
     watch = set(validated_symbols("watch"))
     assert {"VFV.TO", "WCP.TO", "KEY.TO"} == watch
 
@@ -61,3 +61,11 @@ def test_validated_for_lookup() -> None:
 
 def test_confirm_bollinger_watch_name_uses_the_overlay() -> None:
     assert validated_for("WCP.TO").strategy == "confirm_bollinger"
+
+
+def test_zeb_is_wired_robust_on_atr_channel() -> None:
+    """ZEB.TO (bank-sector ETF) is the first atr_channel name; OOS beat in-sample (WFE > 1)."""
+    rec = validated_for("ZEB.TO")
+    assert rec is not None and rec.tier == "robust"
+    assert rec.strategy == "atr_channel"
+    assert rec.wfe > 1.0
