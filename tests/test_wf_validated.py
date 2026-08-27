@@ -29,11 +29,11 @@ def test_robust_tier_meets_all_three_bars() -> None:
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # 14 robust + 3 watch after wiring the widened-search survivors, CEW.TO, BTO.TO and ZEB.TO.
-    assert len(validated_symbols("robust")) == 14
-    assert len(WALK_FORWARD_VALIDATED) == 17
+    # 15 robust + 4 watch after wiring ZEB.TO, FRU.TO (robust) and TA.TO (watch) from the sweeps.
+    assert len(validated_symbols("robust")) == 15
+    assert len(WALK_FORWARD_VALIDATED) == 19
     watch = set(validated_symbols("watch"))
-    assert {"VFV.TO", "WCP.TO", "KEY.TO"} == watch
+    assert {"VFV.TO", "WCP.TO", "KEY.TO", "TA.TO"} == watch
 
 
 def test_widened_search_robust_names_are_wired() -> None:
@@ -69,3 +69,11 @@ def test_zeb_is_wired_robust_on_atr_channel() -> None:
     assert rec is not None and rec.tier == "robust"
     assert rec.strategy == "atr_channel"
     assert rec.wfe > 1.0
+
+
+def test_sweep_survivors_fru_robust_ta_watch() -> None:
+    """From the $15-25 sweep: FRU.TO cleared robust; TA.TO is carried at watch on drawdown risk."""
+    fru = validated_for("FRU.TO")
+    assert fru is not None and fru.tier == "robust" and fru.strategy == "bollinger"
+    ta = validated_for("TA.TO")
+    assert ta is not None and ta.tier == "watch" and ta.strategy == "macd"

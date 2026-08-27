@@ -30,6 +30,7 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         # Walk-forward-validated names (see WALK_FORWARD_VALIDATED below).
         "XLE", "SMH", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
         "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO", "BTO.TO", "ZEB.TO",
+        "FRU.TO", "TA.TO",
     ),
     "future": ("ES", "NQ", "YM", "RTY", "ZN", "ZB"),
     "commodity": ("GLD", "SLV", "USO", "UNG", "DBC", "CORN", "WEAT"),
@@ -187,6 +188,9 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     # ZEB.TO (BMO equal-weight Canadian banks) cleared walk-forward on an ATR-channel breakout —
     # the first atr_channel name in the pool; OOS beat in-sample (WFE > 1), like XLE/XLB.
     "ZEB.TO": _wf("ZEB.TO", "atr_channel", {"ema_window": 30, "k": 1.5}, 16.749, 1.123, 0.6086, -0.0924, 27, "robust"),
+    # FRU.TO (Freehold Royalties) cleared walk-forward from the $15-25 sweep on a tight Bollinger
+    # band; low-drawdown energy-royalty name, OOS ~= in-sample (WFE ~1), the cleanest of that sweep.
+    "FRU.TO": _wf("FRU.TO", "bollinger", {"window": 15, "n_std": 1.5}, 16.510, 1.020, 0.5420, -0.0590, 22, "robust"),
     # CEW.TO is a CAD currency-hedged basket (not a pure FX pair); it cleared walk-forward.
     "CEW.TO": _wf("CEW.TO", "bollinger", {"window": 20, "n_std": 2.0}, 10.93, 0.76, 0.2000, -0.0620, 12, "robust"),
     "ARX.TO": _wf("ARX.TO", "bollinger", {"window": 20, "n_std": 3.0}, 8.82, 0.72, 0.5757, -0.1131, 15, "robust"),
@@ -202,6 +206,10 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     "IWM": _wf("IWM", "bollinger", {"window": 30, "n_std": 2.0}, 5.82, 0.93, 0.1600, -0.0810, 14, "robust"),
     "RS": _wf("RS", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.75, 0.88, 0.0780, -0.0610, 12, "robust"),
     "DBA": _wf("DBA", "rsi_meanrevert", {"window": 14, "oversold": 35}, 3.17, 0.57, 0.0530, -0.0500, 11, "robust"),
+    # TA.TO (TransAlta) technically cleared the robust gate (WFE 0.79, 32 trades) but is carried
+    # at "watch" on a deliberate risk call: its OOS MACD run posts a big return through a -26.5%
+    # drawdown, deeper than anything else in the pool. Watch until the drawdown profile improves.
+    "TA.TO": _wf("TA.TO", "macd", {"fast": 16, "slow": 34}, 2.68, 0.79, 0.7610, -0.2650, 32, "watch"),
 }
 
 
