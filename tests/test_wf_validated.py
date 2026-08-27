@@ -29,11 +29,12 @@ def test_robust_tier_meets_all_three_bars() -> None:
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # 15 robust + 4 watch after wiring ZEB.TO, FRU.TO (robust) and TA.TO (watch) from the sweeps.
-    assert len(validated_symbols("robust")) == 15
-    assert len(WALK_FORWARD_VALIDATED) == 19
+    # 17 robust + 6 watch after the $25-35 sweep adds SRU.UN.TO/CGL.TO (robust) and
+    # ZUT.TO/EFN.TO (watch), on top of ZEB.TO, FRU.TO (robust) and TA.TO (watch).
+    assert len(validated_symbols("robust")) == 17
+    assert len(WALK_FORWARD_VALIDATED) == 23
     watch = set(validated_symbols("watch"))
-    assert {"VFV.TO", "WCP.TO", "KEY.TO", "TA.TO"} == watch
+    assert {"VFV.TO", "WCP.TO", "KEY.TO", "TA.TO", "ZUT.TO", "EFN.TO"} == watch
 
 
 def test_widened_search_robust_names_are_wired() -> None:
@@ -77,3 +78,14 @@ def test_sweep_survivors_fru_robust_ta_watch() -> None:
     assert fru is not None and fru.tier == "robust" and fru.strategy == "bollinger"
     ta = validated_for("TA.TO")
     assert ta is not None and ta.tier == "watch" and ta.strategy == "macd"
+
+
+def test_25_35_sweep_survivors_are_wired() -> None:
+    """$25-35 sweep: SRU.UN.TO (first REIT) and CGL.TO (first bullion) robust; ZUT/EFN watch."""
+    sru = validated_for("SRU.UN.TO")
+    assert sru is not None and sru.tier == "robust" and sru.strategy == "rsi_meanrevert"
+    cgl = validated_for("CGL.TO")
+    assert cgl is not None and cgl.tier == "robust" and cgl.strategy == "atr_channel"
+    for sym in ("ZUT.TO", "EFN.TO"):
+        rec = validated_for(sym)
+        assert rec is not None and rec.tier == "watch", sym
