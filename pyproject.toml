@@ -41,6 +41,9 @@ quant = [
     "scipy>=1.18.1",
     "statsmodels>=0.15.0",
 ]
+l2 = [
+    "websockets>=17.1",
+]
 
 [project.scripts]
 trading = "trading_live_claude.cli:app"

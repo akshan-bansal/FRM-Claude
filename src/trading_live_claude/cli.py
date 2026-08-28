@@ -1480,6 +1480,38 @@ def place_order(
     raise typer.Exit(code=0 if placed else 3)
 
 
+@app.command(name="kraken-l2")
+def kraken_l2(
+    symbol: str = typer.Option("BTC/USD", help="Kraken pair, e.g. BTC/USD or ETH/USD"),
+    depth: int = typer.Option(10, help="Order-book depth to subscribe"),
+    messages: int = typer.Option(20, help="Stop after N book messages (0 = run forever)"),
+) -> None:
+    """Stream real Level-2 depth from Kraken and print microprice / imbalance / OFI (read-only).
+
+    Public market data only — no account, no orders. Needs the optional 'l2' extra (websockets).
+    This is the live order-book feed the microstructure execution families were built against.
+    """
+    import asyncio
+
+    from .microstructure.kraken_l2 import BookUpdate, stream_order_book
+
+    def _show(u: BookUpdate) -> None:
+        flag = "" if u.checksum_ok else " [red]CRC!*[/red]"
+        console.print(
+            f"{u.symbol}  bid/ask={u.book.best_bid.price:.4f}/{u.book.best_ask.price:.4f}  "
+            f"micro={u.microprice:.4f}  imb={u.imbalance:+.3f}  ofi={u.ofi:+.4f}{flag}"
+        )
+
+    console.print(f"[cyan]streaming Kraken L2[/cyan] {symbol} depth={depth} (read-only)…")
+    try:
+        asyncio.run(stream_order_book(symbol, depth=depth, on_update=_show,
+                                      max_messages=messages or None))
+    except KeyboardInterrupt:
+        pass
+    except ModuleNotFoundError:
+        console.print("[yellow]install the 'l2' extra: uv sync --extra l2[/yellow]")
+
+
 def _entry() -> None:
     app()
 

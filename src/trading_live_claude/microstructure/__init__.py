@@ -17,6 +17,7 @@ from .avellaneda_stoikov import (
     avellaneda_stoikov_quotes,
     simulate_market_making,
 )
+from .kraken_l2 import BookUpdate, KrakenOrderBook, parse_book_message, stream_order_book
 from .orderbook import LimitOrderBook, OrderBookLevel
 from .simulator import FillModel, MidPriceProcess
 
@@ -24,12 +25,16 @@ __all__ = [
     "ASParams",
     "ArbConfig",
     "ArbResult",
+    "BookUpdate",
     "FillModel",
+    "KrakenOrderBook",
     "LimitOrderBook",
     "MarketMakingResult",
     "MidPriceProcess",
     "OrderBookLevel",
     "avellaneda_stoikov_quotes",
     "cross_market_arbitrage",
+    "parse_book_message",
     "simulate_market_making",
+    "stream_order_book",
 ]
