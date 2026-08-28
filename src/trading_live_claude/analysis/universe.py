@@ -261,6 +261,10 @@ class CryptoSleeveEntry:
 # validated or cleared for live capital until deeper history lets it clear the walk-forward gate.
 CRYPTO_SLEEVE: dict[str, CryptoSleeveEntry] = {
     "BTC/USD": CryptoSleeveEntry("BTC/USD", "XBTUSD", "macd", 2.59),
+    # PAXG (Pax Gold) is a tokenized-gold token — it tracks physical gold, so it has the lowest
+    # volatility (0.25) in the crypto universe and diversifies the sleeve away from crypto beta
+    # (the on-Kraken analog of the equity pool's CGL.TO). Surfaced by the widened 638-pair search.
+    "PAXG/USD": CryptoSleeveEntry("PAXG/USD", "PAXGUSD", "ts_momentum", 2.55),
     "XMR/USD": CryptoSleeveEntry("XMR/USD", "XMRUSD", "macd", 1.66),
     "XRP/USD": CryptoSleeveEntry("XRP/USD", "XRPUSD", "bollinger", 1.43),
     "XLM/USD": CryptoSleeveEntry("XLM/USD", "XLMUSD", "bollinger", 1.01),

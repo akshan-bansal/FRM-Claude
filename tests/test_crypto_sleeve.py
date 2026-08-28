@@ -48,7 +48,7 @@ class _StubBroker:
 
 
 def test_crypto_sleeve_is_well_formed() -> None:
-    assert set(crypto_sleeve_symbols()) == {"BTC/USD", "XMR/USD", "XRP/USD", "XLM/USD", "LINK/USD", "ETH/USD"}
+    assert set(crypto_sleeve_symbols()) == {"BTC/USD", "PAXG/USD", "XMR/USD", "XRP/USD", "XLM/USD", "LINK/USD", "ETH/USD"}
     for sym, e in CRYPTO_SLEEVE.items():
         assert e.symbol == sym and "/" in sym
         assert e.pair.endswith("USD")
