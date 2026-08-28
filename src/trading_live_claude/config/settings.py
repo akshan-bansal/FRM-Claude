@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     alert_email_to: str = ""
     quantconnect_user_id: str = ""
     quantconnect_api_token: str = ""
+    # Kraken private REST API (crypto sleeve execution). Public market data needs none of this;
+    # only the future KrakenBroker's private endpoints (balances, orders) do.
+    kraken_api_key: str = ""
+    kraken_api_secret: str = ""
 
     # === Trading knobs (yaml-managed) ===
     execution_mode: ExecutionMode = "paper"
