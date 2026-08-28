@@ -9,7 +9,7 @@ from .examples.macd import MacdSignalCross
 from .examples.mean_reversion import BbRsiCombo, Rsi2Connors, ZScoreOU
 from .examples.momentum import DualMa, High52wBreakout, TsMomentum
 from .examples.momentum_breakout import DonchianBreakout
-from .examples.pairs import PairsZScore
+from .examples.pairs import KalmanPairs, PairsZScore
 from .examples.rsi_meanrevert import RsiMeanRevert
 from .examples.seasonality import DayOfWeek, MonthOfYear, TurnOfMonth
 from .examples.volatility import AtrChannel, BbWidthSqueeze, VolTarget
@@ -24,6 +24,7 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "bollinger": BollingerMeanRevert,
     "momentum_breakout": DonchianBreakout,
     "pairs": PairsZScore,
+    "kalman_pairs": KalmanPairs,
     "composite": DefaultComposite,
     # mean-reversion (advanced)
     "rsi2_connors": Rsi2Connors,

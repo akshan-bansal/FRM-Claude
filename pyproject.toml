@@ -36,6 +36,11 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
 ]
+quant = [
+    "arch>=8.0.0",
+    "scipy>=1.18.1",
+    "statsmodels>=0.15.0",
+]
 
 [project.scripts]
 trading = "trading_live_claude.cli:app"

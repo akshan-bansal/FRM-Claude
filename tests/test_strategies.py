@@ -6,8 +6,11 @@ import pytest
 from trading_live_claude.strategies import STRATEGIES
 from trading_live_claude.strategies.base import StrategyContext
 
+# Pairs strategies need a partner-leg "close_b" column, so they can't run on a single-symbol frame.
+_PAIRS = {"pairs", "kalman_pairs"}
 
-@pytest.mark.parametrize("name", [n for n in STRATEGIES if n != "pairs"])
+
+@pytest.mark.parametrize("name", [n for n in STRATEGIES if n not in _PAIRS])
 def test_strategy_produces_signal_columns(name: str, random_walk_df: pd.DataFrame) -> None:
     strat = STRATEGIES[name]()
     out = strat.generate_signals(random_walk_df, StrategyContext(symbol="TEST"))
@@ -17,7 +20,7 @@ def test_strategy_produces_signal_columns(name: str, random_walk_df: pd.DataFram
     assert "atr" in out.columns
 
 
-@pytest.mark.parametrize("name", [n for n in STRATEGIES if n != "pairs"])
+@pytest.mark.parametrize("name", [n for n in STRATEGIES if n not in _PAIRS])
 def test_strategy_required_history_at_least_50(name: str) -> None:
     strat = STRATEGIES[name]()
     assert strat.required_history_bars() >= 50

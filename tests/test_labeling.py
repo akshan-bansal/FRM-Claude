@@ -61,7 +61,7 @@ def test_labels_never_leak_into_features(random_walk_df: pd.DataFrame) -> None:
     'forward_return' column, that would mean the future had leaked into features.
     """
     for name, cls in STRATEGIES.items():
-        if name == "pairs":
+        if name in {"pairs", "kalman_pairs"}:  # need a partner-leg column, not a single-symbol frame
             continue
         out = cls().generate_signals(random_walk_df, StrategyContext(symbol="T"))
         assert "label" not in out.columns
