@@ -55,7 +55,9 @@ def test_crypto_sleeve_is_well_formed() -> None:
         assert e.strategy in STRATEGIES, e.strategy
         assert e.asset_class == "crypto"
         assert e.tier == "screened"          # provisional, not walk-forward-validated
+        STRATEGIES[e.strategy](**dict(e.params))  # screened params instantiate the strategy cleanly
     assert crypto_sleeve_for("BTC/USD").strategy == "macd"
+    assert crypto_sleeve_for("BTC/USD").params == {"fast": 16, "slow": 34}
     assert crypto_sleeve_for("NOT/USD") is None
 
 

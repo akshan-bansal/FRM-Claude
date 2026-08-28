@@ -1597,6 +1597,52 @@ def xexch_arb(
         console.print("[yellow]install the 'l2' extra: uv sync --extra l2[/yellow]")
 
 
+@app.command(name="crypto-signal")
+def crypto_signal(
+    push: bool = typer.Option(True, help="Send to Telegram (needs TELEGRAM_* in .env); --no-push previews to console only"),
+    only_signals: bool = typer.Option(True, "--only-signals/--all", help="Only alert ENTRY/EXIT; --all includes HOLD"),
+) -> None:
+    """Evaluate the crypto sleeve on live Kraken daily data and push live-format alerts to Telegram.
+
+    Same alert format as the equity monitor ('{strategy} {ENTRY|EXIT}: {symbol}' / 'price=… detail=…').
+    Read-only / paper — this computes and pushes signals, it never places an order. The detail line
+    carries tier='screened' so a reader can see this sleeve isn't walk-forward-validated yet.
+    """
+    from .analysis.universe import CRYPTO_SLEEVE
+    from .data.kraken_ohlc import kraken_ohlc
+    from .monitor.alerter import AlertConfig, Alerter
+    from .strategies import STRATEGIES
+    from .strategies.base import StrategyContext
+
+    settings = get_settings()
+    alerter = _build_alerter(settings) if push else Alerter(AlertConfig())  # empty config = console only
+    if push and not (settings.telegram_bot_token and settings.telegram_chat_id):
+        console.print("[yellow]TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set in .env — printing to console only.[/yellow]")
+
+    console.print(f"[cyan]crypto sleeve signals[/cyan] ({len(CRYPTO_SLEEVE)} pairs, live Kraken daily)…")
+    sent = 0
+    for entry in CRYPTO_SLEEVE.values():
+        try:
+            df = kraken_ohlc(entry.pair)
+        except Exception as exc:
+            console.print(f"[yellow]skip {entry.symbol}: {type(exc).__name__}[/yellow]")
+            continue
+        strat = STRATEGIES[entry.strategy](**dict(entry.params))
+        sig = strat.generate_signals(df, StrategyContext(symbol=entry.symbol))
+        last = sig.iloc[-1]
+        price = float(last["close"])
+        kind = "ENTRY" if int(last.get("entry", 0)) == 1 else "EXIT" if int(last.get("exit", 0)) == 1 else "HOLD"
+        if only_signals and kind == "HOLD":
+            continue
+        detail = {"tier": entry.tier, "sleeve": "crypto", "score": entry.screen_score}
+        if "signal_strength" in sig:
+            detail["strength"] = round(float(last["signal_strength"]), 3)
+        alerter.send(f"{entry.strategy} {kind}: {entry.symbol}", f"price={price:.4f} detail={detail}")
+        sent += 1
+    tgt = "Telegram" if (push and settings.telegram_bot_token and settings.telegram_chat_id) else "console"
+    console.print(f"[green]done[/green] {sent} alert(s) → {tgt}")
+
+
 def _entry() -> None:
     app()
 

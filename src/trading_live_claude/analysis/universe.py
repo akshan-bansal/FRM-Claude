@@ -13,7 +13,7 @@ layer (`scoring.selection`) so ranking only ever sees tradable names.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -249,6 +249,7 @@ class CryptoSleeveEntry:
     pair: str
     strategy: str
     screen_score: float
+    params: Mapping[str, float] = field(default_factory=dict)
     asset_class: str = "crypto"
     tier: str = "screened"
 
@@ -260,16 +261,16 @@ class CryptoSleeveEntry:
 # Router's risk gates and, via AssetRouter, to Kraken as the crypto venue, but nothing here is
 # validated or cleared for live capital until deeper history lets it clear the walk-forward gate.
 CRYPTO_SLEEVE: dict[str, CryptoSleeveEntry] = {
-    "BTC/USD": CryptoSleeveEntry("BTC/USD", "XBTUSD", "macd", 2.59),
+    "BTC/USD": CryptoSleeveEntry("BTC/USD", "XBTUSD", "macd", 2.59, {"fast": 16, "slow": 34}),
     # PAXG (Pax Gold) is a tokenized-gold token — it tracks physical gold, so it has the lowest
     # volatility (0.25) in the crypto universe and diversifies the sleeve away from crypto beta
     # (the on-Kraken analog of the equity pool's CGL.TO). Surfaced by the widened 638-pair search.
-    "PAXG/USD": CryptoSleeveEntry("PAXG/USD", "PAXGUSD", "ts_momentum", 2.55),
-    "XMR/USD": CryptoSleeveEntry("XMR/USD", "XMRUSD", "macd", 1.66),
-    "XRP/USD": CryptoSleeveEntry("XRP/USD", "XRPUSD", "bollinger", 1.43),
-    "XLM/USD": CryptoSleeveEntry("XLM/USD", "XLMUSD", "bollinger", 1.01),
-    "LINK/USD": CryptoSleeveEntry("LINK/USD", "LINKUSD", "atr_channel", 0.93),
-    "ETH/USD": CryptoSleeveEntry("ETH/USD", "ETHUSD", "macd", 0.62),
+    "PAXG/USD": CryptoSleeveEntry("PAXG/USD", "PAXGUSD", "ts_momentum", 2.55, {"lookback": 90, "threshold": 0.0}),
+    "XMR/USD": CryptoSleeveEntry("XMR/USD", "XMRUSD", "macd", 1.66, {"fast": 16, "slow": 34}),
+    "XRP/USD": CryptoSleeveEntry("XRP/USD", "XRPUSD", "bollinger", 1.43, {}),
+    "XLM/USD": CryptoSleeveEntry("XLM/USD", "XLMUSD", "bollinger", 1.01, {}),
+    "LINK/USD": CryptoSleeveEntry("LINK/USD", "LINKUSD", "atr_channel", 0.93, {"ema_window": 30, "k": 1.5}),
+    "ETH/USD": CryptoSleeveEntry("ETH/USD", "ETHUSD", "macd", 0.62, {"fast": 16, "slow": 34}),
 }
 
 
