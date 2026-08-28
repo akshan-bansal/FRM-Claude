@@ -235,3 +235,45 @@ def validated_symbols(tier: str | None = None) -> tuple[str, ...]:
 def validated_for(symbol: str) -> WFValidated | None:
     """The validated recommendation for ``symbol``, or ``None`` if not validated."""
     return WALK_FORWARD_VALIDATED.get(symbol)
+
+
+@dataclass(frozen=True)
+class CryptoSleeveEntry:
+    """One Kraken currency in the second (crypto) sleeve.
+
+    ``symbol`` is the routed/live form (e.g. ``BTC/USD``); ``pair`` is the Kraken REST OHLC code
+    (e.g. ``XBTUSD``). ``screen_score`` is the in-sample panel score from the currency sweep.
+    """
+
+    symbol: str
+    pair: str
+    strategy: str
+    screen_score: float
+    asset_class: str = "crypto"
+    tier: str = "screened"
+
+
+# Second sleeve — Kraken currencies. IMPORTANT: unlike WALK_FORWARD_VALIDATED, these are only
+# *screened* (best in-sample strategy on ~2 years of Kraken daily candles — the endpoint caps at
+# ~720 bars, too short to walk-forward). Scores are weak vs the equity pool (BTC macd 2.59 leads;
+# the rest are under 1.7), so this sleeve is PROVISIONAL and PAPER-ONLY: it routes through the
+# Router's risk gates and, via AssetRouter, to Kraken as the crypto venue, but nothing here is
+# validated or cleared for live capital until deeper history lets it clear the walk-forward gate.
+CRYPTO_SLEEVE: dict[str, CryptoSleeveEntry] = {
+    "BTC/USD": CryptoSleeveEntry("BTC/USD", "XBTUSD", "macd", 2.59),
+    "XMR/USD": CryptoSleeveEntry("XMR/USD", "XMRUSD", "macd", 1.66),
+    "XRP/USD": CryptoSleeveEntry("XRP/USD", "XRPUSD", "bollinger", 1.43),
+    "XLM/USD": CryptoSleeveEntry("XLM/USD", "XLMUSD", "bollinger", 1.01),
+    "LINK/USD": CryptoSleeveEntry("LINK/USD", "LINKUSD", "atr_channel", 0.93),
+    "ETH/USD": CryptoSleeveEntry("ETH/USD", "ETHUSD", "macd", 0.62),
+}
+
+
+def crypto_sleeve_symbols() -> tuple[str, ...]:
+    """Routed symbols in the crypto sleeve (e.g. ``BTC/USD``)."""
+    return tuple(CRYPTO_SLEEVE)
+
+
+def crypto_sleeve_for(symbol: str) -> CryptoSleeveEntry | None:
+    """The crypto-sleeve entry for ``symbol``, or ``None`` if it is not in the sleeve."""
+    return CRYPTO_SLEEVE.get(symbol)

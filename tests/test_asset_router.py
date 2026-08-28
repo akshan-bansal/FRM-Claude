@@ -16,9 +16,9 @@ def test_default_routing_per_asset_class() -> None:
     r = AssetRouter()
     assert r.route("equity").brokerage == DEFAULT_ASSET_BROKERAGE["equity"]
     crypto = r.route("crypto")
-    assert crypto.brokerage == "CoinbaseBrokerage"
+    assert crypto.brokerage == "KrakenBrokerage"   # the crypto sleeve's venue
     assert crypto.add_method == "AddCrypto"
-    assert crypto.market == "Market.Coinbase"
+    assert crypto.market == "Market.Kraken"
 
 
 def test_equity_and_future_add_methods() -> None:
@@ -51,8 +51,8 @@ def test_generator_equity() -> None:
 
 
 def test_generator_crypto_includes_market() -> None:
-    src = render_lean_algorithm(symbol="BTCUSD", add_method="AddCrypto", market="Market.Coinbase")
-    assert 'self.AddCrypto("BTCUSD", Resolution.Daily, Market.Coinbase).Symbol' in src
+    src = render_lean_algorithm(symbol="BTCUSD", add_method="AddCrypto", market="Market.Kraken")
+    assert 'self.AddCrypto("BTCUSD", Resolution.Daily, Market.Kraken).Symbol' in src
 
 
 def test_generator_dates_and_cash_parameterized() -> None:

@@ -18,11 +18,13 @@ AssetClass = Literal["equity", "future", "commodity", "crypto"]
 ASSET_CLASSES: tuple[AssetClass, ...] = ("equity", "future", "commodity", "crypto")
 
 # Default asset-class → LEAN brokerage id. Override per deployment via config.
+# Crypto routes to Kraken: that is the venue the second (currency) sleeve is built on — the live
+# L2 feed (microstructure.kraken_l2) and the historical OHLC fetcher (data.kraken_ohlc).
 DEFAULT_ASSET_BROKERAGE: dict[str, str] = {
     "equity": "InteractiveBrokersBrokerage",
     "future": "InteractiveBrokersBrokerage",
     "commodity": "InteractiveBrokersBrokerage",
-    "crypto": "CoinbaseBrokerage",
+    "crypto": "KrakenBrokerage",
 }
 
 # LEAN subscription spec per class: the `self.Add*` method + optional market arg
@@ -31,7 +33,7 @@ ASSET_LEAN_SPEC: dict[str, dict[str, str]] = {
     "equity": {"add": "AddEquity", "market": ""},
     "future": {"add": "AddFuture", "market": ""},
     "commodity": {"add": "AddFuture", "market": ""},
-    "crypto": {"add": "AddCrypto", "market": "Market.Coinbase"},
+    "crypto": {"add": "AddCrypto", "market": "Market.Kraken"},
 }
 
 
