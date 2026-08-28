@@ -1512,6 +1512,48 @@ def kraken_l2(
         console.print("[yellow]install the 'l2' extra: uv sync --extra l2[/yellow]")
 
 
+@app.command(name="kraken-mm")
+def kraken_mm(
+    symbol: str = typer.Option("BTC/USD", help="Kraken pair to make a market in"),
+    messages: int = typer.Option(200, help="Stop after N book updates (0 = run forever)"),
+    gamma: float = typer.Option(0.1, help="Inventory risk aversion"),
+    quote_size: float = typer.Option(0.001, help="Size quoted per side (base units)"),
+    inventory_limit: float = typer.Option(0.02, help="Max +/- inventory before standing a side down"),
+) -> None:
+    """PAPER Avellaneda-Stoikov market maker on the live Kraken book — no orders are placed.
+
+    Quotes are centered on the live microprice, spread by the A-S formula, and skewed by inventory
+    and order-flow imbalance. Fills are modeled (we don't post), P&L/inventory are paper. Live
+    quoting stays behind the human go-live gate. Needs the optional 'l2' extra.
+    """
+    import asyncio
+
+    from .microstructure.live_market_maker import MMConfig, MMState, run_paper_market_maker
+
+    cfg = MMConfig(gamma=gamma, quote_size=quote_size, inventory_limit=inventory_limit)
+
+    last: list[MMState] = []
+
+    def _show(s: MMState) -> None:
+        last.append(s)
+        if s.step % 10 == 0 or s.fills:
+            console.print(
+                f"[dim]{s.step:4d}[/dim] micro={s.microprice:.2f} vol={s.sigma:.3f} ofi={s.ofi:+.3f}  "
+                f"bid/ask={s.bid:.2f}/{s.ask:.2f}  inv={s.inventory:+.4f}  fills={s.fills}  pnl={s.pnl:+.4f}"
+            )
+
+    console.print(f"[cyan]PAPER market-making[/cyan] {symbol} (no orders placed)…")
+    try:
+        mm = asyncio.run(run_paper_market_maker(symbol, on_state=_show, cfg=cfg,
+                                                max_messages=messages or None))
+        pnl = last[-1].pnl if last else mm.cash
+        console.print(f"[green]done[/green] fills={mm.fills} inventory={mm.inventory:+.4f} paper-pnl={pnl:+.4f}")
+    except KeyboardInterrupt:
+        pass
+    except ModuleNotFoundError:
+        console.print("[yellow]install the 'l2' extra: uv sync --extra l2[/yellow]")
+
+
 def _entry() -> None:
     app()
 

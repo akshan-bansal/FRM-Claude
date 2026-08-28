@@ -18,6 +18,7 @@ from .avellaneda_stoikov import (
     simulate_market_making,
 )
 from .kraken_l2 import BookUpdate, KrakenOrderBook, parse_book_message, stream_order_book
+from .live_market_maker import MMConfig, MMState, PaperMarketMaker, run_paper_market_maker
 from .orderbook import LimitOrderBook, OrderBookLevel
 from .simulator import FillModel, MidPriceProcess
 
@@ -29,12 +30,16 @@ __all__ = [
     "FillModel",
     "KrakenOrderBook",
     "LimitOrderBook",
+    "MMConfig",
+    "MMState",
     "MarketMakingResult",
     "MidPriceProcess",
     "OrderBookLevel",
+    "PaperMarketMaker",
     "avellaneda_stoikov_quotes",
     "cross_market_arbitrage",
     "parse_book_message",
+    "run_paper_market_maker",
     "simulate_market_making",
     "stream_order_book",
 ]
