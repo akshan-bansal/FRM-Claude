@@ -1590,7 +1590,7 @@ def xexch_arb(
         best["n"] += 1
         best["edge"] = max(best["edge"], t.edge_bps)
         if t.action != "none" or best["n"] % 25 == 0:
-            q = " ".join(f"{v}={b:.2f}/{a:.2f}" for v, (b, a) in t.quotes.items())
+            q = " ".join(f"{v}={b:.6g}/{a:.6g}" for v, (b, a) in t.quotes.items())
             tag = f"  [green]{t.action}[/green] +{t.trade_pnl:.4f}" if t.action != "none" else ""
             console.print(f"edge={t.edge_bps:+.2f}bps  {q}{tag}")
 
