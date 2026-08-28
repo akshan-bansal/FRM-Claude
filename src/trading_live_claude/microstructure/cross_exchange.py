@@ -12,12 +12,15 @@ them mid-trade) and latency low enough to hit the quote before it moves — so t
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from itertools import permutations
+from typing import Any, cast
 
 from .kraken_l2 import BookUpdate
 from .orderbook import LimitOrderBook
+
+_StreamFn = Callable[..., Coroutine[Any, Any, None]]
 
 
 @dataclass(frozen=True)
@@ -82,17 +85,37 @@ class _StopStreaming(Exception):
     """Internal: raised from a callback to break both venue streams once the tick budget is hit."""
 
 
-async def run_cross_exchange_arb(*, on_tick: Callable[[XArbTick], None], kraken_symbol: str = "BTC/USD",
-                                 bitstamp_pair: str = "btcusd", cfg: XArbConfig | None = None,
+# Per-venue default BTC/USD symbol in that venue's own notation.
+VENUE_DEFAULT_SYMBOL: dict[str, str] = {"kraken": "BTC/USD", "bitstamp": "btcusd", "coinbase": "BTC-USD"}
+
+
+def _venue_stream(venue: str) -> _StreamFn:
+    """The async ``stream_order_book`` for a venue (lazy import; all share the same call shape)."""
+    if venue == "kraken":
+        from .kraken_l2 import stream_order_book as _k
+        return cast(_StreamFn, _k)
+    if venue == "bitstamp":
+        from .bitstamp_l2 import stream_order_book as _b
+        return cast(_StreamFn, _b)
+    if venue == "coinbase":
+        from .coinbase_l2 import stream_order_book as _c
+        return cast(_StreamFn, _c)
+    raise ValueError(f"Unknown venue {venue!r}. Known: {sorted(VENUE_DEFAULT_SYMBOL)}")
+
+
+async def run_cross_exchange_arb(*, on_tick: Callable[[XArbTick], None],
+                                 venues: tuple[str, str] = ("kraken", "bitstamp"),
+                                 symbols: dict[str, str] | None = None, cfg: XArbConfig | None = None,
                                  depth: int = 10, max_ticks: int | None = None) -> CrossExchangeArb:
-    """Stream both live books concurrently and run the arb detector across them.
+    """Stream two live books concurrently and run the arb detector across them.
 
-    Paper only — public market data, no orders. Returns the engine for final P&L/trade counts.
-    Needs the optional ``l2`` extra.
+    ``venues`` is any two of ``kraken``/``bitstamp``/``coinbase``; ``symbols`` overrides the
+    per-venue BTC/USD default (each venue uses its own notation). Paper only — public market data,
+    no orders. Returns the engine for final P&L/trade counts. Needs the optional ``l2`` extra.
     """
-    from .bitstamp_l2 import stream_order_book as bitstamp_stream
-    from .kraken_l2 import stream_order_book as kraken_stream
-
+    if len(venues) != 2 or venues[0] == venues[1]:
+        raise ValueError(f"need exactly two distinct venues, got {venues!r}")
+    sym = dict(symbols or {})
     engine = CrossExchangeArb(cfg=cfg or XArbConfig())
     count = 0
 
@@ -109,9 +132,9 @@ async def run_cross_exchange_arb(*, on_tick: Callable[[XArbTick], None], kraken_
                     raise _StopStreaming
         return _cb
 
-    tasks = [
-        asyncio.create_task(kraken_stream(kraken_symbol, depth=depth, on_update=make_cb("kraken"))),
-        asyncio.create_task(bitstamp_stream(bitstamp_pair, depth=depth, on_update=make_cb("bitstamp"))),
+    tasks: list[asyncio.Task[None]] = [
+        asyncio.create_task(_venue_stream(v)(sym.get(v, VENUE_DEFAULT_SYMBOL[v]), depth=depth, on_update=make_cb(v)))
+        for v in venues
     ]
     try:
         await asyncio.gather(*tasks)

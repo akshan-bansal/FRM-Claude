@@ -1556,13 +1556,13 @@ def kraken_mm(
 
 @app.command(name="xexch-arb")
 def xexch_arb(
-    kraken_symbol: str = typer.Option("BTC/USD", help="Kraken pair"),
-    bitstamp_pair: str = typer.Option("btcusd", help="Bitstamp pair (lowercase, no slash)"),
+    venues: str = typer.Option("kraken,coinbase", help="Two of: kraken, coinbase, bitstamp"),
+    symbols: str = typer.Option("", help="Optional per-venue overrides, e.g. 'kraken=ETH/USD,coinbase=ETH-USD'"),
     ticks: int = typer.Option(200, help="Stop after N book updates (0 = run forever)"),
     fee_bps: float = typer.Option(10.0, help="Per-leg taker fee in basis points"),
     max_size: float = typer.Option(0.01, help="Max base size per arbitrage"),
 ) -> None:
-    """PAPER cross-exchange arbitrage across the live Kraken and Bitstamp books — no orders.
+    """PAPER cross-exchange arbitrage across two live crypto venues — no orders.
 
     Streams both order books, and whenever one venue's bid clears the other's ask net of fees,
     books the (paper) spread. Measures the real opportunity; live capture needs funded balances on
@@ -1571,6 +1571,15 @@ def xexch_arb(
     import asyncio
 
     from .microstructure.cross_exchange import XArbConfig, XArbTick, run_cross_exchange_arb
+
+    vs = tuple(v.strip() for v in venues.split(",") if v.strip())
+    if len(vs) != 2:
+        console.print("[red]--venues needs exactly two, e.g. 'kraken,coinbase'[/red]")
+        raise typer.Exit(code=2)
+    sym_map: dict[str, str] = {}
+    for item in (s for s in symbols.split(",") if s.strip()):
+        v, _, sy = item.partition("=")
+        sym_map[v.strip()] = sy.strip()
 
     cfg = XArbConfig(fee_bps=fee_bps, max_size=max_size)
     best = {"edge": -1e9, "n": 0.0}
@@ -1585,14 +1594,15 @@ def xexch_arb(
             tag = f"  [green]{t.action}[/green] +{t.trade_pnl:.4f}" if t.action != "none" else ""
             console.print(f"edge={t.edge_bps:+.2f}bps  {q}{tag}")
 
-    console.print(f"[cyan]PAPER cross-exchange arb[/cyan] kraken:{kraken_symbol} vs bitstamp:{bitstamp_pair} (no orders)…")
+    console.print(f"[cyan]PAPER cross-exchange arb[/cyan] {vs[0]} vs {vs[1]} (no orders)…")
     try:
-        eng = asyncio.run(run_cross_exchange_arb(on_tick=_show, kraken_symbol=kraken_symbol,
-                                                 bitstamp_pair=bitstamp_pair, cfg=cfg,
-                                                 max_ticks=ticks or None))
+        eng = asyncio.run(run_cross_exchange_arb(on_tick=_show, venues=(vs[0], vs[1]), symbols=sym_map,
+                                                 cfg=cfg, max_ticks=ticks or None))
         console.print(f"[green]done[/green] arb-trades={eng.n_trades} paper-pnl={eng.cum_pnl:+.4f} best-edge={best['edge']:+.2f}bps")
     except KeyboardInterrupt:
         pass
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
     except ModuleNotFoundError:
         console.print("[yellow]install the 'l2' extra: uv sync --extra l2[/yellow]")
 

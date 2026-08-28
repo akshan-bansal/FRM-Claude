@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from trading_live_claude.microstructure import CrossExchangeArb, LimitOrderBook, XArbConfig
 from trading_live_claude.microstructure.bitstamp_l2 import build_book, parse_book_message
+from trading_live_claude.microstructure.coinbase_l2 import CoinbaseOrderBook
+from trading_live_claude.microstructure.cross_exchange import VENUE_DEFAULT_SYMBOL, _venue_stream
 from trading_live_claude.microstructure.orderbook import OrderBookLevel
 
 
@@ -55,3 +59,22 @@ def test_bitstamp_message_parsing() -> None:
     lob = build_book(bids, asks, depth=10)
     assert lob.best_bid.price == 100.0 and lob.best_ask.price == 100.1
     assert parse_book_message({"event": "bts:subscription_succeeded"}) is None
+
+
+def test_coinbase_book_snapshot_and_l2update() -> None:
+    ob = CoinbaseOrderBook(depth=5)
+    ob.apply_snapshot(bids=[["100.0", "1.0"], ["99.9", "2.0"]], asks=[["100.1", "1.0"], ["100.2", "3.0"]])
+    lob = ob.to_limit_order_book()
+    assert lob.best_bid.price == 100.0 and lob.best_ask.price == 100.1
+    ob.apply_l2update([["buy", "100.0", "0"], ["sell", "100.1", "5"]])  # remove top bid, resize top ask
+    lob = ob.to_limit_order_book()
+    assert lob.best_bid.price == 99.9            # top bid removed
+    assert lob.best_ask.size == 5.0             # ask resized
+
+
+def test_venue_registry_and_defaults() -> None:
+    assert set(VENUE_DEFAULT_SYMBOL) == {"kraken", "bitstamp", "coinbase"}
+    for v in VENUE_DEFAULT_SYMBOL:
+        assert callable(_venue_stream(v))       # each venue resolves to a stream coroutine fn
+    with pytest.raises(ValueError, match="Unknown venue"):
+        _venue_stream("binance")
