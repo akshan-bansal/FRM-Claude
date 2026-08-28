@@ -69,12 +69,13 @@ def build_signal_matrix(
 ) -> list[MatrixCell]:
     """Compute a MatrixCell for every (strategy, symbol) over the supplied frames.
 
-    ``strategies`` defaults to every registered single-symbol strategy (``pairs``
-    excluded — it needs two symbols). Frames shorter than ``min_bars`` are skipped.
-    Recall/precision use forward-return labels (``horizon``, ``up_threshold``);
-    risk (max drawdown) comes from the existing backtest engine.
+    ``strategies`` defaults to every registered single-symbol strategy (the ``pairs`` and
+    ``kalman_pairs`` strategies are excluded — they need a second leg). Frames shorter than
+    ``min_bars`` are skipped. Recall/precision use forward-return labels (``horizon``,
+    ``up_threshold``); risk (max drawdown) comes from the existing backtest engine.
     """
-    strat_names = strategies if strategies is not None else [s for s in STRATEGIES if s != "pairs"]
+    _needs_partner = {"pairs", "kalman_pairs"}
+    strat_names = strategies if strategies is not None else [s for s in STRATEGIES if s not in _needs_partner]
     engine = BacktestEngine()
     cells: list[MatrixCell] = []
 

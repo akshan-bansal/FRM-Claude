@@ -8,9 +8,12 @@ from trading_live_claude.strategies.base import StrategyContext
 
 # Pairs strategies need a partner-leg "close_b" column, so they can't run on a single-symbol frame.
 _PAIRS = {"pairs", "kalman_pairs"}
+# arima_garch refits ARIMA/GARCH per bar; it has its own fast test (test_arima_garch.py) instead
+# of running on the 500-bar generic fixture, which would dominate the suite's runtime.
+_SLOW = {"arima_garch"}
 
 
-@pytest.mark.parametrize("name", [n for n in STRATEGIES if n not in _PAIRS])
+@pytest.mark.parametrize("name", [n for n in STRATEGIES if n not in _PAIRS | _SLOW])
 def test_strategy_produces_signal_columns(name: str, random_walk_df: pd.DataFrame) -> None:
     strat = STRATEGIES[name]()
     out = strat.generate_signals(random_walk_df, StrategyContext(symbol="TEST"))
