@@ -1554,6 +1554,49 @@ def kraken_mm(
         console.print("[yellow]install the 'l2' extra: uv sync --extra l2[/yellow]")
 
 
+@app.command(name="xexch-arb")
+def xexch_arb(
+    kraken_symbol: str = typer.Option("BTC/USD", help="Kraken pair"),
+    bitstamp_pair: str = typer.Option("btcusd", help="Bitstamp pair (lowercase, no slash)"),
+    ticks: int = typer.Option(200, help="Stop after N book updates (0 = run forever)"),
+    fee_bps: float = typer.Option(10.0, help="Per-leg taker fee in basis points"),
+    max_size: float = typer.Option(0.01, help="Max base size per arbitrage"),
+) -> None:
+    """PAPER cross-exchange arbitrage across the live Kraken and Bitstamp books — no orders.
+
+    Streams both order books, and whenever one venue's bid clears the other's ask net of fees,
+    books the (paper) spread. Measures the real opportunity; live capture needs funded balances on
+    both venues and stays behind the human go-live gate. Needs the optional 'l2' extra.
+    """
+    import asyncio
+
+    from .microstructure.cross_exchange import XArbConfig, XArbTick, run_cross_exchange_arb
+
+    cfg = XArbConfig(fee_bps=fee_bps, max_size=max_size)
+    best = {"edge": -1e9, "n": 0.0}
+
+    def _show(t: XArbTick) -> None:
+        if len(t.quotes) < 2:
+            return
+        best["n"] += 1
+        best["edge"] = max(best["edge"], t.edge_bps)
+        if t.action != "none" or best["n"] % 25 == 0:
+            q = " ".join(f"{v}={b:.2f}/{a:.2f}" for v, (b, a) in t.quotes.items())
+            tag = f"  [green]{t.action}[/green] +{t.trade_pnl:.4f}" if t.action != "none" else ""
+            console.print(f"edge={t.edge_bps:+.2f}bps  {q}{tag}")
+
+    console.print(f"[cyan]PAPER cross-exchange arb[/cyan] kraken:{kraken_symbol} vs bitstamp:{bitstamp_pair} (no orders)…")
+    try:
+        eng = asyncio.run(run_cross_exchange_arb(on_tick=_show, kraken_symbol=kraken_symbol,
+                                                 bitstamp_pair=bitstamp_pair, cfg=cfg,
+                                                 max_ticks=ticks or None))
+        console.print(f"[green]done[/green] arb-trades={eng.n_trades} paper-pnl={eng.cum_pnl:+.4f} best-edge={best['edge']:+.2f}bps")
+    except KeyboardInterrupt:
+        pass
+    except ModuleNotFoundError:
+        console.print("[yellow]install the 'l2' extra: uv sync --extra l2[/yellow]")
+
+
 def _entry() -> None:
     app()
 
