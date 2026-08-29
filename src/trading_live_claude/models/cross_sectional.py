@@ -35,14 +35,40 @@ def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
     return (100.0 - 100.0 / (1.0 + rs)).fillna(50.0)
 
 
+def _naive(s: pd.Series) -> pd.Series:
+    """Datetime series with any timezone stripped, so merges align regardless of tz-awareness."""
+    t = pd.to_datetime(s)
+    return t.dt.tz_localize(None) if t.dt.tz is not None else t
+
+
+def _book_to_market(df: pd.DataFrame, bvps: pd.DataFrame) -> np.ndarray:
+    """Book-to-market (bvps / close) aligned to ``df``'s bars: the latest filed book value as of
+    each date (forward-filled from the quarterly ``bvps`` frame of columns ``date``, ``bvps``).
+
+    Price bars are chronological, so ``merge_asof`` (which requires sorted keys) returns rows in the
+    original order and the result aligns positionally to ``df``.
+    """
+    left = pd.DataFrame({"t": _naive(df["time"]).to_numpy() if "time" in df.columns else df.index,
+                         "close": df["close"].astype(float).to_numpy()})
+    right = pd.DataFrame({"t": _naive(bvps["date"]).to_numpy(), "bvps": bvps["bvps"].astype(float).to_numpy()})
+    merged = pd.merge_asof(left.sort_values("t"), right.sort_values("t"), on="t", direction="backward")
+    return np.asarray((merged["bvps"] / merged["close"]).to_numpy(), dtype=float)
+
+
 def build_panel(prices: dict[str, pd.DataFrame], *, horizon: int = 21,
                 moms: tuple[int, ...] = (21, 63, 126, 252), vols: tuple[int, ...] = (20, 60),
-                mas: tuple[int, ...] = (50, 200)) -> pd.DataFrame:
+                mas: tuple[int, ...] = (50, 200),
+                fundamentals: dict[str, pd.DataFrame] | None = None) -> pd.DataFrame:
     """Stack per-name causal features + a forward-return label into one long panel.
 
     Each row is (date, symbol, features…, fwd_ret, fwd_ret_rel). ``fwd_ret`` is the ``horizon``-day
     forward return (the label); ``fwd_ret_rel`` and the demeaned feature columns subtract the
     cross-sectional mean at each date, so the model works in relative (alpha) space.
+
+    ``fundamentals`` (optional) maps symbol -> a ``(date, bvps)`` frame; it adds a book-to-market
+    ``bm`` value feature. It is **allowed to be missing** per name (EDGAR only covers US-GAAP
+    filers) — ``bm`` stays NaN for uncovered names and the GBT's native NaN handling copes, so a
+    sparse fundamental never drops the rest of a name's technical rows.
     """
     frames = []
     for sym, df in prices.items():
@@ -62,16 +88,22 @@ def build_panel(prices: dict[str, pd.DataFrame], *, horizon: int = 21,
         f["dd_252"] = c / c.rolling(252).max() - 1.0
         dv = c * vol
         f["dvol_ratio"] = (dv.rolling(20).mean() / dv.rolling(120).mean()).replace([np.inf, -np.inf], np.nan)
-        f["fwd_ret"] = c.pct_change(horizon).shift(-horizon)      # forward label
+        if fundamentals and sym in fundamentals and not fundamentals[sym].empty:
+            f["bm"] = _book_to_market(df, fundamentals[sym])   # NaN-tolerant value feature
+        f["fwd_ret"] = c.pct_change(horizon).shift(-horizon)   # forward label
         f["date"] = pd.Index(df["time"]) if "time" in df.columns else c.index
         f["symbol"] = sym
         frames.append(f)
-    panel = pd.concat(frames, ignore_index=True).dropna()
+    panel = pd.concat(frames, ignore_index=True)
+
+    # Drop rows missing any *technical* feature or the label; the fundamental ``bm`` may stay NaN.
+    tech = [col for col in panel.columns if col not in _NON_FEATURE and col != "bm"]
+    panel = panel.dropna(subset=[*tech, "fwd_ret"]).reset_index(drop=True)
 
     # Cross-sectional demeaning: subtract the per-date mean so features and target are relative.
-    feats = [c for c in panel.columns if c not in _NON_FEATURE]
+    feats = [col for col in panel.columns if col not in _NON_FEATURE]
     grp = panel.groupby("date")
-    panel[feats] = panel[feats] - grp[feats].transform("mean")
+    panel[feats] = panel[feats] - grp[feats].transform("mean")  # transform skips NaN in the mean
     panel["fwd_ret_rel"] = panel["fwd_ret"] - grp["fwd_ret"].transform("mean")
     return panel.reset_index(drop=True)
 

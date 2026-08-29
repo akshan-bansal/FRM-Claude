@@ -38,6 +38,25 @@ def test_walk_forward_recovers_the_factor() -> None:
     assert res.long_curve[-1] >= res.bench_curve[-1]           # top-quantile beats equal-weight
 
 
+def test_fundamentals_add_bm_and_tolerate_missing() -> None:
+    """A book-to-market feature is added where fundamentals exist and stays NaN (not dropped)
+    elsewhere — EDGAR only covers some names, and the GBT handles the gaps natively."""
+    uni = _universe(n_names=6, seed=4)
+    names = list(uni)
+    # give only the first two names a synthetic quarterly bvps history
+    fundamentals = {}
+    for sym in names[:2]:
+        t = uni[sym]["time"]
+        fundamentals[sym] = pd.DataFrame({"date": t[::63].to_numpy(), "bvps": np.linspace(40, 50, len(t[::63]))})
+    panel = build_panel(uni, horizon=21, fundamentals=fundamentals)
+    assert "bm" in panel.columns
+    covered = panel[panel["symbol"].isin(names[:2])]["bm"].notna().mean()
+    uncovered = panel[panel["symbol"].isin(names[2:])]["bm"].notna().mean()
+    assert covered > 0.5 and uncovered == 0.0            # covered names have bm; others NaN, still present
+    # rows for uncovered names are retained (not dropped for the missing fundamental)
+    assert panel["symbol"].nunique() == 6
+
+
 def test_fit_latest_scores_every_name() -> None:
     uni = _universe(seed=2)
     scores = CrossSectionalRanker().fit_latest(build_panel(uni, horizon=21), horizon=21)
