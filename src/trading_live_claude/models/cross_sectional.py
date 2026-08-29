@@ -181,6 +181,27 @@ class CrossSectionalRanker:
         return RankerResult(rank_ic=float(np.mean(ics)) if ics else 0.0, n_rebalances=len(ics),
                             long_curve=long_curve, bench_curve=bench_curve, ic_series=np.array(ics))
 
+    def single_split_ic(self, panel: pd.DataFrame, *, horizon: int = 21, train_frac: float = 0.6) -> float:
+        """Fast out-of-sample rank IC from one purged train/test split — cheap enough to drive a
+        feature search (one fit instead of a full walk-forward per candidate subset)."""
+        from scipy.stats import spearmanr
+
+        feats = self._feature_cols(panel)
+        dates = sorted(pd.Index(panel["date"]).unique())
+        cut = int(len(dates) * train_frac)
+        train = panel[panel["date"] <= dates[max(0, cut - horizon)]]
+        test = panel[panel["date"] > dates[cut]]
+        if len(train) < 200 or test["date"].nunique() < 3:
+            return 0.0
+        model = self._make()
+        model.fit(train[feats].to_numpy(dtype=float), train["fwd_ret_rel"].to_numpy(dtype=float))
+        pred = model.predict(test[feats].to_numpy(dtype=float))
+        test = test.assign(_pred=pred)
+        ics = test.groupby("date").apply(
+            lambda g: spearmanr(g["_pred"], g["fwd_ret_rel"]).correlation, include_groups=False)
+        m = float(np.nanmean(ics.to_numpy(dtype=float))) if len(ics) else 0.0
+        return m if np.isfinite(m) else 0.0
+
     def fit_latest(self, panel: pd.DataFrame, *, horizon: int = 21) -> dict[str, float]:
         """Train on all rows whose label is realized, then score the most recent cross-section —
         the live predicted relative forward return per name (an edge the allocator can consume)."""

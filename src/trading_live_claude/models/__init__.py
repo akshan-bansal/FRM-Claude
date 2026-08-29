@@ -6,6 +6,7 @@ from __future__ import annotations
 from .cointegration import CointegrationResult, engle_granger, half_life
 from .cross_sectional import CrossSectionalRanker, RankerResult, build_panel
 from .kalman import KalmanHedge, KalmanHedgeState
+from .pruning import PruneResult, forward_select
 from .regime import RegimeClassifier, RegimeState
 from .selection import FEATURES, SelectionModel
 
@@ -15,11 +16,13 @@ __all__ = [
     "CrossSectionalRanker",
     "KalmanHedge",
     "KalmanHedgeState",
+    "PruneResult",
     "RankerResult",
     "RegimeClassifier",
     "RegimeState",
     "SelectionModel",
     "build_panel",
     "engle_granger",
+    "forward_select",
     "half_life",
 ]
