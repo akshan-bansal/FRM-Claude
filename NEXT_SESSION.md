@@ -5,20 +5,13 @@ constraints still apply: new research goes through the **walk-forward gate** bef
 validated; anything that places live orders stays behind the **human go-live confirmation** (paper
 / dry-run first); use `httpx` (not `requests`); `ruff` + `mypy --strict` + `pytest` must stay green.
 
-## 1. Cross-interface arbitrage — interlisted equities (TSX ⇄ NYSE)
-The equity analog of the crypto cross-exchange arb. Arb the *same* stock trading on two venues:
-Canadian interlisted names on **TSX vs NYSE**, e.g. RY.TO/RY, TD.TO/TD, ENB.TO/ENB, BMO.TO/BMO,
-CNQ.TO/CNQ, SHOP.TO/SHOP. The edge is the price gap **adjusted for CAD/USD FX**, net of commissions
-— that FX leg is the twist vs the crypto version.
-
-- **Reuse:** `microstructure/cross_exchange.py::CrossExchangeArb` is the right shape; generalize it
-  so one "venue" price is FX-converted before comparison, or add an `InterlistedArb` that wraps it.
-- **Data:** Questrade quotes both the `.TO` and US listings; need a live CAD/USD rate (Questrade FX
-  quote, or a currency ETF proxy). Build an interlisted pair map (`{TSX: NYSE}`).
-- **First step:** pair map + FX-adjusted spread (`px_to * fx_usdcad` vs `px_us`) + paper detection
-  when it clears commissions. Paper only.
-- Note the user's phrasing was "cross-interface" — confirm they mean interlisted TSX/NYSE (this),
-  not arb across our *execution interfaces* (Questrade vs QC/LEAN), before building.
+## 1. Cross-interface arbitrage — interlisted equities (TSX ⇄ NYSE)  ✅ BUILT
+`microstructure/interlisted.py::InterlistedArb` — FX-adjusted TSX/NYSE dislocation detector, tested,
+committed. Live scan of 25 pairs confirmed the honest verdict: 0/25 clear at retail FX (~180 bps),
+~1/25 marginally at institutional (~3 bps). **Follow-up if revisited:** run it during **market
+hours** (the scan ran at ~2am on wide/stale closing quotes), add a **stale-quote sanity filter**
+(reject implied-FX deviations too large to be real — the MFC +500 bps artifact, the interlisted
+VELO), and stream live quotes rather than one-shot.
 
 ## 2. Deeper crypto history → walk-forward the crypto sleeve
 The crypto sleeve (`analysis/universe.py::CRYPTO_SLEEVE`: BTC, XMR, XRP, XLM, LINK, ETH) is currently
