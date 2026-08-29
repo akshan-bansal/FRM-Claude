@@ -28,7 +28,7 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         "XIC.TO", "VFV.TO", "XEF.TO", "VOO", "SPY", "QQQ", "IWM", "VTI",
         "AAPL", "MSFT", "GOOGL", "NVDA", "AMZN", "RY.TO", "TD.TO",
         # Walk-forward-validated names (see WALK_FORWARD_VALIDATED below).
-        "XLE", "SMH", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
+        "XLE", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
         "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO", "BTO.TO", "ZEB.TO",
         "FRU.TO", "TA.TO", "SRU.UN.TO", "CGL.TO", "ZUT.TO", "EFN.TO",
     ),
@@ -202,7 +202,6 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     "BTO.TO": _wf("BTO.TO", "rsi_meanrevert", {"window": 7, "oversold": 25}, 8.78, 2.69, 1.2100, -0.1580, 14, "robust"),
     "EQB.TO": _wf("EQB.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 8.17, 1.36, 0.4588, -0.1605, 11, "robust"),
     "QQQ": _wf("QQQ", "ts_momentum", {"lookback": 189, "threshold": 0.02}, 7.70, 2.72, 0.5030, -0.1420, 16, "robust"),
-    "SMH": _wf("SMH", "ts_momentum", {"lookback": 189, "threshold": 0.0}, 7.10, 1.22, 2.3069, -0.2547, 14, "robust"),
     "WCP.TO": _wf("WCP.TO", "confirm_bollinger", {"window": 30, "n_std": 3.0}, 6.62, 0.17, 0.3289, -0.0882, 5, "watch"),
     "DFY.TO": _wf("DFY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.62, 0.65, 0.2544, -0.0974, 14, "robust"),
     "KEY.TO": _wf("KEY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.11, 0.63, 0.1700, -0.0710, 5, "watch"),

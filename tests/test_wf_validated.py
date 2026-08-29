@@ -29,10 +29,10 @@ def test_robust_tier_meets_all_three_bars() -> None:
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # 17 robust + 6 watch after the $25-35 sweep adds SRU.UN.TO/CGL.TO (robust) and
-    # ZUT.TO/EFN.TO (watch), on top of ZEB.TO, FRU.TO (robust) and TA.TO (watch).
-    assert len(validated_symbols("robust")) == 17
-    assert len(WALK_FORWARD_VALIDATED) == 23
+    # 16 robust + 6 watch — SMH was omitted from the basket (deepest drawdown in the pool).
+    assert len(validated_symbols("robust")) == 16
+    assert len(WALK_FORWARD_VALIDATED) == 22
+    assert "SMH" not in WALK_FORWARD_VALIDATED
     watch = set(validated_symbols("watch"))
     assert {"VFV.TO", "WCP.TO", "KEY.TO", "TA.TO", "ZUT.TO", "EFN.TO"} == watch
 
