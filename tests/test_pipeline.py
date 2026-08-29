@@ -3,7 +3,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from trading_live_claude.portfolio import PortfolioAllocator, build_book, ranker_scores
+from trading_live_claude.backtest.costs import CostModel
+from trading_live_claude.portfolio import (
+    PortfolioAllocator,
+    backtest_book,
+    build_book,
+    ranker_scores,
+)
 
 
 def _universe(n_names: int = 16, days: int = 900, seed: int = 0) -> dict[str, pd.DataFrame]:
@@ -32,6 +38,16 @@ def test_build_book_weights_only_positive_edge_names() -> None:
     # the allocator only funds positive-edge names
     scores = ranker_scores(uni, horizon=21)
     assert all(scores[name] > 0.0 for name in res.weights)
+
+
+def test_backtest_book_charges_turnover_cost() -> None:
+    uni = _universe(n_names=18, days=900, seed=5)
+    frictionless = backtest_book(uni, horizon=21, train_min=300, cost=CostModel.frictionless())
+    dear = backtest_book(uni, horizon=21, train_min=300, cost=CostModel(slippage_bps=0, commission_bps=50, half_spread_bps=50))
+    assert frictionless.n_rebalances >= 3
+    assert dear.net_return <= frictionless.net_return          # cost only subtracts
+    assert dear.cost_drag > 0 and dear.avg_turnover > 0
+    assert np.isfinite(dear.sharpe_net) and -1.0 <= dear.max_drawdown_net <= 0.0
 
 
 def test_regime_benchmark_scales_gross() -> None:
