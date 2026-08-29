@@ -7,5 +7,6 @@ count as two independent bets) and scaling gross exposure by the market-regime s
 from __future__ import annotations
 
 from .allocator import AllocationResult, PortfolioAllocator
+from .pipeline import build_book, ranker_scores
 
-__all__ = ["AllocationResult", "PortfolioAllocator"]
+__all__ = ["AllocationResult", "PortfolioAllocator", "build_book", "ranker_scores"]
