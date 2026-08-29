@@ -41,18 +41,18 @@ def _naive(s: pd.Series) -> pd.Series:
     return t.dt.tz_localize(None) if t.dt.tz is not None else t
 
 
-def _book_to_market(df: pd.DataFrame, bvps: pd.DataFrame) -> np.ndarray:
-    """Book-to-market (bvps / close) aligned to ``df``'s bars: the latest filed book value as of
-    each date (forward-filled from the quarterly ``bvps`` frame of columns ``date``, ``bvps``).
+_FUND_FEATS = ("bm", "ey", "roe", "gross_margin")
 
-    Price bars are chronological, so ``merge_asof`` (which requires sorted keys) returns rows in the
-    original order and the result aligns positionally to ``df``.
-    """
-    left = pd.DataFrame({"t": _naive(df["time"]).to_numpy() if "time" in df.columns else df.index,
-                         "close": df["close"].astype(float).to_numpy()})
-    right = pd.DataFrame({"t": _naive(bvps["date"]).to_numpy(), "bvps": bvps["bvps"].astype(float).to_numpy()})
-    merged = pd.merge_asof(left.sort_values("t"), right.sort_values("t"), on="t", direction="backward")
-    return np.asarray((merged["bvps"] / merged["close"]).to_numpy(), dtype=float)
+
+def _align_fundamentals(df: pd.DataFrame, fund: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Forward-fill each numeric fundamental column onto ``df``'s bars (latest filing as of each
+    date, via ``merge_asof``). Returns column -> array aligned positionally to ``df``."""
+    cols = [c for c in fund.columns if c != "date"]
+    left = pd.DataFrame({"t": _naive(df["time"]).to_numpy() if "time" in df.columns else np.asarray(df.index)})
+    left["_i"] = np.arange(len(left))
+    right = pd.DataFrame({"t": _naive(fund["date"]).to_numpy(), **{c: fund[c].astype(float).to_numpy() for c in cols}})
+    merged = pd.merge_asof(left.sort_values("t"), right.sort_values("t"), on="t", direction="backward").sort_values("_i")
+    return {c: np.asarray(merged[c].to_numpy(), dtype=float) for c in cols}
 
 
 def build_panel(prices: dict[str, pd.DataFrame], *, horizon: int = 21,
@@ -89,15 +89,24 @@ def build_panel(prices: dict[str, pd.DataFrame], *, horizon: int = 21,
         dv = c * vol
         f["dvol_ratio"] = (dv.rolling(20).mean() / dv.rolling(120).mean()).replace([np.inf, -np.inf], np.nan)
         if fundamentals and sym in fundamentals and not fundamentals[sym].empty:
-            f["bm"] = _book_to_market(df, fundamentals[sym])   # NaN-tolerant value feature
+            a = _align_fundamentals(df, fundamentals[sym])     # NaN-tolerant value/quality features
+            close = c.to_numpy()
+            if "bvps" in a:
+                f["bm"] = a["bvps"] / close                    # book-to-market (value)
+            if "eps" in a:
+                f["ey"] = a["eps"] / close                     # earnings yield (value)
+            if "roe" in a:
+                f["roe"] = a["roe"]                             # return on equity (profitability)
+            if "gross_margin" in a:
+                f["gross_margin"] = a["gross_margin"]          # gross margin (quality)
         f["fwd_ret"] = c.pct_change(horizon).shift(-horizon)   # forward label
         f["date"] = pd.Index(df["time"]) if "time" in df.columns else c.index
         f["symbol"] = sym
         frames.append(f)
     panel = pd.concat(frames, ignore_index=True)
 
-    # Drop rows missing any *technical* feature or the label; the fundamental ``bm`` may stay NaN.
-    tech = [col for col in panel.columns if col not in _NON_FEATURE and col != "bm"]
+    # Drop rows missing any *technical* feature or the label; the fundamental features may stay NaN.
+    tech = [col for col in panel.columns if col not in _NON_FEATURE and col not in _FUND_FEATS]
     panel = panel.dropna(subset=[*tech, "fwd_ret"]).reset_index(drop=True)
 
     # Cross-sectional demeaning: subtract the per-date mean so features and target are relative.

@@ -47,9 +47,11 @@ def test_fundamentals_add_bm_and_tolerate_missing() -> None:
     fundamentals = {}
     for sym in names[:2]:
         t = uni[sym]["time"]
-        fundamentals[sym] = pd.DataFrame({"date": t[::63].to_numpy(), "bvps": np.linspace(40, 50, len(t[::63]))})
+        k = len(t[::63])
+        fundamentals[sym] = pd.DataFrame({"date": t[::63].to_numpy(), "bvps": np.linspace(40, 50, k),
+                                          "eps": np.linspace(3, 5, k), "roe": np.linspace(0.1, 0.2, k)})
     panel = build_panel(uni, horizon=21, fundamentals=fundamentals)
-    assert "bm" in panel.columns
+    assert {"bm", "ey", "roe"}.issubset(panel.columns)   # value + quality features added
     covered = panel[panel["symbol"].isin(names[:2])]["bm"].notna().mean()
     uncovered = panel[panel["symbol"].isin(names[2:])]["bm"].notna().mean()
     assert covered > 0.5 and uncovered == 0.0            # covered names have bm; others NaN, still present
