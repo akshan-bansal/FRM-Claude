@@ -5,11 +5,14 @@ from __future__ import annotations
 
 from .cointegration import CointegrationResult, engle_granger, half_life
 from .kalman import KalmanHedge, KalmanHedgeState
+from .regime import RegimeClassifier, RegimeState
 
 __all__ = [
     "CointegrationResult",
     "KalmanHedge",
     "KalmanHedgeState",
+    "RegimeClassifier",
+    "RegimeState",
     "engle_granger",
     "half_life",
 ]
