@@ -18,6 +18,7 @@ from .avellaneda_stoikov import (
     simulate_market_making,
 )
 from .cross_exchange import CrossExchangeArb, XArbConfig, XArbTick, run_cross_exchange_arb
+from .interlisted import InterlistedArb, InterlistedConfig, InterlistedQuote, InterlistedTick
 from .kraken_l2 import BookUpdate, KrakenOrderBook, parse_book_message, stream_order_book
 from .live_market_maker import MMConfig, MMState, PaperMarketMaker, run_paper_market_maker
 from .orderbook import LimitOrderBook, OrderBookLevel
@@ -30,6 +31,10 @@ __all__ = [
     "BookUpdate",
     "CrossExchangeArb",
     "FillModel",
+    "InterlistedArb",
+    "InterlistedConfig",
+    "InterlistedQuote",
+    "InterlistedTick",
     "KrakenOrderBook",
     "LimitOrderBook",
     "MMConfig",
