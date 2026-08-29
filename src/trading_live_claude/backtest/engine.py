@@ -18,6 +18,7 @@ import pandas as pd
 
 from ..signals.generator import SignalSet
 from ..strategies.base import Strategy, StrategyContext
+from .costs import CostModel
 from .metrics import Metrics, compute_metrics
 
 
@@ -71,10 +72,14 @@ class BacktestEngine:
         starting_equity: float = 100_000.0,
         commission_per_trade: float = 4.95,
         slippage_bps: float = 5.0,
+        cost_model: CostModel | None = None,
     ) -> None:
         self.starting_equity = starting_equity
         self.commission_per_trade = commission_per_trade
         self.slippage_bps = slippage_bps
+        # Default reproduces the original behaviour (slippage only). Pass a CostModel to run a
+        # backtest net of commission + spread (see CostModel.from_price for a realistic per-name one).
+        self.cost_model = cost_model or CostModel.legacy(slippage_bps)
 
     def run(
         self,
@@ -93,11 +98,11 @@ class BacktestEngine:
             time_stop_bars=strategy.time_stop_bars,
         )
 
-        slip = self.slippage_bps / 10_000.0
+        per_side = self.cost_model.per_side_frac()
         bar_ret = signals["close"].pct_change().fillna(0.0)
-        # apply slippage: cost on transition bars
+        # apply cost (commission + slippage + half-spread) on each position transition
         transition = position.diff().abs().fillna(0)
-        cost = transition * slip
+        cost = transition * per_side
         strat_ret = position.shift(1).fillna(0) * bar_ret - cost
         equity = self.starting_equity * (1.0 + strat_ret).cumprod()
 
