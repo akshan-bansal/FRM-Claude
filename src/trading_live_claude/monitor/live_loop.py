@@ -22,6 +22,7 @@ from ..brokers.base import Broker
 from ..brokers.models import OrderAction
 from ..data.market import MarketData
 from ..execution.router import OrderIntent, Router
+from ..intel.overlay import OverlayDecision
 from ..logging_setup import get_logger
 from ..risk.hedge import HedgePolicy, hedge_shares, hedge_weight, rebalance_delta
 from ..risk.risk_model import HeatAggregation, RiskModel, per_trade_risk, portfolio_risk
@@ -60,6 +61,7 @@ class LiveMonitor:
         heat_aggregation: str = "corr",
         hedge_symbol: str | None = None,
         hedge_policy: HedgePolicy | None = None,
+        overlay_for: Callable[[str], OverlayDecision | None] | None = None,
     ) -> None:
         self.broker = broker
         self.market = market
@@ -91,6 +93,11 @@ class LiveMonitor:
         self.hedge_symbol = hedge_symbol
         self.hedge_policy = hedge_policy or (HedgePolicy(symbol=hedge_symbol) if hedge_symbol else None)
         self._equity_peak = 0.0
+        # Live WorldMonitor risk overlay (opt-in). Given a symbol it returns the current per-asset-
+        # class decision, or None. De-risk only: its scalar trims entry conviction (smaller size) and
+        # its halt flag blocks NEW entry routing for that class. Exits are never blocked — the overlay
+        # can only stand the book down, never trap it in a position.
+        self.overlay_for = overlay_for
 
     def _strategy_for(self, symbol: str) -> Strategy:
         """The per-symbol strategy, falling back to the default ``strategy``."""
@@ -148,11 +155,17 @@ class LiveMonitor:
                 annual_vol = float(rets.tail(63).std(ddof=0) * (252.0 ** 0.5)) if len(rets) >= 20 else None
                 ss = last.get("signal_strength", 1.0)
                 conviction = 1.0 if (ss is None or pd.isna(ss)) else float(ss)
+                # Live intelligence overlay: trim conviction by the asset-class risk scalar, and note
+                # whether new entries in this class are halted (routing is skipped, alert still fires).
+                decision = self.overlay_for(symbol) if self.overlay_for else None
+                overlay_halt = decision is not None and decision.halt_new_entries
+                if decision is not None:
+                    conviction *= decision.scalar
                 sized = self.sizer.size(
                     equity=equity, entry=price, atr_value=atr_value, side="long",
                     annual_vol=annual_vol, conviction=conviction,
                 )
-                if sized.shares > 0:
+                if sized.shares > 0 and not overlay_halt:
                     entry_rets = df["close"].pct_change() if self.risk_model != "atr" else None
                     risk_dollars = per_trade_risk(
                         sized.shares, price, stop_distance=abs(price - sized.stop),
@@ -178,7 +191,13 @@ class LiveMonitor:
                 # Alert on the entry SIGNAL regardless of sizeability — the monitor is an
                 # alerter, so a real signal must surface even when the account is too small
                 # to size a position (0 shares); only the order routing is gated by shares.
-                events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, {"sized": sized.shares}))
+                entry_detail: dict[str, object] = {"sized": sized.shares}
+                if decision is not None:
+                    entry_detail["overlay"] = {"class": decision.asset_class,
+                                               "scalar": decision.scalar, "halt": overlay_halt}
+                    if overlay_halt:
+                        entry_detail["overlay_halt"] = "new entry blocked by risk overlay"
+                events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, entry_detail))
             elif exit_ and holds:
                 qty = open_positions[symbol]
                 intent = OrderIntent(

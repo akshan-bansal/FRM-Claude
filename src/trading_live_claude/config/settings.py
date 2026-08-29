@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # only the future KrakenBroker's private endpoints (balances, orders) do.
     kraken_api_key: str = ""
     kraken_api_secret: str = ""
+    # WorldMonitor OSINT/news MCP (Pro). Sent as the X-WorldMonitor-Key header to the data tools;
+    # only get_sources works without it. Not required for any trading path.
+    worldmonitor_api_key: str = ""
 
     # === Trading knobs (yaml-managed) ===
     execution_mode: ExecutionMode = "paper"

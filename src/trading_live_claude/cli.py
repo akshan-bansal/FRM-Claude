@@ -205,6 +205,14 @@ def signal(
         help="Enable the dynamic dollar-hedge overlay (UUP): scales a hedge sleeve up as "
         "the book draws down and surfaces rebalance alerts. Off by default.",
     ),
+    intel_overlay: bool = typer.Option(
+        False,
+        "--intel-overlay/--no-intel-overlay",
+        help="Gate entries with the live WorldMonitor risk overlay: trims size by the per-asset-"
+        "class risk scalar and blocks NEW entries in a halted class (never blocks exits). "
+        "Needs WORLDMONITOR_API_KEY. Off by default.",
+    ),
+    overlay_refresh: int = typer.Option(900, help="Seconds between WorldMonitor overlay refreshes."),
 ) -> None:
     """Live-signal monitor. Never places orders (dry-run router).
 
@@ -276,6 +284,25 @@ def signal(
                 f"price={ev.price:.4f} detail={ev.detail}",
             )
 
+    overlay_for = None
+    if intel_overlay:
+        if not settings.worldmonitor_api_key:
+            console.print("[red]--intel-overlay needs WORLDMONITOR_API_KEY (set it or use --no-intel-overlay).[/red]")
+            raise typer.Exit(code=1)
+        import asyncio as _asyncio
+
+        from .intel import OverlayProvider
+        from .intel.worldmonitor import WorldMonitorClient
+
+        def _snapshot():
+            async def _f():
+                async with WorldMonitorClient(settings.worldmonitor_api_key) as wm:
+                    return await wm.snapshot()
+            return _asyncio.run(_f())
+
+        overlay_for = OverlayProvider(_snapshot, refresh_seconds=float(overlay_refresh))
+        console.print(f"[cyan]intel overlay ON[/cyan] (refresh every {overlay_refresh}s; de-risk + halt gate).")
+
     monitor = LiveMonitor(
         broker=broker,
         market=market,
@@ -292,6 +319,7 @@ def signal(
         strategy_map=smap,
         emit_on_change_only=not level,
         hedge_symbol="UUP" if hedge else None,
+        overlay_for=overlay_for,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
@@ -1651,6 +1679,83 @@ def crypto_signal(
         sent += 1
     tgt = "Telegram" if (push and settings.telegram_bot_token and settings.telegram_chat_id) else "console"
     console.print(f"[green]done[/green] {sent} alert(s) → {tgt}")
+
+
+@app.command(name="intel-overlay")
+def intel_overlay(
+    demo: bool = typer.Option(False, "--demo", help="Score a synthetic stressed snapshot offline (no network/key)."),
+    chart: bool = typer.Option(True, help="Write reports/intel_overlay.png; --no-chart skips it."),
+    countries: str = typer.Option("", help="Comma-separated ISO-2 codes to weight news exposure (e.g. US,CA)."),
+) -> None:
+    """Route live WorldMonitor intelligence into a per-asset-class gross-exposure overlay.
+
+    Read-only and de-risk-only: it computes a risk scalar in [floor, 1] for equity / future /
+    commodity / fx / crypto and flags which classes should halt NEW entries. It never places an
+    order and never adds exposure. Each read is appended to state/intel_overlay.jsonl so we build our
+    own point-in-time history of the overlay over time.
+    """
+    import asyncio
+    import json as _json
+    from dataclasses import asdict
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from .intel import IntelSnapshot, RiskOverlay
+
+    if demo:
+        # A regional energy/conflict flare: commodities & futures stand down, equity/fx trim,
+        # crypto least affected — a legible gradient rather than an everything-floored world.
+        snap = IntelSnapshot(global_alert_count=2, global_max_importance=0.72,
+                             conflict_events_active=7, natural_disasters_active=1, energy_stress=0.82,
+                             market={"equity_vol": 19.0, "crypto_chg": -3.0, "dxy_chg": 0.4})
+        console.print("[cyan]intel-overlay[/cyan] (demo synthetic snapshot -- offline)")
+    else:
+        from .intel.worldmonitor import WorldMonitorClient
+        settings = get_settings()
+        if not settings.worldmonitor_api_key:
+            console.print("[yellow]WORLDMONITOR_API_KEY not set — run with --demo, or add the key.[/yellow]")
+            raise typer.Exit(1)
+        ccs = tuple(c.strip().upper() for c in countries.split(",") if c.strip())
+
+        async def _fetch() -> IntelSnapshot:
+            async with WorldMonitorClient(settings.worldmonitor_api_key) as wm:
+                return await wm.snapshot(countries=ccs)
+
+        console.print("[cyan]intel-overlay[/cyan] (live WorldMonitor)…")
+        snap = asyncio.run(_fetch())
+
+    decisions = RiskOverlay().evaluate(snap)
+
+    table = Table(title="WorldMonitor risk overlay -- gross scalar by asset class")
+    table.add_column("class")
+    table.add_column("scalar", justify="right")
+    table.add_column("new entries")
+    table.add_column("top driver")
+    for cls, d in decisions.items():
+        colour = "green" if d.scalar >= 0.7 else "yellow" if d.scalar > 0.4 else "red"
+        table.add_row(cls, f"[{colour}]{d.scalar:.0%}[/{colour}]",
+                      "[red]HALT[/red]" if d.halt_new_entries else "ok",
+                      d.reasons[0] if d.reasons else "no elevated risk")
+    console.print(table)
+    if snap.degraded:
+        console.print("[yellow]feed degraded — every class capped conservatively.[/yellow]")
+
+    # journal (build our own point-in-time history)
+    rec = {"as_of": datetime.now(UTC).isoformat(), "degraded": snap.degraded,
+           "snapshot": {k: v for k, v in asdict(snap).items() if k != "as_of"},
+           "decisions": {c: {"scalar": d.scalar, "halt": d.halt_new_entries, "reasons": d.reasons}
+                         for c, d in decisions.items()}}
+    jl = Path("state/intel_overlay.jsonl")
+    jl.parent.mkdir(parents=True, exist_ok=True)
+    with jl.open("a", encoding="utf-8") as fh:
+        fh.write(_json.dumps(rec) + "\n")
+    console.print(f"[dim]journaled -> {jl}[/dim]")
+
+    if chart:
+        from .intel.chart import render_overlay_chart
+        out = render_overlay_chart(decisions, "reports/intel_overlay.png",
+                                   as_of=snap.as_of, degraded=snap.degraded)
+        console.print(f"[green]chart[/green] -> {out}")
 
 
 def _entry() -> None:

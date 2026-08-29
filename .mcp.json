@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "worldmonitor": {
+      "url": "https://api.worldmonitor.app/mcp",
+      "headers": {
+        "X-WorldMonitor-Key": "${WORLDMONITOR_API_KEY}"
+      }
+    }
+  }
+}

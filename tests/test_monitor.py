@@ -197,3 +197,77 @@ def test_hedge_overlay_quiet_at_the_highs() -> None:
     mon = _hedge_monitor(events)
     mon.step()  # peak == equity → 0 drawdown → weight 0 → no hedge rebalance
     assert not [e for e in events if e.kind == "hedge"]
+
+
+# --- WorldMonitor risk overlay gating -------------------------------------------------
+
+class _EntryStrategy(Strategy):
+    """Always fires an entry on the last bar (for the non-held entry path)."""
+
+    name = "always_entry"
+
+    def required_history_bars(self) -> int:
+        return 3
+
+    def generate_signals(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
+        out = df.copy()
+        out["entry"] = 1
+        out["exit"] = 0
+        out["atr"] = 1.0
+        return out
+
+
+def _decision(scalar: float, halt: bool):
+    from trading_live_claude.intel.overlay import OverlayDecision
+    return OverlayDecision(asset_class="equity", scalar=scalar, halt_new_entries=halt,
+                           reasons=[], components={})
+
+
+def _entry_monitor(router, events, overlay_for):
+    from trading_live_claude.risk.sizing import PositionSizer
+    return LiveMonitor(
+        broker=_Broker(),          # type: ignore[arg-type]
+        market=_Market(),          # type: ignore[arg-type]
+        strategy=_EntryStrategy(),
+        sizer=PositionSizer(risk_pct=0.01),
+        router=router,             # type: ignore[arg-type]
+        account_number="X",
+        symbols=["CCC"],           # not held by _Broker → entry path fires
+        on_event=events.append,
+        overlay_for=overlay_for,
+    )
+
+
+def test_overlay_halt_blocks_new_entry_but_still_alerts() -> None:
+    router = _Router()
+    events: list[MonitorEvent] = []
+    _entry_monitor(router, events, lambda _s: _decision(0.25, True)).step()
+    assert router.intents == []                                   # routing blocked
+    entries = [e for e in events if e.kind == "entry"]
+    assert len(entries) == 1                                      # signal still surfaced
+    assert "overlay_halt" in entries[0].detail
+
+
+def test_overlay_trims_size_when_not_halted() -> None:
+    full_router, trim_router = _Router(), _Router()
+    _entry_monitor(full_router, [], lambda _s: _decision(1.0, False)).step()
+    _entry_monitor(trim_router, [], lambda _s: _decision(0.5, False)).step()
+    assert full_router.intents and trim_router.intents             # both route
+    assert trim_router.intents[0].shares <= full_router.intents[0].shares
+
+
+def test_overlay_never_blocks_exits() -> None:
+    router = _Router()
+    events: list[MonitorEvent] = []
+    LiveMonitor(
+        broker=_Broker(),          # type: ignore[arg-type]
+        market=_Market(),          # type: ignore[arg-type]
+        strategy=_AlwaysExit("x"),
+        sizer=None,                # type: ignore[arg-type]
+        router=router,             # type: ignore[arg-type]
+        account_number="X",
+        symbols=["AAA"],           # held → exit path
+        on_event=events.append,
+        overlay_for=lambda _s: _decision(0.25, True),  # halting overlay must NOT stop the exit
+    ).step()
+    assert any(getattr(i, "action", None) is not None for i in router.intents)  # exit routed
