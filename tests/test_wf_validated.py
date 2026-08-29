@@ -29,12 +29,12 @@ def test_robust_tier_meets_all_three_bars() -> None:
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # 16 robust + 6 watch — SMH was omitted from the basket (deepest drawdown in the pool).
-    assert len(validated_symbols("robust")) == 16
-    assert len(WALK_FORWARD_VALIDATED) == 22
+    # 18 robust + 7 watch — $25-40 sweep adds ZWB.TO/GEI.TO (robust) and XEI.TO (watch); SMH omitted.
+    assert len(validated_symbols("robust")) == 18
+    assert len(WALK_FORWARD_VALIDATED) == 25
     assert "SMH" not in WALK_FORWARD_VALIDATED
     watch = set(validated_symbols("watch"))
-    assert {"VFV.TO", "WCP.TO", "KEY.TO", "TA.TO", "ZUT.TO", "EFN.TO"} == watch
+    assert {"VFV.TO", "WCP.TO", "KEY.TO", "TA.TO", "ZUT.TO", "EFN.TO", "XEI.TO"} == watch
 
 
 def test_widened_search_robust_names_are_wired() -> None:

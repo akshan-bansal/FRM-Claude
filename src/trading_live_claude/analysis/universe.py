@@ -31,6 +31,7 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         "XLE", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
         "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO", "BTO.TO", "ZEB.TO",
         "FRU.TO", "TA.TO", "SRU.UN.TO", "CGL.TO", "ZUT.TO", "EFN.TO",
+        "ZWB.TO", "GEI.TO", "XEI.TO",
     ),
     "future": ("ES", "NQ", "YM", "RTY", "ZN", "ZB"),
     "commodity": ("GLD", "SLV", "USO", "UNG", "DBC", "CORN", "WEAT"),
@@ -194,6 +195,10 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     # SRU.UN.TO (SmartCentres REIT) cleared walk-forward from the $25-35 sweep — the first REIT in
     # the pool; RSI mean-reversion, OOS beat in-sample (WFE ~1) at the tightest drawdown of that batch.
     "SRU.UN.TO": _wf("SRU.UN.TO", "rsi_meanrevert", {"window": 7, "oversold": 25}, 13.330, 1.030, 0.3110, -0.0490, 15, "robust"),
+    # ZWB.TO (BMO covered-call Canadian banks) cleared walk-forward from the $25-40 sweep — OOS beat
+    # in-sample (WFE 1.57), the covered-call sibling of ZEB.TO (equal-weight banks); correlated but a
+    # different payoff. Second atr_channel banks-ETF in the pool.
+    "ZWB.TO": _wf("ZWB.TO", "atr_channel", {"ema_window": 10, "k": 1.5}, 11.900, 1.570, 0.2770, -0.0710, 29, "robust"),
     # CEW.TO is a CAD currency-hedged basket (not a pure FX pair); it cleared walk-forward.
     "CEW.TO": _wf("CEW.TO", "bollinger", {"window": 20, "n_std": 2.0}, 10.93, 0.76, 0.2000, -0.0620, 12, "robust"),
     "ARX.TO": _wf("ARX.TO", "bollinger", {"window": 20, "n_std": 3.0}, 8.82, 0.72, 0.5757, -0.1131, 15, "robust"),
@@ -210,9 +215,16 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     "CGL.TO": _wf("CGL.TO", "atr_channel", {"ema_window": 30, "k": 1.5}, 5.830, 1.230, 0.6550, -0.1350, 23, "robust"),
     "IWM": _wf("IWM", "bollinger", {"window": 30, "n_std": 2.0}, 5.82, 0.93, 0.1600, -0.0810, 14, "robust"),
     "RS": _wf("RS", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.75, 0.88, 0.0780, -0.0610, 12, "robust"),
+    # GEI.TO (Gibson Energy) cleared walk-forward from the $25-40 sweep — OOS beat in-sample
+    # (WFE 0.65), +28.6% at -7.4% DD; robust but on exactly 10 OOS trades (a thinner sample).
+    "GEI.TO": _wf("GEI.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.490, 0.650, 0.2860, -0.0740, 10, "robust"),
     # ZUT.TO (BMO utilities) has a huge WFE (4.35) but only 8 out-of-sample trades — too thin a
     # sample to call robust, so it is carried at watch (same reason as VFV.TO).
     "ZUT.TO": _wf("ZUT.TO", "ts_momentum", {"lookback": 189, "threshold": 0.0}, 5.190, 4.350, 0.2040, -0.1050, 8, "watch"),
+    # XEI.TO (iShares Cdn equal-weight income ETF) topped the $25-40 in-sample sweep (8.4) but the
+    # walk-forward re-opt picked atr_channel and the score decayed hard (IS 12.8 -> OOS 3.8) with a
+    # WFE right on the 0.5 gate — clears robust on paper but carried at watch on that thin margin.
+    "XEI.TO": _wf("XEI.TO", "atr_channel", {"ema_window": 20, "k": 1.5}, 3.830, 0.530, 0.0570, -0.0680, 20, "watch"),
     # EFN.TO (Element Fleet) cleared the robust gate (WFE 0.92, 24 trades) but is carried at watch
     # on a drawdown call: its -19.3% OOS drawdown echoes TA.TO. Flip to robust if that's acceptable.
     "EFN.TO": _wf("EFN.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 3.210, 0.920, 0.3560, -0.1930, 24, "watch"),
