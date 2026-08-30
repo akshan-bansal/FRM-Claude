@@ -46,6 +46,7 @@ class IntelSnapshot:
     natural_disasters_active: int = 0
     energy_stress: float = 0.0                 # [0, 1]
     strategic_risk: float = 0.0                # WorldMonitor global geopolitical index, 0-100
+    event_acceleration: dict[str, float] = field(default_factory=dict)  # domain -> recent/baseline event flow
     fear_greed: float | None = None            # market fear/greed composite, 0-100 (low = fear/risk-off)
     market: dict[str, float] = field(default_factory=dict)  # equity_vol, dxy, crypto, *_chg
     degraded: bool = False
@@ -89,6 +90,11 @@ class OverlayConfig:
     strat_hi: float = 90.0             # ...and at/above which the geo gate bottoms out (SEVERE)
     fear_hi: float = 45.0              # fear/greed at/above which no de-risk (>=45 = neutral/greed)
     fear_lo: float = 18.0              # ...and at/below which the fear gate bottoms out (extreme fear)
+    accel_lo: float = 1.5              # event-flow acceleration below which no de-risk
+    accel_hi: float = 4.0              # ...and at/above which the acceleration gate bottoms out
+    accel_floor: float = 0.75          # short-retention archive -> tilt only, max 25% trim
+    fear_floor: float = 0.75           # gentlest gate: extreme fear trims at most 25%, since
+    #                                    sentiment is a tilt, not a stop (own floor, not cfg.floor)
 
 
 class RiskOverlay:
@@ -107,11 +113,23 @@ class RiskOverlay:
         by_strat = _ramp(s.strategic_risk, c.strat_lo, c.strat_hi, 1.0, c.floor) if s.strategic_risk else 1.0
         return min(by_count, by_imp, by_strat)
 
+    def _accel_gate(self, s: IntelSnapshot, *domains: str) -> float:
+        """De-risk as event flow in the given domains accelerates past its own recent baseline.
+
+        Deliberately gentle (``accel_floor``): the archive behind this is short-retention, so it is
+        treated as a situational tilt, never a validated signal.
+        """
+        vals = [s.event_acceleration.get(d, 1.0) for d in domains if d in s.event_acceleration]
+        if not vals:
+            return 1.0
+        worst = max(vals)
+        return _ramp(worst, self.cfg.accel_lo, self.cfg.accel_hi, 1.0, self.cfg.accel_floor)
+
     def _fear_gate(self, s: IntelSnapshot) -> float:
         """Market fear/greed (0-100): low = fear/risk-off -> de-risk. None or >= fear_hi -> no effect."""
         if s.fear_greed is None:
             return 1.0
-        return _ramp(s.fear_greed, self.cfg.fear_hi, self.cfg.fear_lo, 1.0, self.cfg.floor)
+        return _ramp(s.fear_greed, self.cfg.fear_hi, self.cfg.fear_lo, 1.0, self.cfg.fear_floor)
 
     def _conflict_gate(self, s: IntelSnapshot) -> float:
         return _ramp(s.conflict_events_active, 0.0, self.cfg.conflict_full, 1.0, self.cfg.floor)
@@ -144,19 +162,24 @@ class RiskOverlay:
         comps: dict[str, float]
         if asset_class == "equity":
             comps = {"global": g, "economy": self._econ_gate(s), "equity_vol": self._vix_gate(s),
-                     "fear": self._fear_gate(s), "conflict": _blend(self._conflict_gate(s), 0.5)}
+                     "fear": self._fear_gate(s), "conflict": _blend(self._conflict_gate(s), 0.5),
+                     "event_flow": self._accel_gate(s, "conflict", "military")}
         elif asset_class == "future":
             comps = {"global": g, "energy": self._energy_gate(s),
-                     "conflict": self._conflict_gate(s), "equity_vol": _blend(self._vix_gate(s), 0.5)}
+                     "conflict": self._conflict_gate(s), "equity_vol": _blend(self._vix_gate(s), 0.5),
+                     "event_flow": self._accel_gate(s, "conflict", "military", "energy")}
         elif asset_class == "commodity":
             comps = {"global": _blend(g, 0.5), "energy": self._energy_gate(s),
-                     "conflict": self._conflict_gate(s), "disaster": self._disaster_gate(s)}
+                     "conflict": self._conflict_gate(s), "disaster": self._disaster_gate(s),
+                     "event_flow": self._accel_gate(s, "energy", "conflict")}
         elif asset_class == "fx":
             comps = {"global": g, "economy": self._econ_gate(s), "dxy": self._dxy_gate(s),
-                     "conflict": _blend(self._conflict_gate(s), 0.5)}
+                     "conflict": _blend(self._conflict_gate(s), 0.5),
+                     "event_flow": self._accel_gate(s, "conflict", "energy")}
         else:  # crypto — high beta to global risk-off
             comps = {"global": g ** self.cfg.crypto_beta, "crypto_vol": self._crypto_vol_gate(s),
-                     "fear": self._fear_gate(s), "economy": self._econ_gate(s)}
+                     "fear": self._fear_gate(s), "economy": self._econ_gate(s),
+                     "event_flow": self._accel_gate(s, "conflict", "military")}
 
         scalar = 1.0
         for v in comps.values():
@@ -193,6 +216,7 @@ _GATE_LABEL = {
     "dxy": "sharp US-dollar move",
     "crypto_vol": "elevated crypto volatility",
     "fear": "market fear (low fear/greed)",
+    "event_flow": "accelerating OSINT event flow",
 }
 
 

@@ -153,3 +153,14 @@ def test_overlay_provider_is_fail_safe() -> None:
     state["ok"] = False
     second = prov("AAPL")
     assert first is not None and second is not None and second.scalar == first.scalar
+
+
+def test_fear_gate_floors_at_075() -> None:
+    """Sentiment is a tilt, not a stop: extreme fear trims at most 25%."""
+    ov = RiskOverlay()
+    calm = ov._fear_gate(IntelSnapshot(fear_greed=70.0))       # greed -> no de-risk
+    panic = ov._fear_gate(IntelSnapshot(fear_greed=5.0))       # extreme fear -> floored
+    assert calm == 1.0
+    assert abs(panic - OverlayConfig().fear_floor) < 1e-9
+    assert OverlayConfig().fear_floor == 0.75
+    assert ov._fear_gate(IntelSnapshot(fear_greed=None)) == 1.0   # missing -> no effect

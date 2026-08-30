@@ -18,6 +18,7 @@ shape differs — the scoring in :mod:`overlay` is a pure function of the normal
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import TracebackType
 from typing import Any
 
@@ -25,6 +26,7 @@ import httpx
 import structlog
 
 from trading_live_claude.config.settings import Settings
+from trading_live_claude.intel.events import INTEL_DOMAINS, event_intensity
 from trading_live_claude.intel.overlay import IntelSnapshot
 
 log = structlog.get_logger(__name__)
@@ -152,7 +154,17 @@ class WorldMonitorClient:
         energy = await _try("get_energy_intelligence", {"summary": True})
         market = await _try("get_market_data", {"symbols": list(MARKET_PROBES.values())})
 
-        return _build_snapshot(news, conflict, disasters, energy, market, countries, degraded)
+        # Event-flow intelligence from the intel archive. Short retention (~weeks), so it is used
+        # only as a recent-vs-baseline acceleration tilt — never as a validated signal.
+        accel: dict[str, float] = {}
+        for dom in INTEL_DOMAINS:
+            payload = await _try("get_intel_timeline", {"domain": dom})
+            recs = (_unwrap(payload) or {}).get("records", []) if payload else []
+            if recs:
+                accel[dom] = round(event_intensity(recs, domain=dom).acceleration, 4)
+
+        snap = _build_snapshot(news, conflict, disasters, energy, market, countries, degraded)
+        return replace(snap, event_acceleration=accel)
 
 
 def _num(obj: Any, *keys: str, default: float = 0.0) -> float:
