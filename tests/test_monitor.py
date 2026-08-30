@@ -245,7 +245,8 @@ def test_overlay_halt_blocks_new_entry_but_still_alerts() -> None:
     assert router.intents == []                                   # routing blocked
     entries = [e for e in events if e.kind == "entry"]
     assert len(entries) == 1                                      # signal still surfaced
-    assert "overlay_halt" in entries[0].detail
+    assert "halt_reason" in entries[0].detail
+    assert entries[0].detail["mitigation"]["halt"] is True         # type: ignore[index]
 
 
 def test_overlay_trims_size_when_not_halted() -> None:
@@ -271,3 +272,22 @@ def test_overlay_never_blocks_exits() -> None:
         overlay_for=lambda _s: _decision(0.25, True),  # halting overlay must NOT stop the exit
     ).step()
     assert any(getattr(i, "action", None) is not None for i in router.intents)  # exit routed
+
+
+def test_strategy_risk_gate_trims_size_without_osint() -> None:
+    """The shipped vol-based strategy-risk gate scales size on its own (no OSINT configured)."""
+    plain, gated = _Router(), _Router()
+    _entry_monitor(plain, [], None).step()
+    LiveMonitor(
+        broker=_Broker(),          # type: ignore[arg-type]
+        market=_Market(),          # type: ignore[arg-type]
+        strategy=_EntryStrategy(),
+        sizer=__import__("trading_live_claude.risk.sizing", fromlist=["PositionSizer"]).PositionSizer(risk_pct=0.01),
+        router=gated,              # type: ignore[arg-type]
+        account_number="X",
+        symbols=["CCC"],
+        strategy_risk=True,
+    ).step()
+    assert plain.intents and gated.intents
+    # flat synthetic prices -> zero vol -> scalar stays 1.0, so sizing must be unchanged
+    assert gated.intents[0].shares == plain.intents[0].shares

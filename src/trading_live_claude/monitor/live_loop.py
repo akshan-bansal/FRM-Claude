@@ -24,6 +24,8 @@ from ..data.market import MarketData
 from ..execution.router import OrderIntent, Router
 from ..intel.overlay import OverlayDecision
 from ..logging_setup import get_logger
+from ..models.risk_mitigation import combine
+from ..models.strategy_risk import scalar_from_signals
 from ..risk.hedge import HedgePolicy, hedge_shares, hedge_weight, rebalance_delta
 from ..risk.risk_model import HeatAggregation, RiskModel, per_trade_risk, portfolio_risk
 from ..risk.sizing import PositionSizer
@@ -62,6 +64,7 @@ class LiveMonitor:
         hedge_symbol: str | None = None,
         hedge_policy: HedgePolicy | None = None,
         overlay_for: Callable[[str], OverlayDecision | None] | None = None,
+        strategy_risk: bool = False,
     ) -> None:
         self.broker = broker
         self.market = market
@@ -98,6 +101,10 @@ class LiveMonitor:
         # its halt flag blocks NEW entry routing for that class. Exits are never blocked — the overlay
         # can only stand the book down, never trap it in a position.
         self.overlay_for = overlay_for
+        # Strategy-risk gate: the trailing-volatility scalar computed from the strategy's own return
+        # stream. Chosen over the gradient-boosted classifier because an honest walk-forward showed
+        # the simple rule is the better forward-drawdown predictor (6 of 8 real strategies).
+        self.strategy_risk = strategy_risk
 
     def _strategy_for(self, symbol: str) -> Strategy:
         """The per-symbol strategy, falling back to the default ``strategy``."""
@@ -158,9 +165,19 @@ class LiveMonitor:
                 # Live intelligence overlay: trim conviction by the asset-class risk scalar, and note
                 # whether new entries in this class are halted (routing is skipped, alert still fires).
                 decision = self.overlay_for(symbol) if self.overlay_for else None
-                overlay_halt = decision is not None and decision.halt_new_entries
-                if decision is not None:
-                    conviction *= decision.scalar
+                # Strategy risk (backtestable, from the strategy's own returns) composed with the
+                # live OSINT class scalar. Both only de-risk; either can halt new entries.
+                srisk = 1.0
+                if self.strategy_risk:
+                    try:
+                        srisk = scalar_from_signals(
+                            signals, atr_stop_mult=strat.stop_atr_mult,
+                            trail_atr_mult=strat.trail_atr_mult, time_stop_bars=strat.time_stop_bars)
+                    except Exception as e:  # pragma: no cover - never break the poll on a risk calc
+                        log.warning("monitor.strategy_risk.failed", symbol=symbol, error=str(e))
+                mitigation = combine(srisk, decision)
+                overlay_halt = mitigation.halt
+                conviction *= mitigation.scalar
                 sized = self.sizer.size(
                     equity=equity, entry=price, atr_value=atr_value, side="long",
                     annual_vol=annual_vol, conviction=conviction,
@@ -192,11 +209,14 @@ class LiveMonitor:
                 # alerter, so a real signal must surface even when the account is too small
                 # to size a position (0 shares); only the order routing is gated by shares.
                 entry_detail: dict[str, object] = {"sized": sized.shares}
-                if decision is not None:
-                    entry_detail["overlay"] = {"class": decision.asset_class,
-                                               "scalar": decision.scalar, "halt": overlay_halt}
+                if decision is not None or self.strategy_risk:
+                    entry_detail["mitigation"] = {
+                        "scalar": mitigation.scalar, "strategy": mitigation.strategy_scalar,
+                        "osint": mitigation.osint_scalar, "halt": overlay_halt,
+                        "class": decision.asset_class if decision else None,
+                    }
                     if overlay_halt:
-                        entry_detail["overlay_halt"] = "new entry blocked by risk overlay"
+                        entry_detail["halt_reason"] = "; ".join(mitigation.reasons)
                 events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, entry_detail))
             elif exit_ and holds:
                 qty = open_positions[symbol]

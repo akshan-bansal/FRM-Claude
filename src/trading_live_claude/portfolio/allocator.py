@@ -43,7 +43,8 @@ class PortfolioAllocator:
         self.vol_floor = vol_floor
 
     def allocate(self, returns: Mapping[str, pd.Series], scores: Mapping[str, float], *,
-                 regime_scalar: float = 1.0, sleeves: Mapping[str, str] | None = None) -> AllocationResult:
+                 regime_scalar: float = 1.0, sleeves: Mapping[str, str] | None = None,
+                 risk_scalars: Mapping[str, float] | None = None) -> AllocationResult:
         names = [n for n in returns if scores.get(n, 0.0) > self.min_score]
         if not names:
             return AllocationResult({}, 0.0, 1.0, {}, 0.0)
@@ -65,11 +66,18 @@ class PortfolioAllocator:
             w = self._cap_sleeves(w, sleeves)
 
         gross = float(np.clip(regime_scalar, 0.0, 1.0))
-        weights = {n: float(w[n] * gross) for n in names if w[n] > 1e-9}
+        # Per-name strategy-risk scalars (e.g. models.strategy_risk.vol_risk_scalar). De-risk only:
+        # each is clipped to <= 1, so a name can shrink but never grow, and the freed weight becomes
+        # cash rather than being redistributed past another name's cap.
+        rs = {n: float(np.clip((risk_scalars or {}).get(n, 1.0), 0.0, 1.0)) for n in names}
+        weights = {n: float(w[n] * gross * rs[n]) for n in names if w[n] * rs[n] > 1e-9}
         sleeve_w: dict[str, float] = {}
         for n, wt in weights.items():
             sleeve_w[sleeves.get(n, "default")] = sleeve_w.get(sleeves.get(n, "default"), 0.0) + wt
-        wn = np.array(list(w[w > 1e-9]))
+        # Diversification number from the FINAL weight shape (identical to the pre-scaled shape when
+        # no risk scalars are supplied, since a uniform factor cancels under normalization).
+        wn = np.array(list(weights.values()))
+        wn = wn / wn.sum() if wn.size and wn.sum() > 0 else wn
         eff = float(1.0 / np.sum(wn ** 2)) if wn.size else 0.0
         return AllocationResult(weights=weights, gross_exposure=sum(weights.values()),
                                 cash=1.0 - sum(weights.values()), sleeve_weights=sleeve_w,
