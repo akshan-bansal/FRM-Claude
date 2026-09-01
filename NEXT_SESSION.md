@@ -5,6 +5,47 @@ constraints still apply: new research goes through the **walk-forward gate** bef
 validated; anything that places live orders stays behind the **human go-live confirmation** (paper
 / dry-run first); use `httpx` (not `requests`); `ruff` + `mypy --strict` + `pytest` must stay green.
 
+## 0. Full resweep — reproducible calibration on the expanded universe  🟢 SCRIPTED, run pending
+
+Universe expansion + reproducible-calibration plumbing landed this session (commit `6d20e50`).
+`scripts/sweep_universe.py` now takes `--min 0 --max 1_000_000 --wf-top 30 --tag <label>
+--carry-held` (default ON) and writes to `reports/sweep_{tag}_{panel,walkforward}.csv`. Held
+names (CGL.TO, ZUT.TO, SDE.TO) always reach the walk-forward stage regardless of screen filters,
+flagged in the output — so a resweep can never silently drop coverage of what we actually own.
+
+**Runbook to complete next session** — 3 steps, foreground shell (Windows stdout buffers in
+background; ~476 cached names → ~439 pass screen → panel ~40 min, WF ~10 min more):
+
+```
+# 1. Pre-warm the cache for held names + the expanded SEED (adds anything Questrade will fetch).
+#    Held names had NO cached history on the partial resweep run — this is the exact "silent
+#    drop" the carry-in was designed to catch, and warm_cache.py is the fix.
+python scripts/warm_cache.py --held --seed equity --years 5
+
+# 2. Full resweep. Reports land at reports/sweep_resweep_full_{panel,walkforward}.csv.
+python scripts/sweep_universe.py --tag resweep_full --min 0 --max 1000000 \
+    --wf-top 30 --min-bars 900
+
+# 3. Inspect the WF output; edit analysis/universe.py::WALK_FORWARD_VALIDATED with survivors.
+#    Held names appearing BELOW top-N in that CSV are research prompts, not auto-sells — the
+#    current holding is not in the sweep's best cohort.
+```
+
+Also useful during the vertex/edge iteration:
+
+```
+# Grow the intel graph off-cadence (default 15-min vendor cadence; --sleep tunable).
+python scripts/thicken_graph.py --iterations 20
+
+# Read the current shape any time (writes reports/graph_profile.md).
+python scripts/graph_profile.py
+```
+
+Partial resweep observations from this session (killed at panel 50/439):
+- Cached universe: 476 names with ≥900 bars; 439 pass ADV≥$1M and price>$0
+- Held assets (CGL.TO, ZUT.TO, SDE.TO) had NO cached history — warm_cache is the prereq
+- Panel-stage throughput: ~10 names/min ⇒ ~40 min for the full 439, then ~30 WF folds ~10 min more
+
 ## 1. Cross-interface arbitrage — interlisted equities (TSX ⇄ NYSE)  ✅ BUILT
 `microstructure/interlisted.py::InterlistedArb` — FX-adjusted TSX/NYSE dislocation detector, tested,
 committed. Live scan of 25 pairs confirmed the honest verdict: 0/25 clear at retail FX (~180 bps),
