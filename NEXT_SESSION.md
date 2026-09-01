@@ -135,20 +135,45 @@ three land, one continuous paper session run through market hours for a week is 
 the go-live pre-check, and `live-trade-confirm` can grow a real assertion against the equity CSV
 (peak, drawdown, trade count) rather than the existence-check it can do today.
 
-## 6. GraphRAG / multi-agent overlay on the intel wing  🟡 MVP BUILT
-Shipped the "concrete first step" in commit `e475b3c`: `intel/graph.py` — an append-only edge
-journal that decomposes every snapshot into typed `(subject, predicate, object, weight, ts)` rows
-under `state/intel_graph.jsonl`. Node types (poll, domain, region, source, market), predicates
-(observed, elevated_in, co_occurs, stressed_by). Wired into `intel/history.py::append_snapshot`
-so every existing caller picks it up for free. Includes an `edge_persistence` query and 10 tests.
+## 6. GraphRAG / multi-agent overlay on the intel wing  🟡 SHIPPED + HELD
 
-**Still to do (the bigger vision):**
-- Per-event decomposition when we consume the raw events archive directly (the current MVP uses
-  the vendor's already-aggregated snapshot fields — good enough for persistence, thin for
-  corroboration).
-- SQLite or Neo4j backend when cross-edge queries get interesting; JSONL is fine at MVP.
-- OASIS-style specialist reader agents and adversarial thesis debate (off-cadence enrichment
-  layer whose outputs the live loop reads).
+**Current posture (decided this session): keep the pipeline informative on the rule + graph
+layers alone; iterate vertices/edges from journaled inputs as the record accrues; hold the
+specialist/adversary agent sim layer.** The agent layer is built and tested, but wiring it into
+the live poll cadence needs an Anthropic Console API key (separate from Claude Desktop, ~cents
+per debate run at Sonnet 5), and the value only compounds once the graph journal has meaningful
+depth — running debate on a thin corpus is expensive noise. Revisit when the graph has weeks of
+history and there is a specific hypothesis worth the LLM round-trip to sharpen.
+
+**What's built and running today:**
+- `intel/graph.py` — append-only edge journal at `state/intel_graph.jsonl`. Snapshot decomposes
+  into typed `(subject, predicate, object, weight, ts)` rows. Node types: poll, domain, region,
+  source, market, event. Predicates: observed, elevated_in, co_occurs, stressed_by, mentioned_by,
+  about_domain, affects_region.
+- **Per-event decomposition** (commit `75206bf`) — `WorldMonitorClient.snapshot` writes per-event
+  edges from news cross-source signals, advisories, and conflict strategic-risk sample. Vendor id
+  preferred; deterministic hash of title+timestamp fallback. Corroboration is now a graph query.
+- `recent_events_from_graph()` projects edges back into evidence records for downstream consumers.
+- `edge_persistence()` query — "this predicate→object edge has held for N consecutive polls".
+- Inverse-weighted source freshness (commit `75206bf`) — market-driven gates (fear, VIX, DXY,
+  crypto_vol) now discounted by the market payload age; the freshness formula weights each
+  source by its own freshness so a stale source drags the blend down less than a naive mean.
+
+**What's built but held (not wired into the live path):**
+- `intel/agents.py` — SpecialistReader (per domain), Adversary, `debate()`. Real Anthropic
+  Messages API calls (no injectable stub); respx-mocked in tests. Commits `c925916` + `f523349`.
+- `interpret.py::enrich_with_agents()` — merges FiredThesis rows into the rule reads with
+  vocabulary-aligned confidence bands. Deliberately explicit-opt-in; not called from anywhere on
+  the deterministic hot path. Kept available so a future runner (e.g. `scripts/paper_intel_debate.py`)
+  can call it on-demand once a Console key is in place and the graph journal is deep enough to
+  reward the LLM cost.
+
+**Iterative next steps that keep this posture:**
+- Extend `snapshot_to_edges` and the vendor-payload decomposition as new evidence shapes surface
+  (e.g. per-event severity edges, per-actor mentions, per-corridor edges for shipping/energy).
+- Grow the `edge_persistence` query family: co-persistence across two edges, thickening rate,
+  first-seen recency. These are the features `intel/history.py` cannot express on the flat frame.
+- SQLite backend once the JSONL grows past a few MB — the query surface stays the same.
 
 Original speculative spec kept below.
 
