@@ -25,7 +25,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from trading_live_claude.analysis.universe import min_oos_trades
+from trading_live_claude.analysis.universe import HELD_ASSETS, min_oos_trades
 from trading_live_claude.backtest import BacktestEngine
 from trading_live_claude.backtest.costs import CostModel
 from trading_live_claude.intel.routing import classify_symbol
@@ -170,18 +170,50 @@ def walk_forward(df: pd.DataFrame, sym: str, train: int = 504, test: int = 126):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--min", type=float, default=1.0)
-    ap.add_argument("--max", type=float, default=45.0)
+    ap.add_argument("--min", type=float, default=0.0)
+    ap.add_argument("--max", type=float, default=1_000_000.0,
+                    help="Upper price bound. Default is effectively no cap; pass a value to bracket.")
     ap.add_argument("--min-adv", type=float, default=1_000_000.0)
     ap.add_argument("--min-bars", type=int, default=900)
-    ap.add_argument("--wf-top", type=int, default=15)
+    ap.add_argument("--wf-top", type=int, default=30,
+                    help="How many top in-sample scorers to walk-forward. Was 15; widened to 30 for "
+                         "the no-price-cap resweep so promising names outside the earlier $1-45 "
+                         "band actually reach stage 3.")
+    ap.add_argument("--tag", default="resweep",
+                    help="Filename tag for the reports (reports/sweep_{tag}_{panel,walkforward}.csv). "
+                         "Bump when re-running with different filter parameters so history is preserved.")
+    ap.add_argument("--carry-held/--no-carry-held", dest="carry_held", default=True,
+                    action=argparse.BooleanOptionalAction,
+                    help="Force currently-held names (HELD_ASSETS) into the panel and walk-forward "
+                         "stages regardless of price / liquidity filters. Default ON.")
     args = ap.parse_args()
 
     print(f"[1/3] loading cache (>= {args.min_bars} bars)...", flush=True)
     frames = deepest_frames(args.min_bars)
     cand = screen(frames, args.min, args.max, args.min_adv)
     print(f"      {len(frames)} cached -> {len(cand)} candidates in "
-          f"${args.min:.0f}-{args.max:.0f} (ADV >= ${args.min_adv:,.0f})", flush=True)
+          f"${args.min:.2f}-${args.max:,.0f} (ADV >= ${args.min_adv:,.0f})", flush=True)
+
+    # Carry currently-held names in even when they fail the screen — we always want a rating on
+    # what we actually own, and filter-driven silent drops are exactly the artifact a resweep is
+    # meant to surface. Only add if the cache has enough bars to say anything.
+    if args.carry_held:
+        already = set(cand["sym"].tolist())
+        carried: list[dict[str, object]] = []
+        for sym in HELD_ASSETS:
+            if sym in already:
+                continue
+            df = frames.get(sym)
+            if df is None or len(df) < args.min_bars:
+                print(f"      carry-held: skipping {sym} (no cached history)", flush=True)
+                continue
+            t = df.tail(60)
+            px = float(t["close"].iloc[-1])
+            adv = float((t["close"] * t["volume"]).mean()) if "volume" in t.columns else 0.0
+            carried.append({"sym": sym, "price": px, "adv": adv, "vol": 0.0, "bars": len(df)})
+            print(f"      carry-held: {sym} @ ${px:.2f} added to candidates", flush=True)
+        if carried:
+            cand = pd.concat([cand, pd.DataFrame(carried)], ignore_index=True)
 
     print(f"[2/3] in-sample panel over {len(cand)} names...", flush=True)
     rows = []
@@ -192,15 +224,26 @@ def main() -> None:
             continue
         rows.append({"sym": s, "price": r["price"], "adv": r["adv"], "score": b[0],
                      "strategy": b[1], "params": b[2], "sharpe": b[3].sharpe,
-                     "maxdd": b[3].max_drawdown, "trades": b[3].num_trades})
+                     "maxdd": b[3].max_drawdown, "trades": b[3].num_trades,
+                     "held": s in HELD_ASSETS})
         if (int(i) + 1) % 25 == 0:
             print(f"      {int(i) + 1}/{len(cand)}", flush=True)
     panel = pd.DataFrame(rows).sort_values("score", ascending=False).reset_index(drop=True)
-    panel.to_csv("reports/sweep_1_45_panel.csv", index=False)
-    print(f"      panel written ({len(panel)} scored)", flush=True)
+    panel_path = f"reports/sweep_{args.tag}_panel.csv"
+    panel.to_csv(panel_path, index=False)
+    print(f"      panel written ({len(panel)} scored) -> {panel_path}", flush=True)
 
+    # Stage-3 candidates: top N by in-sample score, PLUS every held name (whether it made top-N
+    # or not). Held names appearing outside the top-N have their scores read as a warning that
+    # the current holding isn't in the sweep's best cohort — not a reason to drop coverage.
     lead = panel.head(args.wf_top)
-    print(f"[3/3] walk-forward on top {len(lead)}...", flush=True)
+    if args.carry_held:
+        held_extras = panel[panel.held & ~panel.sym.isin(lead.sym.tolist())]
+        if not held_extras.empty:
+            lead = pd.concat([lead, held_extras], ignore_index=True)
+            print(f"      carry-held: {len(held_extras)} held name(s) added below the top-{args.wf_top}",
+                  flush=True)
+    print(f"[3/3] walk-forward on {len(lead)} candidates...", flush=True)
     wf_rows = []
     for _, r in lead.iterrows():
         s = str(r["sym"])
@@ -214,14 +257,19 @@ def main() -> None:
                             and w["oos_trades"] >= min_oos_trades(cls)) else "watch"
         wf_rows.append({"sym": s, "price": r["price"], "is_score": r["score"],
                         "strategy": r["strategy"], "params": r["params"], **w,
-                        "asset_class": cls, "min_trades": min_oos_trades(cls), "tier": tier})
-        print(f"      {s}: OOS {w['oos_score']:.2f} WFE {w['wfe']:.2f} "
+                        "asset_class": cls, "min_trades": min_oos_trades(cls), "tier": tier,
+                        "held": s in HELD_ASSETS})
+        print(f"      {s}{'*' if s in HELD_ASSETS else ' '}: "
+              f"OOS {w['oos_score']:.2f} WFE {w['wfe']:.2f} "
               f"trades {w['oos_trades']} -> {tier}", flush=True)
     wf = pd.DataFrame(wf_rows).sort_values("oos_score", ascending=False).reset_index(drop=True)
-    wf.to_csv("reports/sweep_1_45_walkforward.csv", index=False)
-    print(f"\nrobust: {(wf.tier == 'robust').sum()}   watch: {(wf.tier == 'watch').sum()}")
-    print(wf[["sym", "price", "strategy", "oos_score", "wfe", "oos_trades", "tier"]]
+    wf_path = f"reports/sweep_{args.tag}_walkforward.csv"
+    wf.to_csv(wf_path, index=False)
+    print(f"\nrobust: {(wf.tier == 'robust').sum()}   watch: {(wf.tier == 'watch').sum()}"
+          f"   held-in-pool: {int(wf['held'].sum()) if 'held' in wf.columns else 0}")
+    print(wf[["sym", "held", "price", "strategy", "oos_score", "wfe", "oos_trades", "tier"]]
           .to_string(index=False, float_format=lambda v: f"{v:.2f}"))
+    print(f"\nreport -> {wf_path}")
 
 
 if __name__ == "__main__":

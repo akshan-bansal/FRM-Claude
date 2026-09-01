@@ -21,21 +21,80 @@ import pandas as pd
 
 AssetClass = Literal["equity", "future", "commodity", "crypto"]
 
+# Names currently held in the live QT account. Always carried in to every sweep and every
+# screen regardless of price / liquidity / volatility filters, so a resweep can never silently
+# drop coverage of what we actually own. Update by hand when positions change; a broker probe
+# would be more automatic but also more fragile (the fetch would need to be non-blocking).
+HELD_ASSETS: tuple[str, ...] = ("CGL.TO", "ZUT.TO", "SDE.TO")
+
 # Curated seed pools. Futures/commodities use liquid ETF proxies so the same
 # equities data path works; swap for native continuous-future tickers under LEAN.
+#
+# Expansion decisions (Sep 2026 resweep):
+#   * TSX side widened to cover the six sector-index ETFs (XIC/XIU/XEG/XEF/XFN/etc), the big
+#     financials and energy names, gold + materials producers, and REIT breadth. Point is to
+#     let the sweep find survivors we currently exclude by construction.
+#   * US side widened to the SPDR sector ETFs + a curated mega-cap / cyclical / defensive
+#     spread. Names picked to span sectors, not to be a market-cap ranking.
+#   * Commodity sleeve expanded to include the metals and ags the WF pool has been thin on.
+#   * Futures list held to the six index/rates continuous-contract placeholders. There is no
+#     futures execution path in the framework yet, so more futures = more nothing traded.
+#   * Crypto seed matches the current CRYPTO_SLEEVE routed-symbol form for consistency; the
+#     canonical sleeve entries live below in CRYPTO_SLEEVE.
 SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
     "equity": (
-        "XIC.TO", "VFV.TO", "XEF.TO", "VOO", "SPY", "QQQ", "IWM", "VTI",
-        "AAPL", "MSFT", "GOOGL", "NVDA", "AMZN", "RY.TO", "TD.TO",
-        # Walk-forward-validated names (see WALK_FORWARD_VALIDATED below).
-        "XLE", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
-        "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO", "BTO.TO", "ZEB.TO",
-        "FRU.TO", "TA.TO", "SRU.UN.TO", "CGL.TO", "ZUT.TO", "EFN.TO",
-        "ZWB.TO", "GEI.TO", "XEI.TO", "CRT.UN.TO", "VALE", "DBC",
+        # --- broad indexes / ETFs (Canada + US)
+        "XIC.TO", "XIU.TO", "VFV.TO", "XEF.TO", "XEM.TO", "VCE.TO",
+        "VOO", "SPY", "QQQ", "IWM", "VTI", "DIA", "MDY",
+        # --- SPDR US sector ETFs (expanded coverage for the sweep to compare like-with-like)
+        "XLE", "XLB", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY", "XLC", "XLRE",
+        # --- Canadian sector ETFs
+        "ZEB.TO", "ZWB.TO", "ZUT.TO", "ZUB.TO", "XFN.TO", "XEG.TO", "XIT.TO", "XMA.TO",
+        "XRE.TO", "XEI.TO", "XSP.TO",
+        # --- US mega-caps + tech / cyclicals / defensives
+        "AAPL", "MSFT", "GOOGL", "NVDA", "AMZN", "META", "TSLA", "AVGO",
+        "V", "MA", "JPM", "BAC", "WFC", "GS", "MS",
+        "XOM", "CVX", "COP", "SLB", "OXY",
+        "JNJ", "PFE", "MRK", "UNH", "LLY",
+        "PG", "KO", "PEP", "COST", "WMT",
+        "CAT", "DE", "HON", "BA", "LMT", "RTX",
+        # --- Canadian mega-caps
+        "RY.TO", "TD.TO", "BNS.TO", "BMO.TO", "CM.TO", "NA.TO",
+        "ENB.TO", "TRP.TO", "CNQ.TO", "SU.TO", "IMO.TO", "CVE.TO",
+        "SHOP.TO", "BN.TO", "BAM.TO", "L.TO", "MG.TO",
+        # --- Canadian mid/small caps that already surfaced in earlier sweeps
+        "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO", "FRU.TO", "TA.TO",
+        "SRU.UN.TO", "CGL.TO", "EFN.TO", "GEI.TO", "CRT.UN.TO", "BTO.TO",
+        "CEW.TO", "VALE",
+        # --- gold / materials / precious-metals producers (Canada + US)
+        "ABX.TO", "AEM.TO", "K.TO", "FNV.TO", "WPM.TO", "PAAS.TO", "TECK.B.TO",
+        "FCX", "NEM", "GOLD", "AA", "RS",
+        # --- REITs (Canadian carriers)
+        "REI.UN.TO", "AP.UN.TO", "HR.UN.TO", "CAR.UN.TO", "SMU.UN.TO",
+        # --- commodity ETFs kept in equity list because they route as equities
+        "DBC", "DBA", "GLD", "SLV",
+        # --- currently-held (redundant with HELD_ASSETS carry-in but explicit here too)
+        "SDE.TO",
     ),
+    # ETF proxies for continuous futures (LEAN swaps in real front-month; this pool works with the
+    # existing equities path). Held small on purpose — no futures execution in the framework yet.
     "future": ("ES", "NQ", "YM", "RTY", "ZN", "ZB"),
-    "commodity": ("GLD", "SLV", "USO", "UNG", "DBC", "CORN", "WEAT"),
-    "crypto": ("BTCUSD", "ETHUSD", "SOLUSD", "ADAUSD", "XRPUSD"),
+    # Expanded commodity ETF sleeve — the WF pool has been thin on metals + softs, so we surface
+    # the standard names for the sweep to score.
+    "commodity": (
+        "GLD", "SLV", "PPLT", "PALL",             # precious
+        "USO", "UNG", "BNO",                      # energy
+        "DBC", "DBA",                             # broad baskets
+        "CORN", "WEAT", "SOYB", "CANE",           # softs
+        "COPX", "URA", "REMX",                    # metals + specialty
+    ),
+    # Kraken crypto pairs (routed form). Canonical sleeve entries + strategies live below in
+    # CRYPTO_SLEEVE. Broader here to let a resweep surface additional pairs worth screening.
+    "crypto": (
+        "BTC/USD", "ETH/USD", "SOL/USD", "ADA/USD", "XRP/USD", "XMR/USD",
+        "XLM/USD", "LINK/USD", "PAXG/USD", "AVAX/USD", "DOT/USD", "MATIC/USD",
+        "ATOM/USD", "ALGO/USD", "LTC/USD",
+    ),
 }
 
 # Crypto trades ~365 days/yr; the rest use trading days for annualization.
