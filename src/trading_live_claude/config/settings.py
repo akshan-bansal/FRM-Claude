@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # WorldMonitor OSINT/news MCP (Pro). Sent as the X-WorldMonitor-Key header to the data tools;
     # only get_sources works without it. Not required for any trading path.
     worldmonitor_api_key: str = ""
+    # Anthropic API — used by intel/agents.py (specialist readers + adversarial thesis debate).
+    # Only exercised when the agent layer is called; never on the deterministic hot path.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-5"
 
     # === Trading knobs (yaml-managed) ===
     execution_mode: ExecutionMode = "paper"
