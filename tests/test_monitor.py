@@ -291,3 +291,42 @@ def test_strategy_risk_gate_trims_size_without_osint() -> None:
     assert plain.intents and gated.intents
     # flat synthetic prices -> zero vol -> scalar stays 1.0, so sizing must be unchanged
     assert gated.intents[0].shares == plain.intents[0].shares
+
+
+# --- persistence mode keeps edge information ------------------------------------------
+
+def test_level_mode_marks_transitions_and_counts_polls() -> None:
+    """Persistence emits every poll, but still says which emission was the transition."""
+    strat = _ToggleStrategy()
+    events: list[MonitorEvent] = []
+    mon = _monitor(strat, events, edge=False)
+
+    mon.step()   # first exit -> the transition
+    mon.step()   # still exit -> persisting
+    mon.step()   # still exit -> persisting
+    assert [e.kind for e in events] == ["exit", "exit", "exit"]
+    assert [e.is_transition for e in events] == [True, False, False]
+    assert [e.poll_count for e in events] == [1, 2, 3]
+
+    strat.exit_flag = 0          # flips to hold -> a fresh transition, run restarts
+    mon.step()
+    assert events[-1].is_transition is True
+    assert events[-1].poll_count == 1
+
+
+def test_edge_mode_still_only_emits_transitions() -> None:
+    """The hybrid must not change edge behaviour: still one alert per state change."""
+    strat = _ToggleStrategy()
+    events: list[MonitorEvent] = []
+    mon = _monitor(strat, events, edge=True)
+
+    mon.step()
+    mon.step()
+    mon.step()
+    assert [e.kind for e in events] == ["exit"]          # repeats suppressed as before
+    assert events[0].is_transition is True
+
+    strat.exit_flag = 0
+    mon.step()
+    assert [e.kind for e in events] == ["exit", "hold"]
+    assert all(e.is_transition for e in events)          # every edge emission is a transition

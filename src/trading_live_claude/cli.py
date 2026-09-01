@@ -17,6 +17,7 @@ from rich.table import Table
 from .analysis import build_signal_matrix, render_matrix_markdown
 from .backtest import BacktestEngine
 from .brokers import PaperBroker, QuestradeBroker
+from .brokers.base import Broker
 from .config import get_settings
 from .daemon import AutonomousDaemon
 from .data import CandleCache, MarketData
@@ -213,8 +214,16 @@ def signal(
         "Needs WORLDMONITOR_API_KEY. Off by default.",
     ),
     overlay_refresh: int = typer.Option(900, help="Seconds between WorldMonitor overlay refreshes."),
+    paper: bool = typer.Option(
+        False,
+        "--paper/--dry-run",
+        help="Route signals to a SIMULATED paper broker that fills orders and journals them, "
+             "instead of the default dry-run router that gates and logs only. Paper never touches "
+             "the real account; it builds the fill history live mode requires.",
+    ),
+    paper_equity: float = typer.Option(100_000.0, help="Starting equity for the paper account."),
 ) -> None:
-    """Live-signal monitor. Never places orders (dry-run router).
+    """Live-signal monitor. Never places real orders.
 
     Article skill #5 ("live-signal-monitor"): output signal only. Use --strategy-map
     to monitor each symbol with its own strategy (e.g. the tuner's best-per-symbol);
@@ -248,9 +257,23 @@ def signal(
         raise typer.Exit(code=1)
     account_number = settings.questrade_account_number or accounts[0].number
 
+    # Paper mode swaps the EXECUTION broker, not just the router mode string. That distinction is
+    # load-bearing: Router.submit short-circuits only for "dry-run", so mode="paper" against the
+    # real Questrade broker would place real orders. PaperBroker wraps Questrade as a read-only
+    # market-data feed and simulates every fill against it.
+    exec_broker: Broker = broker
+    exec_account = account_number
+    if paper:
+        exec_broker = PaperBroker(feed=broker, starting_equity=paper_equity,
+                                  journal_dir=settings.state_dir)
+        exec_account = exec_broker.accounts()[0].number
+        console.print(f"[cyan]PAPER mode[/cyan] simulated broker, starting equity "
+                      f"${paper_equity:,.0f}, account {exec_account}. "
+                      f"Real account is untouched; fills are journaled.")
+
     router = Router.build_default(
-        mode="dry-run",
-        broker=broker,
+        mode="paper" if paper else "dry-run",
+        broker=exec_broker,
         state_dir=settings.state_dir,
         cap_pct=settings.portfolio_heat_cap,
         max_drawdown_pct=settings.max_drawdown_kill_switch,
@@ -279,8 +302,12 @@ def signal(
             )
         elif ev.kind in {"entry", "exit"}:
             sname = smap[ev.symbol].name if ev.symbol in smap else strat.name
+            # In persistence (--level) mode the same signal re-alerts each poll, so say whether it
+            # just appeared or has been standing — otherwise a fresh signal is indistinguishable
+            # from one that has been grinding for hours.
+            state = "NEW" if ev.is_transition else f"persisting, poll {ev.poll_count}"
             alerter.send(
-                f"{sname} {ev.kind.upper()}: {ev.symbol}",
+                f"{sname} {ev.kind.upper()}: {ev.symbol} ({state})",
                 f"price={ev.price:.4f} detail={ev.detail}",
             )
 
@@ -304,12 +331,12 @@ def signal(
         console.print(f"[cyan]intel overlay ON[/cyan] (refresh every {overlay_refresh}s; de-risk + halt gate).")
 
     monitor = LiveMonitor(
-        broker=broker,
+        broker=exec_broker,
         market=market,
         strategy=strat,
         sizer=sizer,
         router=router,
-        account_number=account_number,
+        account_number=exec_account,
         symbols=sym_list,
         interval_seconds=interval,
         on_event=_emit,

@@ -41,6 +41,11 @@ class MonitorEvent:
     kind: str  # 'entry' | 'exit' | 'hold'
     price: float
     detail: dict[str, object]
+    # Transition metadata, so persistence mode does not throw away edge information. In edge mode
+    # every emitted event is by definition a transition; in level mode the same signal is re-emitted
+    # each poll, and these say whether it is new and how long it has been standing.
+    is_transition: bool = True
+    poll_count: int = 1        # consecutive polls this symbol has been in ``kind`` (1 = just entered)
 
 
 class LiveMonitor:
@@ -90,6 +95,8 @@ class LiveMonitor:
         # unaffected — only the notification callback is deduplicated.
         self.emit_on_change_only = emit_on_change_only
         self._last_kind: dict[str, str] = {}
+        # consecutive polls each symbol has held its current kind (drives poll_count)
+        self._kind_runs: dict[str, int] = {}
         # Dynamic dollar-hedge overlay (opt-in): scale a UUP sleeve up as the book draws
         # down. ``_equity_peak`` is tracked in-memory (resets on restart → hedge starts at
         # 0 and re-ramps as fresh drawdown develops).
@@ -242,8 +249,13 @@ class LiveMonitor:
                 events.append(MonitorEvent(datetime.now(UTC), symbol, "hold", price, {}))
 
         for ev in events:
-            if self.emit_on_change_only and self._last_kind.get(ev.symbol) == ev.kind:
-                continue  # same state as last poll — suppress duplicate notification
+            same = self._last_kind.get(ev.symbol) == ev.kind
+            run = self._kind_runs.get(ev.symbol, 0) + 1 if same else 1
+            self._kind_runs[ev.symbol] = run
+            ev.is_transition = not same
+            ev.poll_count = run
+            if self.emit_on_change_only and same:
+                continue  # edge mode: same state as last poll — suppress duplicate notification
             self._last_kind[ev.symbol] = ev.kind
             self.on_event(ev)
 
