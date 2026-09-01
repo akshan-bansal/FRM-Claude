@@ -33,6 +33,16 @@ from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.market import MarketData
 
 
+def _make_broker() -> QuestradeBroker:
+    """Same construction as cli._make_questrade — no positional argument, keyword-only fields."""
+    s = get_settings()
+    return QuestradeBroker.from_settings(
+        refresh_token=s.questrade_refresh_token,
+        encryption_key=s.token_encryption_key,
+        state_dir=s.state_dir,
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default="", help="Comma-separated symbols. Combined with --seed / --held.")
@@ -58,7 +68,7 @@ def main() -> None:
 
     print(f"[warm] {len(targets)} symbols requested", flush=True)
     settings = get_settings()
-    broker = QuestradeBroker.from_settings(settings)
+    broker = _make_broker()
     market = MarketData(broker, cache=CandleCache(settings.data_cache_dir))
     end = datetime.now(UTC)
 
@@ -73,7 +83,7 @@ def main() -> None:
                 skipped += 1
                 continue
             print(f"  [{i}/{len(targets)}] {sym}: {len(df)} bars "
-                  f"({df['time'].iloc[0].date()} → {df['time'].iloc[-1].date()})", flush=True)
+                  f"({df['time'].iloc[0].date()} -> {df['time'].iloc[-1].date()})", flush=True)
             ok += 1
         except Exception as e:
             print(f"  [{i}/{len(targets)}] {sym}: FAILED — {e}", flush=True)

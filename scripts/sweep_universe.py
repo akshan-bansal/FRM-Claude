@@ -198,19 +198,28 @@ def main() -> None:
     # what we actually own, and filter-driven silent drops are exactly the artifact a resweep is
     # meant to surface. Only add if the cache has enough bars to say anything.
     if args.carry_held:
-        already = set(cand["sym"].tolist())
+        # Cache filenames convert dots to underscores (CGL.TO -> CGL_TO), so the frames dict is
+        # keyed on the underscore form. HELD_ASSETS uses the routed dotted form (CGL.TO). Merge
+        # the two conventions with a normalized lookup so a held name never silently drops out
+        # of the pool over a punctuation mismatch.
+        def _norm(s: str) -> str:
+            return s.replace(".", "_").replace("/", "_")
+        cand_keys = {_norm(str(s)) for s in cand["sym"].tolist()}
         carried: list[dict[str, object]] = []
         for sym in HELD_ASSETS:
-            if sym in already:
+            key = _norm(sym)
+            if key in cand_keys:
                 continue
-            df = frames.get(sym)
+            df = frames.get(key) or frames.get(sym)
             if df is None or len(df) < args.min_bars:
-                print(f"      carry-held: skipping {sym} (no cached history)", flush=True)
+                print(f"      carry-held: skipping {sym} (no cached history at min-bars)",
+                      flush=True)
                 continue
             t = df.tail(60)
             px = float(t["close"].iloc[-1])
             adv = float((t["close"] * t["volume"]).mean()) if "volume" in t.columns else 0.0
-            carried.append({"sym": sym, "price": px, "adv": adv, "vol": 0.0, "bars": len(df)})
+            # Store under the underscore key so downstream frames[s] lookups work.
+            carried.append({"sym": key, "price": px, "adv": adv, "vol": 0.0, "bars": len(df)})
             print(f"      carry-held: {sym} @ ${px:.2f} added to candidates", flush=True)
         if carried:
             cand = pd.concat([cand, pd.DataFrame(carried)], ignore_index=True)
@@ -225,7 +234,7 @@ def main() -> None:
         rows.append({"sym": s, "price": r["price"], "adv": r["adv"], "score": b[0],
                      "strategy": b[1], "params": b[2], "sharpe": b[3].sharpe,
                      "maxdd": b[3].max_drawdown, "trades": b[3].num_trades,
-                     "held": s in HELD_ASSETS})
+                     "held": s in HELD_ASSETS or s.replace("_", ".") in HELD_ASSETS})
         if (int(i) + 1) % 25 == 0:
             print(f"      {int(i) + 1}/{len(cand)}", flush=True)
     panel = pd.DataFrame(rows).sort_values("score", ascending=False).reset_index(drop=True)
@@ -258,7 +267,7 @@ def main() -> None:
         wf_rows.append({"sym": s, "price": r["price"], "is_score": r["score"],
                         "strategy": r["strategy"], "params": r["params"], **w,
                         "asset_class": cls, "min_trades": min_oos_trades(cls), "tier": tier,
-                        "held": s in HELD_ASSETS})
+                        "held": s in HELD_ASSETS or s.replace("_", ".") in HELD_ASSETS})
         print(f"      {s}{'*' if s in HELD_ASSETS else ' '}: "
               f"OOS {w['oos_score']:.2f} WFE {w['wfe']:.2f} "
               f"trades {w['oos_trades']} -> {tier}", flush=True)

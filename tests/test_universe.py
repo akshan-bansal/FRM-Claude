@@ -64,7 +64,9 @@ def test_filter_thresholds_are_tunable() -> None:
 def test_seed_lists_cover_all_asset_classes() -> None:
     for ac in ("equity", "future", "commodity", "crypto"):
         assert len(seed_symbols(ac)) > 0  # type: ignore[arg-type]
-    assert "BTCUSD" in SEED_UNIVERSE["crypto"]
+    # Crypto seed now uses the routed slash-form (BTC/USD) to match CRYPTO_SLEEVE and the
+    # KrakenBroker pair-mapping table. Kraken's wire code (XBTUSD) is derived at fetch time.
+    assert "BTC/USD" in SEED_UNIVERSE["crypto"]
 
 
 def test_crypto_annualization_differs() -> None:

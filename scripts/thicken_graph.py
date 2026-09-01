@@ -46,7 +46,7 @@ from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 
 async def _one_snapshot() -> None:
     s = get_settings()
-    async with WorldMonitorClient(s) as wm:
+    async with WorldMonitorClient(s.worldmonitor_api_key) as wm:
         snap = await wm.snapshot()
     # append_snapshot handles both flat + graph writes.
     append_snapshot(snap, RiskOverlay().evaluate(snap))
