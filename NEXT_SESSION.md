@@ -1,9 +1,69 @@
 # Next-session backlog
 
-Queued work, most-ready first. Each item is self-contained enough to start cold. Standing
-constraints still apply: new research goes through the **walk-forward gate** before it's wired as
-validated; anything that places live orders stays behind the **human go-live confirmation** (paper
-/ dry-run first); use `httpx` (not `requests`); `ruff` + `mypy --strict` + `pytest` must stay green.
+**Project parked 2026-09-01 until January.** Everything below is captured state — no live
+processes are running. To resume, work top-down. Standing constraints still apply: new research
+goes through the **walk-forward gate** before it's wired as validated; anything that places live
+orders stays behind the **human go-live confirmation** (paper / dry-run first); use `httpx` (not
+`requests`); `ruff` + `mypy --strict` + `pytest` must stay green.
+
+## Parked-state inventory (as of 2026-09-01)
+
+**Live processes:** none. Both paper sessions (QT + Kraken) were killed by Windows background
+timeout hours ago; overnight thickener was manually stopped at parking time.
+
+**Journals as of park:**
+- `state/paper_fills.jsonl` — 8 fills across 4 tracked sessions (see `reports/paper_report.md`)
+- `state/paper_orders.jsonl` — 4 intents; `state/paper_equity.csv` — 5 snapshots
+- `state/intel_overlay.jsonl` — 23 flat overlay rows
+- `state/intel_graph.jsonl` — **571 edges, 82 nodes, 31 event nodes, 5 sources, 32 regions** (see `reports/graph_profile.md`); real per-event decomposition working
+- `state/fills.jsonl` / `state/orders.jsonl` — router journals unchanged; real QT account untouched
+
+**Reports written this session (all reproducible):**
+- `reports/paper_report.md` + `.png` — dual-venue paper session summary
+- `reports/resweep_full.md` + `.png` — 456 in-sample → 32 walk-forward → 7 robust survivors
+- `reports/sweep_resweep_full_{panel,walkforward}.csv` — raw data behind the report
+- `reports/graph_profile.md` — current vertex/edge shape of the intel graph
+
+**Resweep survivors (7 robust, not yet promoted into `WALK_FORWARD_VALIDATED`):**
+ENB.TO (OOS 111.22, WFE 8.39), XIU.TO (19.47/0.70), VDY.TO (18.20/0.66), XLB (10.25/0.54),
+CGL.TO ★held (9.03/0.55), SLF.TO (7.18/0.54), DBC (6.16/0.65). Promoting them into the
+validated pool + updating tests is one of the first January tasks.
+
+**Held-in-pool notes:**
+- CGL.TO — validated at robust; current holding is in the sweep's best cohort
+- ZUT.TO — landed watch (OOS 2.49, WFE 0.20). Research prompt, not an auto-sell.
+- SDE.TO — only 803 bars < 900 min-bars gate; needs a data-side workaround if it's kept.
+
+**Restart runbook** (all commands from repo root, `./.venv/Scripts/python.exe` on Windows):
+
+```
+# 1. Full test suite
+python -m pytest tests/ -q --no-cov --ignore=tests/test_quantconnect.py
+
+# 2. Refresh cache if stale (skips already-cached names)
+python scripts/warm_cache.py --held --seed equity --years 5
+
+# 3. Rerun the full resweep on fresh data
+python scripts/sweep_universe.py --tag resweep_full --min 0 --max 1000000 --wf-top 30 --min-bars 900
+python scripts/resweep_report.py
+
+# 4. Bring the overnight graph poller back up (uses OverlayProvider, unified with the live path)
+python scripts/thicken_graph.py --iterations 96 --sleep 900
+python scripts/graph_profile.py         # inspect what accrued
+
+# 5. Paper sessions (see NEXT_SESSION for options 1-3 in queue)
+python -m trading_live_claude.cli signal --strategy bollinger \
+    --symbols "EQB.TO,QQQ,XIC.TO,ZEB.TO,CGL.TO,VALE,ARX.TO,DBC,SRU.UN.TO,CRT.UN.TO" \
+    --strategy-map "EQB.TO=ts_momentum,QQQ=ts_momentum,XIC.TO=rsi_meanrevert,ZEB.TO=atr_channel,CGL.TO=atr_channel,VALE=bollinger,ARX.TO=rsi_meanrevert,DBC=bollinger,SRU.UN.TO=rsi_meanrevert,CRT.UN.TO=rsi_meanrevert" \
+    --interval 300 --paper --paper-equity 100000 --level
+python scripts/paper_kraken.py --interval 300 --paper-equity 100000
+```
+
+**Held (built but off):** the LLM agent layer (`intel/agents.py`, `enrich_with_agents`) stays
+inert without `ANTHROPIC_API_KEY` in `.env` and no caller runs it. See item 6.
+
+---
+
 
 ## 0. Full resweep — reproducible calibration on the expanded universe  🟢 SCRIPTED, run pending
 
