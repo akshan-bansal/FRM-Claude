@@ -32,6 +32,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from trading_live_claude.intel.graph import append_snapshot_edges
 from trading_live_claude.intel.overlay import IntelSnapshot, OverlayDecision
 from trading_live_claude.logging_setup import get_logger
 
@@ -211,3 +212,7 @@ def append_snapshot(snapshot: IntelSnapshot,
             fh.write(json.dumps(rec, default=str) + chr(10))
     except Exception:  # never let journaling break a caller
         log.warning("intel.journal.append_failed", path=str(path))
+    # Sibling graph journal: same fire-and-forget contract, own error handling inside.
+    # Kept in the same call site so every caller that journals the flat view also writes edges,
+    # without every caller having to know about both files.
+    append_snapshot_edges(snapshot)
