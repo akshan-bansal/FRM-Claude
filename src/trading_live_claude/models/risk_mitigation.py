@@ -28,12 +28,18 @@ class MitigationDecision:
 
 
 def combine(strategy_scalar: float, osint: OverlayDecision | None, *, floor: float = 0.2,
-            halt_below: float = 0.4) -> MitigationDecision:
+            halt_below: float = 0.20) -> MitigationDecision:
     """Multiply the AI strategy-risk scalar by the live OSINT class scalar (de-risk only).
 
     ``osint`` may be ``None`` (overlay off or unavailable) — then only the AI scalar applies. The
-    combined book is halted if the AI scalar is at its floor, if the OSINT class is halted, or if the
-    product falls at/under ``halt_below``.
+    combined book is halted when the OSINT class is halted, or when the product falls at/under
+    ``halt_below``.
+
+    Note the strategy-risk gate cannot halt on its own by design: its floor (0.75) sits above
+    ``halt_below`` (0.20), so the volatility rule can only ever trim size. Halting is reserved for the
+    OSINT layer, which sees exogenous events the return stream cannot. Raising ``halt_below`` above
+    the strategy floor would change that, and should be a deliberate decision rather than a side
+    effect of retuning the floor.
     """
     s_ai = max(0.0, min(1.0, strategy_scalar))
     s_os = osint.scalar if osint is not None else 1.0

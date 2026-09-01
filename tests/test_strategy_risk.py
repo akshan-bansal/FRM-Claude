@@ -79,12 +79,21 @@ def _osint(scalar: float, halt: bool = False):
                            reasons=["elevated global news alerts"], components={})
 
 
-def test_combine_multiplies_both_layers_and_halts_when_low() -> None:
+def test_combine_multiplies_both_layers_and_cites_each() -> None:
     from trading_live_claude.models.risk_mitigation import combine
     m = combine(0.5, _osint(0.5))
-    assert abs(m.scalar - 0.25) < 1e-9 and m.halt        # 0.25 <= halt_below 0.4
+    assert abs(m.scalar - 0.25) < 1e-9                   # the product of the two layers
     assert m.strategy_scalar == 0.5 and m.osint_scalar == 0.5
     assert len(m.reasons) == 2                           # both layers cited
+    # halt_below is 0.20, so a combined 0.25 trims hard but does NOT stand the book down.
+    assert not m.halt
+
+
+def test_combine_halts_only_at_the_floor_now() -> None:
+    """With halt_below lowered to 0.20, halting needs the product at the combine() floor."""
+    from trading_live_claude.models.risk_mitigation import combine
+    assert combine(0.25, _osint(0.25)).halt              # 0.0625 -> clipped to floor 0.20 -> halts
+    assert not combine(0.6, _osint(0.5)).halt            # 0.30 -> trims only
 
 
 def test_combine_without_osint_is_just_the_ai_scalar() -> None:
@@ -109,3 +118,25 @@ def test_vol_risk_scalar_cuts_exposure_in_high_vol() -> None:
     calm = pd.concat([sc.iloc[b * block:(b + 1) * block] for b in range(2, 26, 2)]).mean()
     storm = pd.concat([sc.iloc[b * block:(b + 1) * block] for b in range(3, 26, 2)]).mean()
     assert storm < calm
+
+
+def test_strategy_risk_gate_cannot_halt_on_its_own() -> None:
+    """Documented invariant: the vol rule only trims; halting is the OSINT layer's job.
+
+    Guards against a future retune of STRATEGY_RISK_FLOOR silently giving the volatility rule
+    halt authority it was never validated for.
+    """
+    from trading_live_claude.models.risk_mitigation import combine
+    from trading_live_claude.models.strategy_risk import STRATEGY_RISK_FLOOR
+
+    assert STRATEGY_RISK_FLOOR > 0.4, "floor must stay above combine()'s halt_below"
+    assert not combine(STRATEGY_RISK_FLOOR, None).halt
+
+
+def test_vol_risk_scalar_respects_the_configured_floor() -> None:
+    """Pins the scalar to the real floor (0.75), not a loose bound that passes trivially."""
+    from trading_live_claude.models.strategy_risk import STRATEGY_RISK_FLOOR, vol_risk_scalar
+    sc = vol_risk_scalar(_regime_returns(seed=7))
+    assert sc.min() >= STRATEGY_RISK_FLOOR - 1e-12
+    assert sc.max() <= 1.0
+    assert sc.min() < 0.95, "a regime-switching series should actually engage the gate"
