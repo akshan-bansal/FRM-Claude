@@ -186,7 +186,54 @@ class WorldMonitorClient:
         ages.setdefault("events", 0.0)
 
         snap = _build_snapshot(news, conflict, disasters, energy, market, countries, degraded)
-        return replace(snap, event_acceleration=accel, source_age_hours=ages)
+        snap = replace(snap, event_acceleration=accel, source_age_hours=ages)
+        # Per-event decomposition into the graph journal — separate call site from
+        # append_snapshot so a failure never breaks the fetch, and the raw records are dropped
+        # after this rather than smuggled into IntelSnapshot (which is a frozen public API).
+        try:
+            _write_event_edges(snap, news, conflict)
+        except Exception:
+            log.warning("worldmonitor.event_edges_failed")
+        return snap
+
+
+def _write_event_edges(snap: IntelSnapshot, news: Any, conflict: Any) -> None:
+    """Persist per-event edges from the raw vendor payloads into ``state/intel_graph.jsonl``.
+
+    Records the vendor's cross-source signals (news) and strategic-risk sample (conflict) — the
+    two payload branches that carry actual record shapes with source attribution. Disasters comes
+    back as counts only after the jmespath projection, so it has nothing per-event to decompose.
+    """
+    from trading_live_claude.intel.graph import (
+        append_edges,
+        event_records_to_edges,
+    )
+    ts = snap.as_of.isoformat() if snap.as_of else ""
+    poll_id = ts
+    edges = []
+
+    if isinstance(news, dict):
+        nd = news.get("data") if isinstance(news.get("data"), dict) else news
+        if isinstance(nd, dict):
+            signals = (nd.get("cross-source-signals", {}) or {}).get("signals", []) or []
+            if isinstance(signals, list):
+                edges.extend(event_records_to_edges(
+                    signals, domain="news_signal", poll_id=poll_id, as_of=ts))
+            advisories = (nd.get("advisories-bootstrap", {}) or {}).get("advisories", []) or []
+            if isinstance(advisories, list):
+                edges.extend(event_records_to_edges(
+                    advisories, domain="advisory", poll_id=poll_id, as_of=ts))
+
+    if isinstance(conflict, dict):
+        cd = conflict.get("data") if isinstance(conflict.get("data"), dict) else conflict
+        if isinstance(cd, dict):
+            sample = (cd.get("scores", {}) or {}).get("strategicRisks", {}).get("sample", []) or []
+            if isinstance(sample, list):
+                edges.extend(event_records_to_edges(
+                    sample, domain="conflict", poll_id=poll_id, as_of=ts))
+
+    if edges:
+        append_edges(edges)
 
 
 def _num(obj: Any, *keys: str, default: float = 0.0) -> float:

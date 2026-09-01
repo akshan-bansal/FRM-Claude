@@ -47,15 +47,23 @@ log = get_logger(__name__)
 
 DEFAULT_GRAPH_JOURNAL = "state/intel_graph.jsonl"
 
-# Node types. Deliberately small — the MVP models what the aggregated snapshot actually contains.
-# Per-event and per-actor nodes come later, off the raw events archive.
-NodeType = Literal["poll", "domain", "region", "source", "market"]
+# Node types. ``event`` was added when per-event decomposition landed — before that, edges only
+# saw the vendor's already-aggregated fields. Actor / venue nodes come later if a richer
+# entity-extraction step gets added.
+NodeType = Literal["poll", "domain", "region", "source", "market", "event"]
 
-# Edge predicates. Named for what the snapshot lets us say honestly:
+# Edge predicates.
 #   ``observed`` — a poll observed a domain / region / source at some weight
 #   ``elevated_in`` — the domain has an event-acceleration ratio above 1.0
-#   ``co_occurs`` — two domains both elevated in the same poll (for later corroboration queries)
-Predicate = Literal["observed", "elevated_in", "co_occurs", "stressed_by"]
+#   ``co_occurs`` — two domains both elevated in the same poll
+#   ``stressed_by`` — a market bridge (commodity ← energy, global ← geopolitical)
+#   ``mentioned_by`` — an event has a source that reported it (feeds corroboration counts)
+#   ``about_domain`` — an event categorized under a domain
+#   ``affects_region`` — an event associated with a specific region/country
+Predicate = Literal[
+    "observed", "elevated_in", "co_occurs", "stressed_by",
+    "mentioned_by", "about_domain", "affects_region",
+]
 
 # Threshold below which "elevated" is not asserted. Matches the interpret.py convention that a
 # domain acceleration under 2.0 is not evidence, and keeps single-wire noise out of the graph.
@@ -164,6 +172,60 @@ def snapshot_to_edges(snap: IntelSnapshot, poll_id: str | None = None) -> list[E
     return out
 
 
+def event_records_to_edges(
+    records: Sequence[dict[str, object]],
+    *,
+    domain: str,
+    poll_id: str,
+    as_of: str,
+) -> list[Edge]:
+    """Decompose raw vendor event records into per-event edges.
+
+    Each record produces one ``event`` node identified by whichever id the vendor gave it
+    (falling back to a hash of title + timestamp so the node is stable across polls). From that
+    node we write, when the fields are present:
+
+    * ``event`` -- ``mentioned_by`` --> ``source`` for each source in the record. This is what
+      makes corroboration a queryable graph property rather than a boolean flag from the vendor.
+    * ``event`` -- ``about_domain`` --> ``domain`` for the categorized domain. When the record
+      names its own categories we use those; otherwise we fall back to the ``domain`` argument
+      (i.e. which archive we pulled the record from).
+    * ``event`` -- ``affects_region`` --> ``region`` for country/region codes on the record.
+
+    Records with no identifiable event id AND no title are skipped rather than fabricated — an
+    edge without a stable subject is worse than no edge.
+    """
+    out: list[Edge] = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        ev_id = _event_id(rec)
+        if ev_id is None:
+            continue
+        ev_node: tuple[NodeType, str] = ("event", ev_id)
+
+        # sources → mentioned_by. Each source is one edge; corroboration = distinct sources per
+        # event, cheaply countable with edges_where afterwards.
+        for src in _extract_sources(rec):
+            out.append(Edge(ev_node, "mentioned_by", ("source", src),
+                            as_of=as_of, meta={"poll": poll_id}))
+
+        # categories → about_domain. Vendor-declared categories win over the domain we pulled from.
+        cats = _extract_categories(rec) or [domain]
+        for cat in cats:
+            out.append(Edge(ev_node, "about_domain", ("domain", cat),
+                            as_of=as_of, meta={"poll": poll_id}))
+
+        # region/country → affects_region.
+        for region in _extract_regions(rec):
+            out.append(Edge(ev_node, "affects_region", ("region", region),
+                            as_of=as_of, meta={"poll": poll_id}))
+
+        # And a poll → event observation so downstream persistence queries can group by poll.
+        out.append(Edge(("poll", poll_id), "observed", ev_node, as_of=as_of))
+    return out
+
+
 def append_edges(edges: Iterable[Edge], path: str | Path = DEFAULT_GRAPH_JOURNAL) -> None:
     """Append a batch of edges to the graph journal. Never raises."""
     try:
@@ -263,3 +325,70 @@ def edge_persistence(edges: Sequence[Edge], *, predicate: Predicate,
             break
         run += 1
     return run
+
+
+# ---- per-event helpers -------------------------------------------------------
+# These read the vendor's shape defensively — different tools nest fields differently, so we
+# probe several likely names for each attribute and take the first that resolves.
+
+
+def _event_id(rec: dict[str, object]) -> str | None:
+    """Prefer the vendor's own id; otherwise a stable hash of title + timestamp."""
+    import hashlib
+    for key in ("id", "eventId", "signalId", "storyId", "uuid"):
+        v = rec.get(key)
+        if isinstance(v, (str, int)) and str(v):
+            return str(v)
+    title = rec.get("title") or rec.get("headline") or rec.get("summary")
+    stamp = rec.get("ingestedAt") or rec.get("publishedAt") or rec.get("occurredAt")
+    if title and stamp:
+        return hashlib.sha1(f"{title}|{stamp}".encode(), usedforsecurity=False).hexdigest()[:16]
+    return None
+
+
+def _extract_sources(rec: dict[str, object]) -> list[str]:
+    """Pull source names — handles list-of-strings, list-of-dicts, or a nested ``sources`` field."""
+    raw = rec.get("sources") or rec.get("sourceList") or rec.get("outlets")
+    if raw is None:
+        one = rec.get("source") or rec.get("outlet")
+        raw = [one] if one else []
+    out: list[str] = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, str) and item:
+                out.append(item)
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("outlet") or item.get("id")
+                if isinstance(name, str) and name:
+                    out.append(str(name))
+    return out
+
+
+def _extract_categories(rec: dict[str, object]) -> list[str]:
+    raw = rec.get("categories") or rec.get("tags") or rec.get("topics")
+    if raw is None:
+        one = rec.get("category") or rec.get("topic")
+        raw = [one] if one else []
+    out: list[str] = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, str) and item:
+                out.append(item)
+    return out
+
+
+def _extract_regions(rec: dict[str, object]) -> list[str]:
+    raw = rec.get("countries") or rec.get("regions") or rec.get("locations")
+    if raw is None:
+        one = rec.get("country") or rec.get("region") or rec.get("sourceCountry")
+        raw = [one] if one else []
+    out: list[str] = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, str) and item:
+                out.append(item.upper())
+            elif isinstance(item, dict):
+                cc = item.get("code") or item.get("iso") or item.get("country")
+                if isinstance(cc, str) and cc:
+                    out.append(cc.upper())
+    return out

@@ -114,28 +114,53 @@ class RiskOverlay:
         self.cfg = config or OverlayConfig()
 
     # ---- freshness ----------------------------------------------------------
-    # Which snapshot source each gate is driven by, so a gate can be discounted when the payload
-    # behind it is old. Gates reading live market data (VIX, BTC, DXY) are treated as fresh.
-    _GATE_SOURCE: ClassVar[dict[str, str]] = {
-        "global": "news", "economy": "news", "conflict": "conflict", "disaster": "disasters",
-        "energy": "energy", "event_flow": "events",
+    # Which payload sources drive each gate, with a base weight per source. Two purposes: (a) the
+    # market-derived gates (fear, VIX, DXY, crypto_vol) now carry a ``market`` source explicitly
+    # rather than silently returning 1.0 as they used to; (b) gates that will eventually blend
+    # multiple payloads (e.g. supply stress reading both news and energy) can list them here and
+    # be weighted honestly. Single-source entries preserve the previous behavior exactly.
+    _GATE_SOURCES: ClassVar[dict[str, tuple[tuple[str, float], ...]]] = {
+        "global": (("news", 1.0),),
+        "economy": (("news", 1.0),),
+        "conflict": (("conflict", 1.0),),
+        "disaster": (("disasters", 1.0),),
+        "energy": (("energy", 1.0),),
+        "event_flow": (("events", 1.0),),
+        # Market-driven gates — previously uncovered, now discounted by the market payload age.
+        "fear": (("market", 1.0),),
+        "equity_vol": (("market", 1.0),),
+        "dxy": (("market", 1.0),),
+        "crypto_vol": (("market", 1.0),),
     }
 
     def _freshness(self, s: IntelSnapshot, gate: str) -> float:
-        """Weight in [0, 1] for how much a gate's deviation from neutral should count.
+        """Freshness weight in [0, 1] for a gate, inverse-weighted by staleness across sources.
 
-        Exponential decay on the age of the payload behind the gate. Fresh data applies in full; a
-        reading several half-lives old is discounted toward no-opinion rather than being trusted or
-        silently dropped. Unknown age is treated as fresh, since the common case for a missing stamp
-        is a live-computed field.
+        Each source contributes its own freshness ``f_i = 0.5 ** (age_i / half_life)`` but weighted
+        by ``base_weight * f_i`` — the SAME freshness that determines its contribution. The blended
+        freshness is therefore ``sum(w_i * f_i^2) / sum(w_i * f_i)``. A stale source's small weight
+        means it drags the average down less than a naive mean would: with one fresh source
+        (f=1.0) and one four-half-lives-stale source (f=0.06), the blended weight is ~0.94, so the
+        gate stays trustworthy on the fresh side rather than being pulled toward the median.
+
+        Single-source entries reduce to the earlier ``0.5 ** (age/half_life)`` exactly. Unknown or
+        zero age is treated as fresh (the common case for a live-computed field with no stamp).
         """
-        src = self._GATE_SOURCE.get(gate)
-        if src is None:
+        sources = self._GATE_SOURCES.get(gate)
+        if not sources:
             return 1.0
-        age = s.source_age_hours.get(src)
-        if age is None or age <= 0:
+        hl = self.cfg.staleness_half_life_h
+        num = 0.0
+        den = 0.0
+        for src, base_w in sources:
+            age = s.source_age_hours.get(src)
+            f = 1.0 if age is None or age <= 0 else float(0.5 ** (age / hl))
+            effective_w = base_w * f
+            num += effective_w * f
+            den += effective_w
+        if den <= 0:
             return 1.0
-        return float(0.5 ** (age / self.cfg.staleness_half_life_h))
+        return num / den
 
     def _decay(self, gate_value: float, weight: float) -> float:
         """Pull a gate toward neutral (1.0) in proportion to how stale its source is."""

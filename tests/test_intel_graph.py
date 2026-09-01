@@ -10,6 +10,7 @@ from trading_live_claude.intel.graph import (
     append_snapshot_edges,
     edge_persistence,
     edges_where,
+    event_records_to_edges,
     load_edges,
     snapshot_to_edges,
 )
@@ -155,6 +156,94 @@ def test_append_never_raises_on_bad_path(tmp_path: Path) -> None:
 
 def _make_edge(subj: tuple[str, str], pred: str, obj: tuple[str, str]) -> Edge:
     return Edge(subject=subj, predicate=pred, object=obj)      # type: ignore[arg-type]
+
+
+# --- per-event decomposition ---------------------------------------------------------------------
+
+
+def _sig(id_: str, sources: list[str], categories: list[str], country: str) -> dict[str, object]:
+    """A cross-source-signal-shaped vendor record."""
+    return {"id": id_, "sources": sources, "categories": categories, "country": country}
+
+
+def test_event_records_produce_source_domain_and_region_edges() -> None:
+    """Each record decomposes into mentioned_by + about_domain + affects_region."""
+    recs = [_sig("EV-1", ["Reuters", "Bloomberg"], ["energy", "supply"], "SA")]
+    edges = event_records_to_edges(recs, domain="news_signal",
+                                    poll_id="p1", as_of="2026-09-01T00:00:00+00:00")
+
+    # 2 sources
+    mentions = edges_where(edges, subject=("event", "EV-1"), predicate="mentioned_by")
+    assert {e.object[1] for e in mentions} == {"Reuters", "Bloomberg"}
+
+    # 2 declared categories WIN over the domain fallback
+    domains = edges_where(edges, subject=("event", "EV-1"), predicate="about_domain")
+    assert {e.object[1] for e in domains} == {"energy", "supply"}
+
+    # 1 region, uppercased
+    regions = edges_where(edges, subject=("event", "EV-1"), predicate="affects_region")
+    assert {e.object[1] for e in regions} == {"SA"}
+
+    # poll -> event observation edge, so persistence queries can group per poll
+    assert edges_where(edges, subject=("poll", "p1"), predicate="observed",
+                       object=("event", "EV-1"))
+
+
+def test_records_without_id_or_title_are_skipped_rather_than_fabricated() -> None:
+    """An edge without a stable subject is worse than no edge."""
+    edges = event_records_to_edges(
+        [{"sources": ["Reuters"]}], domain="news_signal", poll_id="p", as_of="")
+    assert edges == []
+
+
+def test_records_fall_back_to_a_hash_of_title_and_timestamp_when_id_is_missing() -> None:
+    """No vendor id, but title + timestamp are present — use the deterministic fallback id."""
+    rec = {"title": "Refinery outage", "publishedAt": "2026-08-30T09:00:00Z",
+           "sources": ["FT"]}
+    edges = event_records_to_edges([rec], domain="news_signal", poll_id="p",
+                                    as_of="2026-08-30T10:00:00Z")
+    subj_ids = {e.subject[1] for e in edges if e.subject[0] == "event"}
+    assert len(subj_ids) == 1
+    # Same input twice yields the SAME id — stability across polls is the point.
+    edges2 = event_records_to_edges([rec], domain="news_signal", poll_id="p2",
+                                     as_of="2026-08-30T11:00:00Z")
+    subj_ids2 = {e.subject[1] for e in edges2 if e.subject[0] == "event"}
+    assert subj_ids == subj_ids2
+
+
+def test_domain_fallback_fires_only_when_the_record_declares_none() -> None:
+    """If the record itself carries categories, those win; the domain arg is only a fallback."""
+    with_cats = _sig("A", ["Reuters"], ["fx"], "US")
+    without_cats = {"id": "B", "sources": ["Reuters"], "country": "US"}
+    e_a = event_records_to_edges([with_cats], domain="news_signal",
+                                  poll_id="p", as_of="")
+    e_b = event_records_to_edges([without_cats], domain="news_signal",
+                                  poll_id="p", as_of="")
+    assert {e.object[1] for e in edges_where(e_a, predicate="about_domain")} == {"fx"}
+    assert {e.object[1] for e in edges_where(e_b, predicate="about_domain")} == {"news_signal"}
+
+
+def test_source_extraction_handles_dict_shape() -> None:
+    """Vendors sometimes serialize sources as a list of dicts with a ``name`` key."""
+    rec = {"id": "EV", "sources": [{"name": "Reuters"}, {"outlet": "AP"}, {"id": "wsj"}]}
+    edges = event_records_to_edges([rec], domain="d", poll_id="p", as_of="")
+    names = {e.object[1] for e in edges_where(edges, predicate="mentioned_by")}
+    assert names == {"Reuters", "AP", "wsj"}
+
+
+def test_corroboration_is_now_a_graph_query_over_mentioned_by_edges() -> None:
+    """The whole point: distinct sources per event = corroboration count, straight from the graph."""
+    two_source = _sig("EV-A", ["Reuters", "Bloomberg"], ["news"], "US")
+    single = _sig("EV-B", ["Reuters"], ["news"], "US")
+    edges = (event_records_to_edges([two_source], domain="d", poll_id="p", as_of="")
+             + event_records_to_edges([single], domain="d", poll_id="p", as_of=""))
+
+    def _corroboration(event_id: str) -> int:
+        return len({e.object[1]
+                    for e in edges_where(edges, subject=("event", event_id),
+                                          predicate="mentioned_by")})
+    assert _corroboration("EV-A") == 2
+    assert _corroboration("EV-B") == 1
 
 
 def test_edges_where_is_conjunctive_over_provided_filters() -> None:

@@ -229,3 +229,48 @@ def test_staleness_only_affects_gates_fed_by_that_source() -> None:
     aged = ov.evaluate(replace(s, source_age_hours={"energy": 96.0}))
     assert aged["commodity"].scalar > base["commodity"].scalar   # energy gate discounted
     assert aged["equity"].scalar == base["equity"].scalar        # equity untouched
+
+
+# --- inverse-weighted freshness on market-driven gates ---------------------------------------
+
+def test_market_derived_gates_are_now_discounted_by_market_freshness() -> None:
+    """Previously VIX/DXY/crypto_vol/fear silently returned freshness=1 no matter the age."""
+    # High VIX drives the equity_vol gate. A very stale market payload should soften the gate.
+    stressed = IntelSnapshot(market={"equity_vol": 40.0})
+    ov = RiskOverlay()
+    fresh = ov.evaluate(stressed)["equity"].scalar
+    aged = ov.evaluate(replace(stressed, source_age_hours={"market": 96.0}))["equity"].scalar
+    assert aged > fresh                                # 96h-old VIX de-risks equity less
+
+
+def test_inverse_weighted_freshness_lets_fresh_dominate_stale() -> None:
+    """A hypothetical multi-source gate must weight sources by their OWN freshness.
+
+    Directly exercises RiskOverlay._freshness on a two-source configuration constructed at test
+    time — realistic for future gates that blend news + market or news + energy.
+    """
+    ov = RiskOverlay()
+    # Save + restore the class-var so this test's mutation is local.
+    original = ov._GATE_SOURCES
+    try:
+        ov._GATE_SOURCES = {                                # type: ignore[misc]
+            **original, "blended": (("news", 1.0), ("market", 1.0)),
+        }
+        # Case A: news very stale (96h), market fresh (0h)
+        s_a = IntelSnapshot(source_age_hours={"news": 96.0, "market": 0.0})
+        weighted = ov._freshness(s_a, "blended")
+        # naive average would be (0.06 + 1.0) / 2 = 0.53. Inverse-weighted must be much higher,
+        # because the news source's tiny effective weight also drags its own contribution down.
+        assert weighted > 0.90
+        # Case B: both stale — no fresh side to lean on, the blend really is low.
+        s_b = IntelSnapshot(source_age_hours={"news": 96.0, "market": 96.0})
+        assert ov._freshness(s_b, "blended") < 0.10
+    finally:
+        ov._GATE_SOURCES = original                        # type: ignore[misc]
+
+
+def test_single_source_freshness_is_unchanged_from_the_previous_formula() -> None:
+    """Regression pin: the refactor must not shift single-source gates' discount at all."""
+    ov = RiskOverlay()
+    s = IntelSnapshot(source_age_hours={"energy": 24.0})     # exactly one half-life
+    assert abs(ov._freshness(s, "energy") - 0.5) < 1e-12
