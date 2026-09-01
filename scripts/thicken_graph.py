@@ -1,19 +1,19 @@
-"""Iteratively accrete OSINT edges into ``state/intel_graph.jsonl`` — the deliberate off-cadence
-runner for the "iteratively developing vertices/edges" posture (NEXT_SESSION.md #6).
+"""Off-cadence graph-poll runner — one canonical polling path shared with the live trading loop.
 
-Each iteration fetches one live WorldMonitor snapshot and lets the existing wiring do the writes:
+Uses :class:`trading_live_claude.intel.routing.OverlayProvider` — the SAME poller the live monitor
+uses when it is running with ``signal --intel-overlay``. Each ``refresh`` computes overlay
+decisions AND journals the snapshot via :func:`intel.history.append_snapshot`, which writes both
+the flat overlay row AND the graph edges (aggregate + per-event). Trading loops and this overnight
+runner therefore share one code path — no duplicate WorldMonitor client wiring, no duplicate
+journal path, no drift between them.
 
-* ``intel.history.append_snapshot`` writes the flat overlay row (as always)
-* ``intel.graph.append_snapshot_edges`` writes aggregate edges from snapshot fields
-* ``intel.worldmonitor._write_event_edges`` writes per-event ``mentioned_by`` / ``about_domain`` /
-  ``affects_region`` edges from the raw signals + advisories + conflict sample
+Snapshots are cached with a ``cached_at`` stamp on the vendor side; running at too high a cadence
+just journals the SAME payload against a stale age. The default ``--sleep 900`` (15 minutes)
+matches the vendor's typical refresh interval, which is also OverlayProvider's default
+``refresh_seconds``.
 
-Snapshots are cached with a ``cached_at`` stamp on the vendor side; running this at too high a
-cadence just journals the SAME payload repeatedly with a stale age, thickening nothing new. The
-default ``--sleep 900`` (15 minutes) matches the vendor's typical refresh interval and keeps the
-edges honest.
-
-Nothing here is on the hot path. Trading loops are unaffected — this is a research tool.
+Nothing here is on the hot path — the trading loops instantiate their OWN OverlayProvider inside
+the CLI. This process is a separate instance dedicated to accretion when no trading loop is up.
 
 Usage examples::
 
@@ -39,17 +39,27 @@ from trading_live_claude.intel.graph import (
     DEFAULT_GRAPH_JOURNAL,
     load_edges,
 )
-from trading_live_claude.intel.history import append_snapshot
-from trading_live_claude.intel.overlay import RiskOverlay
+from trading_live_claude.intel.overlay import IntelSnapshot
+from trading_live_claude.intel.routing import OverlayProvider
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 
 
-async def _one_snapshot() -> None:
+def _build_overlay_provider(refresh_seconds: float) -> OverlayProvider:
+    """OverlayProvider expects a synchronous zero-arg snapshot_fn; wrap the async client."""
     s = get_settings()
-    async with WorldMonitorClient(s.worldmonitor_api_key) as wm:
-        snap = await wm.snapshot()
-    # append_snapshot handles both flat + graph writes.
-    append_snapshot(snap, RiskOverlay().evaluate(snap))
+
+    def snapshot_fn() -> IntelSnapshot:
+        async def _one() -> IntelSnapshot:
+            async with WorldMonitorClient(s.worldmonitor_api_key) as wm:
+                return await wm.snapshot()
+        return asyncio.run(_one())
+
+    return OverlayProvider(snapshot_fn, refresh_seconds=refresh_seconds, journal=True)
+
+
+def _one_snapshot(provider: OverlayProvider) -> None:
+    """Force a refresh — bypass the throttle so our --sleep cadence is what counts."""
+    provider.refresh(force=True)
 
 
 def _profile_graph(path: str | Path = DEFAULT_GRAPH_JOURNAL) -> dict[str, object]:
@@ -83,17 +93,20 @@ def main() -> None:
                          "re-writes the same payload against a stale age.")
     args = ap.parse_args()
 
+    provider = _build_overlay_provider(refresh_seconds=args.sleep)
     before = _profile_graph()
     print(f"[thicken] start: {before['edges_total']} edges, {before['nodes_total']} nodes",
           flush=True)
     print(f"[thicken] nodes by type: {before['nodes_by_type']}", flush=True)
+    print(f"[thicken] polling via OverlayProvider (canonical live-path poller) "
+          f"— overlay decisions computed AND journaled per refresh", flush=True)
 
     for i in range(1, args.iterations + 1):
         t0 = time.time()
         try:
-            asyncio.run(_one_snapshot())
+            _one_snapshot(provider)
         except Exception as e:
-            print(f"[thicken] iter {i}: FAILED — {e}", flush=True)
+            print(f"[thicken] iter {i}: FAILED - {e}", flush=True)
         else:
             snap_profile = _profile_graph()
             grew_edges = snap_profile["edges_total"] - before["edges_total"]
