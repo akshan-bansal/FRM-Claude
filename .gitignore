@@ -38,6 +38,7 @@ state/orders.jsonl
 state/fills.jsonl
 state/rejected.jsonl
 state/paper_fills.jsonl
+state/intel_overlay.jsonl
 state/autonomous.pid
 state/HALTED
 

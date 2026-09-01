@@ -50,3 +50,26 @@ def test_accel_gate_de_risks_but_only_as_a_gentle_tilt() -> None:
     assert surge < calm
     assert surge >= OverlayConfig().accel_floor      # a tilt, never a stop
     assert OverlayConfig().accel_floor == 0.75
+
+
+def test_sparse_older_tail_cannot_fabricate_a_spike() -> None:
+    """A baseline built from one or two stale records is not a baseline.
+
+    Regression: before the guard, 39 recent events plus a single 30-day-old one produced a 351x
+    acceleration, enough to drive the overlay to HALT on pure noise.
+    """
+    recs = [_rec(i * 0.07) for i in range(39)] + [_rec(30.0)]
+    ei = event_intensity(recs, domain="energy", recent_days=3.0, now=NOW)
+    assert ei.acceleration == 1.0          # too thin to claim anything
+
+    # with a real baseline the ratio is computed, but clipped against the heavy tail
+    real = [_rec(i * 0.07) for i in range(39)] + [_rec(20 + i) for i in range(8)]
+    ei2 = event_intensity(real, domain="energy", recent_days=3.0, now=NOW)
+    assert 1.0 < ei2.acceleration <= 10.0
+
+
+def test_acceleration_is_clipped_at_the_cap() -> None:
+    recs = [_rec(i * 0.01) for i in range(60)] + [_rec(25 + i) for i in range(6)]
+    ei = event_intensity(recs, domain="conflict", recent_days=3.0, now=NOW,
+                         min_baseline_events=5, max_acceleration=4.0)
+    assert ei.acceleration == 4.0

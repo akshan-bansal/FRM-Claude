@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
 OverlayClass = Literal["equity", "future", "commodity", "fx", "crypto"]
 OVERLAY_CLASSES: tuple[OverlayClass, ...] = ("equity", "future", "commodity", "fx", "crypto")
@@ -47,6 +47,7 @@ class IntelSnapshot:
     energy_stress: float = 0.0                 # [0, 1]
     strategic_risk: float = 0.0                # WorldMonitor global geopolitical index, 0-100
     event_acceleration: dict[str, float] = field(default_factory=dict)  # domain -> recent/baseline event flow
+    source_age_hours: dict[str, float] = field(default_factory=dict)    # tool -> age of its cached payload
     fear_greed: float | None = None            # market fear/greed composite, 0-100 (low = fear/risk-off)
     market: dict[str, float] = field(default_factory=dict)  # equity_vol, dxy, crypto, *_chg
     degraded: bool = False
@@ -74,7 +75,11 @@ def _ramp(x: float, lo: float, hi: float, y_lo: float, y_hi: float) -> float:
 @dataclass(frozen=True)
 class OverlayConfig:
     floor: float = 0.25            # smallest per-gate / per-class scalar (never fully zero)
-    halt_below: float = 0.4        # scalar at/below which new entries are stood down
+    # Halt threshold. NOTE the interaction with ``floor``: a class scalar is clamped to >= floor,
+    # so a halt_below at or under the floor is unreachable and halting never fires. At the current
+    # floor (0.25) this 0.20 setting means the overlay trims but no longer stands a class down;
+    # drop the floor below 0.20 to make it a live threshold again.
+    halt_below: float = 0.20       # scalar at/below which new entries are stood down
     degraded_cap: float = 0.8      # when the snapshot is degraded, cap every class here
     # gate saturation points (where a gate bottoms out at floor)
     alerts_full: float = 12.0      # global alert count → full de-risk
@@ -90,6 +95,11 @@ class OverlayConfig:
     strat_hi: float = 90.0             # ...and at/above which the geo gate bottoms out (SEVERE)
     fear_hi: float = 45.0              # fear/greed at/above which no de-risk (>=45 = neutral/greed)
     fear_lo: float = 18.0              # ...and at/below which the fear gate bottoms out (extreme fear)
+    # Freshness decay. The vendor serves CACHED payloads and stamps each with `cached_at`; observed
+    # ages ranged from minutes (news) to ~4 days (energy). A gate driven by a four-day-old reading
+    # should not carry the same authority as one driven by a live one, so each gate's DEVIATION from
+    # neutral decays with the age of the source behind it. Half-life, in hours.
+    staleness_half_life_h: float = 24.0
     accel_lo: float = 1.5              # event-flow acceleration below which no de-risk
     accel_hi: float = 4.0              # ...and at/above which the acceleration gate bottoms out
     accel_floor: float = 0.75          # short-retention archive -> tilt only, max 25% trim
@@ -102,6 +112,34 @@ class RiskOverlay:
 
     def __init__(self, config: OverlayConfig | None = None) -> None:
         self.cfg = config or OverlayConfig()
+
+    # ---- freshness ----------------------------------------------------------
+    # Which snapshot source each gate is driven by, so a gate can be discounted when the payload
+    # behind it is old. Gates reading live market data (VIX, BTC, DXY) are treated as fresh.
+    _GATE_SOURCE: ClassVar[dict[str, str]] = {
+        "global": "news", "economy": "news", "conflict": "conflict", "disaster": "disasters",
+        "energy": "energy", "event_flow": "events",
+    }
+
+    def _freshness(self, s: IntelSnapshot, gate: str) -> float:
+        """Weight in [0, 1] for how much a gate's deviation from neutral should count.
+
+        Exponential decay on the age of the payload behind the gate. Fresh data applies in full; a
+        reading several half-lives old is discounted toward no-opinion rather than being trusted or
+        silently dropped. Unknown age is treated as fresh, since the common case for a missing stamp
+        is a live-computed field.
+        """
+        src = self._GATE_SOURCE.get(gate)
+        if src is None:
+            return 1.0
+        age = s.source_age_hours.get(src)
+        if age is None or age <= 0:
+            return 1.0
+        return float(0.5 ** (age / self.cfg.staleness_half_life_h))
+
+    def _decay(self, gate_value: float, weight: float) -> float:
+        """Pull a gate toward neutral (1.0) in proportion to how stale its source is."""
+        return 1.0 - weight * (1.0 - gate_value)
 
     # ---- individual gates (each returns a scalar in [floor, 1]) --------------
     def _global_gate(self, s: IntelSnapshot) -> float:
@@ -180,6 +218,10 @@ class RiskOverlay:
             comps = {"global": g ** self.cfg.crypto_beta, "crypto_vol": self._crypto_vol_gate(s),
                      "fear": self._fear_gate(s), "economy": self._econ_gate(s),
                      "event_flow": self._accel_gate(s, "conflict", "military")}
+
+        # Discount each gate by the freshness of the payload driving it, BEFORE multiplying. A stale
+        # source therefore weakens its own gate rather than the whole class scalar.
+        comps = {k: self._decay(v, self._freshness(s, k)) for k, v in comps.items()}
 
         scalar = 1.0
         for v in comps.values():

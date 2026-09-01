@@ -50,12 +50,21 @@ def _ms_to_dt(v: Any) -> datetime | None:
 
 
 def event_intensity(records: Sequence[dict[str, Any]], *, domain: str,
-                    recent_days: float = 3.0, now: datetime | None = None) -> EventIntensity:
+                    recent_days: float = 3.0, now: datetime | None = None,
+                    min_baseline_events: int = 5, max_acceleration: float = 10.0) -> EventIntensity:
     """Recent-vs-baseline event flow for one domain, bucketed by ``ingestedAt``.
 
     ``recent_rate`` covers the last ``recent_days``; ``baseline_rate`` covers everything older in the
     archive. With no older records the baseline falls back to the recent rate, giving
     ``acceleration = 1.0`` — i.e. "no evidence of a pickup" rather than a fabricated spike.
+
+    Two guards matter more than the arithmetic, because the archive is capped at a few dozen records
+    and its older tail is very thin. **``min_baseline_events``**: a baseline computed from one or two
+    stale records is not a baseline — a single 30-day-old event divided into a busy recent window
+    yields absurd ratios (hundreds of x), which would drive the overlay to halt on noise. Below this
+    count the acceleration is reported as a neutral 1.0. **``max_acceleration``**: even with enough
+    events the ratio is heavy-tailed, so it is clipped; the gate saturates well before the cap
+    anyway, and clipping keeps one quiet day in the baseline from dominating the decision.
     """
     now = now or datetime.now(UTC)
     stamps: list[datetime] = []
@@ -80,12 +89,14 @@ def event_intensity(records: Sequence[dict[str, Any]], *, domain: str,
     span = (max(stamps) - min(stamps)).total_seconds() / 86400.0
 
     recent_rate = len(recent) / recent_days
-    if older:
+    if len(older) >= min_baseline_events:
         older_span = max((cutoff - min(older)).total_seconds() / 86400.0, 1.0)
         baseline_rate = len(older) / older_span
     else:
-        baseline_rate = recent_rate      # no older data -> assume normal, never a fake spike
+        # Too thin to establish what "normal" looks like for this domain -> claim nothing.
+        baseline_rate = recent_rate
     accel = recent_rate / baseline_rate if baseline_rate > 0 else 1.0
+    accel = min(accel, max_acceleration)
 
     return EventIntensity(domain=domain, recent_count=len(recent), recent_rate=recent_rate,
                           baseline_rate=baseline_rate, acceleration=accel, span_days=span,

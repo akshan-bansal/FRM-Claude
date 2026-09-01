@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 
+from trading_live_claude.intel.history import append_snapshot
 from trading_live_claude.intel.overlay import (
     IntelSnapshot,
     OverlayClass,
@@ -61,11 +62,13 @@ class OverlayProvider:
 
     def __init__(self, snapshot_fn: Callable[[], IntelSnapshot], *, refresh_seconds: float = 900.0,
                  overlay: RiskOverlay | None = None,
-                 class_overrides: Mapping[str, OverlayClass] | None = None) -> None:
+                 class_overrides: Mapping[str, OverlayClass] | None = None,
+                 journal: bool = True) -> None:
         self._snapshot_fn = snapshot_fn
         self._refresh = refresh_seconds
         self._overlay = overlay or RiskOverlay()
         self._overrides = class_overrides
+        self._journal = journal
         self._decisions: dict[OverlayClass, OverlayDecision] | None = None
         self._ts = 0.0
 
@@ -76,6 +79,10 @@ class OverlayProvider:
             snap = self._snapshot_fn()
             self._decisions = self._overlay.evaluate(snap)
             self._ts = time.monotonic()
+            # Every live read goes into the journal — the monitor is the highest-frequency consumer
+            # of the feed, so it is where the point-in-time history actually accrues.
+            if self._journal:
+                append_snapshot(snap, self._decisions)
             log.info("overlay.refreshed", degraded=snap.degraded,
                      scalars={c: d.scalar for c, d in self._decisions.items()})
         except Exception as e:  # keep last good decisions; never break the monitor

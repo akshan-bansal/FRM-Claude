@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from trading_live_claude.intel import (
     IntelSnapshot,
     OverlayConfig,
@@ -39,12 +41,38 @@ def test_crypto_has_higher_beta_to_global_risk_off() -> None:
     assert dec["crypto"].scalar < dec["equity"].scalar
 
 
-def test_severe_world_halts_new_entries() -> None:
+def test_severe_world_bottoms_out_at_the_floor() -> None:
+    """A severe world drives every class to the floor — the deepest de-risk available."""
     severe = IntelSnapshot(global_alert_count=12, conflict_events_active=8,
                            category_alert_counts={"economy": 6}, market={"equity_vol": 40.0})
     dec = RiskOverlay().evaluate(severe)
-    assert dec["equity"].halt_new_entries and dec["crypto"].halt_new_entries
-    assert dec["equity"].scalar <= OverlayConfig().halt_below
+    cfg = OverlayConfig()
+    assert dec["equity"].scalar == cfg.floor
+    assert dec["crypto"].scalar == cfg.floor
+
+
+def test_halt_threshold_below_the_floor_disables_halting() -> None:
+    """Documents a live configuration consequence, so it can never surprise anyone.
+
+    A class scalar is clamped to ``>= floor``. With ``halt_below`` (0.20) at or under ``floor``
+    (0.25), ``scalar <= halt_below`` is unreachable, so the overlay trims but never stands a class
+    down. Halting is currently OFF by configuration; drop the floor below halt_below to re-enable it.
+    """
+    cfg = OverlayConfig()
+    assert cfg.halt_below <= cfg.floor, "halt is only reachable when halt_below > floor"
+
+    worst = IntelSnapshot(global_alert_count=30, conflict_events_active=20, strategic_risk=100.0,
+                          energy_stress=1.0, fear_greed=0.0, natural_disasters_active=20,
+                          category_alert_counts={"economy": 20},
+                          market={"equity_vol": 80.0, "crypto_chg": 30.0},
+                          event_acceleration={"energy": 10.0, "conflict": 10.0})
+    for d in RiskOverlay().evaluate(worst).values():
+        assert d.scalar == cfg.floor
+        assert not d.halt_new_entries          # nothing halts at this configuration
+
+    # ...and halting comes back the moment the floor is lowered under the threshold.
+    reachable = OverlayConfig(floor=0.10, halt_below=0.20)
+    assert any(d.halt_new_entries for d in RiskOverlay(reachable).evaluate(worst).values())
 
 
 def test_commodity_reads_energy_stress() -> None:
@@ -164,3 +192,40 @@ def test_fear_gate_floors_at_075() -> None:
     assert abs(panic - OverlayConfig().fear_floor) < 1e-9
     assert OverlayConfig().fear_floor == 0.75
     assert ov._fear_gate(IntelSnapshot(fear_greed=None)) == 1.0   # missing -> no effect
+
+
+def test_stale_sources_lose_authority_over_the_decision() -> None:
+    """Time is a first-class feature: an old payload should not drive a strong de-risk.
+
+    The vendor serves CACHED data (observed ages ran from minutes to ~4 days). A gate's deviation
+    from neutral decays with the age of the payload behind it, so a four-day-old energy reading
+    de-risks commodities far less than a live one claiming the same thing.
+    """
+    # Isolate the energy gate: with conflict and event-flow also maxed the class bottoms out at the
+    # floor regardless, which would mask the decay this test is about.
+    stressed = IntelSnapshot(energy_stress=1.0)
+    ov = RiskOverlay()
+    fresh = ov.evaluate(stressed)["commodity"].scalar
+    day_old = ov.evaluate(replace(stressed, source_age_hours={"energy": 24.0}))["commodity"].scalar
+    four_days = ov.evaluate(replace(stressed, source_age_hours={"energy": 96.0}))["commodity"].scalar
+
+    assert fresh < day_old < four_days      # older evidence -> weaker de-risk
+    assert four_days <= 1.0
+
+
+def test_unknown_or_zero_age_is_treated_as_fresh() -> None:
+    """A missing stamp usually means a live-computed field, so it must not be silently discounted."""
+    s = IntelSnapshot(energy_stress=1.0)
+    ov = RiskOverlay()
+    assert ov.evaluate(s)["commodity"].scalar == \
+        ov.evaluate(replace(s, source_age_hours={"energy": 0.0}))["commodity"].scalar
+
+
+def test_staleness_only_affects_gates_fed_by_that_source() -> None:
+    """A stale energy payload must not soften equity, which reads no energy gate."""
+    s = IntelSnapshot(energy_stress=1.0, global_alert_count=8)
+    ov = RiskOverlay()
+    base = ov.evaluate(s)
+    aged = ov.evaluate(replace(s, source_age_hours={"energy": 96.0}))
+    assert aged["commodity"].scalar > base["commodity"].scalar   # energy gate discounted
+    assert aged["equity"].scalar == base["equity"].scalar        # equity untouched

@@ -13,6 +13,7 @@ import asyncio
 from pathlib import Path
 
 from trading_live_claude.config.settings import Settings
+from trading_live_claude.intel.history import append_snapshot
 from trading_live_claude.intel.overlay import IntelSnapshot, OverlayClass, RiskOverlay
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 
@@ -69,6 +70,8 @@ def get_snapshot(from_journal: bool = False) -> tuple[IntelSnapshot, str]:
     if not from_journal:
         try:
             snap = asyncio.run(_live_snapshot())
+            # Analysis reads are observations too — journal them so the history keeps accruing.
+            append_snapshot(snap, RiskOverlay().evaluate(snap))
             if not snap.degraded:
                 return snap, "live"
             print("  (live read degraded — falling back to the last complete journaled snapshot)")

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any
 
@@ -145,6 +146,21 @@ class WorldMonitorClient:
                 degraded = True
                 return None
 
+        ages: dict[str, float] = {}
+
+        def _age_of(payload: Any, key: str) -> None:
+            """Record how old a tool's CACHED payload is; the vendor stamps every one with cached_at."""
+            if not isinstance(payload, dict):
+                return
+            stamp = payload.get("cached_at")
+            if not stamp:
+                return
+            try:
+                when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            except ValueError:
+                return
+            ages[key] = max(0.0, (datetime.now(UTC) - when).total_seconds() / 3600.0)
+
         news = await _try("get_news_intelligence", {"limit": 40})
         conflict = await _try("get_conflict_events", {"summary": True})
         # natural_disasters overflows the 128KB budget; project to counts with jmespath.
@@ -163,8 +179,14 @@ class WorldMonitorClient:
             if recs:
                 accel[dom] = round(event_intensity(recs, domain=dom).acceleration, 4)
 
+        for payload, key in ((news, "news"), (conflict, "conflict"), (disasters, "disasters"),
+                             (energy, "energy"), (market, "market")):
+            _age_of(payload, key)
+        # the intel archive is queried live per domain, so event features are as fresh as this call
+        ages.setdefault("events", 0.0)
+
         snap = _build_snapshot(news, conflict, disasters, energy, market, countries, degraded)
-        return replace(snap, event_acceleration=accel)
+        return replace(snap, event_acceleration=accel, source_age_hours=ages)
 
 
 def _num(obj: Any, *keys: str, default: float = 0.0) -> float:
