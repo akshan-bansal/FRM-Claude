@@ -377,6 +377,53 @@ def _extract_categories(rec: dict[str, object]) -> list[str]:
     return out
 
 
+def recent_events_from_graph(
+    edges: Sequence[Edge],
+    *,
+    limit: int = 40,
+) -> list[dict[str, object]]:
+    """Project recent event edges back into evidence records the agent layer can read.
+
+    The graph journal decomposes each event into typed edges, so a "record" for the agent is
+    reconstructed by joining the edges belonging to one event node: sources from ``mentioned_by``
+    edges, categories from ``about_domain``, regions from ``affects_region``. Newest events
+    first (by ``as_of``); at most ``limit`` events. Silent no-op when the graph has no events.
+    """
+    per_event: dict[str, dict[str, object]] = {}
+    stamps: dict[str, str] = {}
+    for e in edges:
+        subj = e.subject if e.subject[0] == "event" else (
+            e.object if e.object[0] == "event" else None)
+        if subj is None:
+            continue
+        ev_id = subj[1]
+        rec = per_event.setdefault(ev_id, {"id": ev_id, "sources": [], "categories": [],
+                                             "regions": []})
+        # Track the most recent as_of for this event so we can order records by it.
+        if e.as_of and (ev_id not in stamps or e.as_of > stamps[ev_id]):
+            stamps[ev_id] = e.as_of
+        if e.predicate == "mentioned_by":
+            src_list = rec["sources"]
+            assert isinstance(src_list, list)
+            if e.object[1] not in src_list:
+                src_list.append(e.object[1])
+        elif e.predicate == "about_domain":
+            cats = rec["categories"]
+            assert isinstance(cats, list)
+            if e.object[1] not in cats:
+                cats.append(e.object[1])
+        elif e.predicate == "affects_region":
+            regs = rec["regions"]
+            assert isinstance(regs, list)
+            if e.object[1] not in regs:
+                regs.append(e.object[1])
+    for ev_id, ts in stamps.items():
+        per_event[ev_id]["ingestedAt"] = ts
+    ordered = sorted(per_event.values(),
+                      key=lambda r: str(r.get("ingestedAt") or ""), reverse=True)
+    return ordered[:limit]
+
+
 def _extract_regions(rec: dict[str, object]) -> list[str]:
     raw = rec.get("countries") or rec.get("regions") or rec.get("locations")
     if raw is None:

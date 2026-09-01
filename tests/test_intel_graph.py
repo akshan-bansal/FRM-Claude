@@ -158,6 +158,56 @@ def _make_edge(subj: tuple[str, str], pred: str, obj: tuple[str, str]) -> Edge:
     return Edge(subject=subj, predicate=pred, object=obj)      # type: ignore[arg-type]
 
 
+# --- graph → agent evidence bundle ---------------------------------------------------------------
+
+from trading_live_claude.intel.graph import recent_events_from_graph                  # noqa: E402
+
+
+def test_recent_events_from_graph_reconstructs_records_from_typed_edges() -> None:
+    """The debate loop consumes records; the journal stores edges. Round-trip must work."""
+    edges = [
+        Edge(subject=("event", "EV-1"), predicate="mentioned_by",
+             object=("source", "Reuters"), as_of="2026-09-01T10:00:00+00:00"),
+        Edge(subject=("event", "EV-1"), predicate="mentioned_by",
+             object=("source", "Bloomberg"), as_of="2026-09-01T10:00:00+00:00"),
+        Edge(subject=("event", "EV-1"), predicate="about_domain",
+             object=("domain", "energy"), as_of="2026-09-01T10:00:00+00:00"),
+        Edge(subject=("event", "EV-1"), predicate="affects_region",
+             object=("region", "SA"), as_of="2026-09-01T10:00:00+00:00"),
+        Edge(subject=("poll", "p1"), predicate="observed",
+             object=("event", "EV-2"), as_of="2026-09-01T09:00:00+00:00"),
+        Edge(subject=("event", "EV-2"), predicate="mentioned_by",
+             object=("source", "AP"), as_of="2026-09-01T09:00:00+00:00"),
+    ]
+    recs = recent_events_from_graph(edges, limit=5)
+    assert len(recs) == 2
+    # Newest first
+    first = recs[0]
+    assert first["id"] == "EV-1"
+    assert set(first["sources"]) == {"Reuters", "Bloomberg"}
+    assert first["categories"] == ["energy"]
+    assert first["regions"] == ["SA"]
+    assert first["ingestedAt"] == "2026-09-01T10:00:00+00:00"
+
+
+def test_recent_events_from_graph_dedupes_repeated_edges() -> None:
+    """A source that shows up twice in the log should appear once in the reconstructed record."""
+    edges = [
+        Edge(subject=("event", "EV"), predicate="mentioned_by",
+             object=("source", "Reuters"), as_of="t1"),
+        Edge(subject=("event", "EV"), predicate="mentioned_by",
+             object=("source", "Reuters"), as_of="t2"),
+    ]
+    recs = recent_events_from_graph(edges)
+    assert recs[0]["sources"] == ["Reuters"]
+
+
+def test_recent_events_from_graph_returns_empty_when_no_event_edges() -> None:
+    edges = [Edge(subject=("poll", "p"), predicate="observed",
+                   object=("domain", "energy"), as_of="t")]
+    assert recent_events_from_graph(edges) == []
+
+
 # --- per-event decomposition ---------------------------------------------------------------------
 
 

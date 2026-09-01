@@ -151,6 +151,130 @@ def test_carry_inversion_does_not_fire_on_stress_alone_or_flow_alone() -> None:
     assert not any("Commodity carry-inversion" in n for n in _names(flow_only))
 
 
+# --- agent-layer merge into interpret() ----------------------------------------------------------
+
+import json                             # noqa: E402  (test helpers only, keeps prod imports clean)
+
+import httpx                             # noqa: E402
+import pytest                            # noqa: E402
+import respx                             # noqa: E402
+
+from trading_live_claude.intel.interpret import enrich_with_agents         # noqa: E402
+
+_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+
+
+@pytest.fixture()
+def _fake_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from trading_live_claude.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+
+def _api(text: str) -> httpx.Response:
+    return httpx.Response(200, json={"id": "m", "type": "message", "role": "assistant",
+                                       "model": "x", "stop_reason": "end_turn",
+                                       "content": [{"type": "text", "text": text}]})
+
+
+def _claim(**k: object) -> str:
+    p = {"thesis": "Supply shock", "direction": "constructive", "confidence": 0.7,
+          "inference": "Refinery outage reduces distillate supply.",
+          "evidence": ["Reuters: outage confirmed"]}
+    p.update(k)
+    return json.dumps(p)
+
+
+def _crit(v: str, reason: str = "ok", demote: float = 0.0) -> str:
+    return json.dumps({"verdict": v, "reason": reason, "demote_by": demote})
+
+
+@respx.mock
+def test_enrich_prepends_upheld_agent_theses_to_the_rule_reads(_fake_key: None) -> None:
+    """An UPHELD specialist reading is added to the rule output, marked so it is visible."""
+    calls = iter([_api(_claim()), _api(_crit("UPHELD", "Two sources agree.")),])
+    respx.post(_ANTHROPIC_URL).mock(side_effect=lambda req: next(calls))
+
+    # Start with a quiet-tape thesis from the rule layer.
+    rule_reads = interpret(IntelSnapshot(strategic_risk=30.0, fear_greed=50.0,
+                                          market={"equity_vol": 20.0}))
+    assert len(rule_reads) == 1 and rule_reads[0].name == "No notable configuration"
+
+    merged = enrich_with_agents(rule_reads, evidence=[
+        {"id": "EV-1", "title": "energy refinery outage", "sources": ["Reuters"]}])
+    # Agent thesis is prepended, and the quiet-tape null is preserved so an empty list can never
+    # be silently mistaken for interpreter failure.
+    assert any(t.name.startswith("[agent · energy]") for t in merged)
+    assert any(t.name == "No notable configuration" for t in merged)
+
+
+@respx.mock
+def test_enrich_drops_the_null_when_a_real_rule_thesis_is_also_present(_fake_key: None) -> None:
+    """Only prepend the null when the rule read was ONLY the null — otherwise the real rule reads
+    speak for themselves and the null is not needed."""
+    calls = iter([_api(_claim()), _api(_crit("UPHELD"))])
+    respx.post(_ANTHROPIC_URL).mock(side_effect=lambda req: next(calls))
+
+    rule_reads = interpret(IntelSnapshot(
+        strategic_risk=69.0, fear_greed=68.0, market={"equity_vol": 14.4},
+        event_acceleration={"energy": 6.3}))
+    assert any(t.name == "Complacency divergence" for t in rule_reads)
+
+    merged = enrich_with_agents(rule_reads, evidence=[
+        {"id": "EV", "title": "energy refinery outage", "sources": ["Reuters"]}])
+    # Agent thesis prepended AND every rule thesis kept.
+    assert merged[0].name.startswith("[agent")
+    for t in rule_reads:
+        assert any(m.name == t.name for m in merged)
+
+
+@respx.mock
+def test_enrich_returns_rule_reads_unchanged_when_debate_produces_nothing(_fake_key: None) -> None:
+    """FALSIFIED verdict drops the specialist's claim → nothing new to merge → rule reads stand."""
+    calls = iter([_api(_claim()), _api(_crit("FALSIFIED", "bundle contradicts the claim"))])
+    respx.post(_ANTHROPIC_URL).mock(side_effect=lambda req: next(calls))
+
+    rule_reads = interpret(IntelSnapshot(strategic_risk=30.0, fear_greed=50.0,
+                                          market={"equity_vol": 20.0}))
+    merged = enrich_with_agents(rule_reads, evidence=[
+        {"id": "EV", "title": "energy story", "sources": ["Reuters"]}])
+    assert [t.name for t in merged] == [t.name for t in rule_reads]
+
+
+@respx.mock
+def test_enrich_never_raises_on_api_failure(_fake_key: None) -> None:
+    """A 500 must not crash interpret() — return rule reads unchanged."""
+    respx.post(_ANTHROPIC_URL).mock(return_value=httpx.Response(500, json={"error": "x"}))
+    rule_reads = interpret(IntelSnapshot(strategic_risk=30.0))
+    merged = enrich_with_agents(rule_reads, evidence=[
+        {"id": "EV", "title": "energy story", "sources": ["Reuters"]}])
+    assert [t.name for t in merged] == [t.name for t in rule_reads]
+
+
+@respx.mock
+def test_enrich_confidence_bands_map_to_the_rule_layer_vocabulary(_fake_key: None) -> None:
+    """0.7+ → high; 0.4..0.7 → moderate; <0.4 → tentative. One vocabulary across both layers."""
+    # WEAK demotes 0.5 - so 0.7 becomes 0.2 → tentative.
+    calls = iter([_api(_claim(confidence=0.7)), _api(_crit("WEAK", "single source", 0.5))])
+    respx.post(_ANTHROPIC_URL).mock(side_effect=lambda req: next(calls))
+    merged = enrich_with_agents([], evidence=[
+        {"id": "EV", "title": "energy story", "sources": ["Reuters"]}], as_of="now")
+    agent = [t for t in merged if t.name.startswith("[agent")]
+    assert agent and agent[0].confidence == "tentative"
+
+
+@respx.mock
+def test_agent_thesis_action_is_never_an_entry_signal(_fake_key: None) -> None:
+    """Same non-negotiable as the rule layer."""
+    calls = iter([_api(_claim()), _api(_crit("UPHELD"))])
+    respx.post(_ANTHROPIC_URL).mock(side_effect=lambda req: next(calls))
+    merged = enrich_with_agents([], evidence=[
+        {"id": "EV", "title": "energy story", "sources": ["Reuters"]}])
+    banned = ("buy ", "sell ", "go long", "short the", "enter ")
+    for t in merged:
+        assert not any(b in t.action.lower() for b in banned), t.action
+
+
 def test_none_of_the_new_theses_phrase_actions_as_entry_signals() -> None:
     """Same guard as the pre-existing rules — hypotheses only, never 'buy'."""
     snaps = [

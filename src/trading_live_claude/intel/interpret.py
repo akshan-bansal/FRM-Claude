@@ -19,6 +19,9 @@ as an entry signal.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
 
 from trading_live_claude.intel.overlay import IntelSnapshot
 
@@ -270,6 +273,71 @@ def interpret(snap: IntelSnapshot) -> list[Thesis]:
             action="No intel-driven change in posture. Let the validated strategy layer run.",
         ))
     return out
+
+
+# Domain → theme mapping for the agent layer. Kept tight so an agent-fired thesis in a domain
+# implicates the same tickers the rule layer would for that domain, no more.
+_AGENT_DOMAIN_THEMES: dict[str, list[str]] = {
+    "energy":      ["energy", "materials"],
+    "geopolitics": ["defense_geopolitical", "safe_haven"],
+    "macro":       ["dollar", "emerging_markets"],
+    "disaster":    ["insurance", "materials"],
+}
+
+
+def _agent_to_thesis(fired: Any) -> Thesis:
+    """Fold a :class:`intel.agents.FiredThesis` into the shape ``interpret()`` returns.
+
+    Confidence bands mirror the rule layer's tentative/moderate/high strings, so the merged
+    output speaks one vocabulary. Action text is deliberately generic ("research focus in the X
+    domain; hypothesis pending walk-forward like any other candidate") because the specific
+    action would need domain-specific reasoning we do not want to hard-code — the specialist's
+    inference already carries the substantive read.
+    """
+    c = float(fired.confidence)
+    band = "high" if c >= 0.7 else "moderate" if c >= 0.4 else "tentative"
+    name = f"[agent · {fired.domain}] {fired.thesis}"
+    inference = f"{fired.inference}  (adversary: {fired.adversary_verdict}: {fired.adversary_reason})"
+    action = (f"Research focus in the {fired.domain} domain; the agent debate upheld this "
+              f"reading against the same evidence bundle. Hypothesis pending walk-forward like "
+              f"any other candidate — never an entry signal on its own.")
+    themes = list(_AGENT_DOMAIN_THEMES.get(fired.domain, []))
+    return Thesis(name=name, confidence=band, evidence=list(fired.evidence),
+                  inference=inference, action=action, themes=themes)
+
+
+def enrich_with_agents(
+    theses: list[Thesis],
+    *,
+    evidence: list[dict[str, Any]],
+    as_of: str = "",
+    client: httpx.Client | None = None,
+) -> list[Thesis]:
+    """Run the specialist-reader + adversary debate over ``evidence`` and merge the survivors.
+
+    Off the hot path. This adds one LLM round-trip per configured domain plus one adversary call
+    per surviving specialist — call from an off-cadence enrichment step, not every poll. Any
+    failure inside the agent layer returns the rule-based theses unchanged; nothing about the
+    live loop should ever depend on the model being reachable.
+
+    The quiet-tape null thesis is preserved when the rule layer produced it: an empty rule read
+    plus an empty debate is still information ("no notable configuration"), and dropping the
+    null so an empty list surfaces instead would silently look like the interpreter had failed.
+    """
+    try:
+        from trading_live_claude.intel.agents import debate
+    except Exception:                        # pragma: no cover — import guard
+        return theses
+    try:
+        fired = debate(evidence, as_of=as_of, client=client)
+    except Exception:
+        return theses
+    if not fired:
+        return theses
+    # Prepend agent-fired theses so they appear first, but keep the rule reads.
+    non_null = [t for t in theses if t.name != "No notable configuration"]
+    agent_theses = [_agent_to_thesis(f) for f in fired]
+    return agent_theses + non_null if non_null else agent_theses + theses
 
 
 def implicated_symbols(theses: list[Thesis]) -> dict[str, list[str]]:
