@@ -47,4 +47,4 @@ kill:
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache htmlcov .coverage
 	rm -rf data/cache reports logs
-	rm -f state/orders.jsonl state/rejected.jsonl state/fills.jsonl state/paper_fills.jsonl state/equity.csv
+	rm -f state/orders.jsonl state/rejected.jsonl state/fills.jsonl state/paper_fills.jsonl state/paper_orders.jsonl state/paper_equity.csv state/equity.csv

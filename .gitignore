@@ -38,6 +38,8 @@ state/orders.jsonl
 state/fills.jsonl
 state/rejected.jsonl
 state/paper_fills.jsonl
+state/paper_orders.jsonl
+state/paper_equity.csv
 state/intel_overlay.jsonl
 state/intel_graph.jsonl
 state/autonomous.pid
