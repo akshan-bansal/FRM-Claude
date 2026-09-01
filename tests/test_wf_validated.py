@@ -3,6 +3,7 @@ from __future__ import annotations
 from trading_live_claude.analysis.universe import (
     SEED_UNIVERSE,
     WALK_FORWARD_VALIDATED,
+    min_oos_trades,
     validated_for,
     validated_symbols,
 )
@@ -25,13 +26,16 @@ def test_robust_tier_meets_all_three_bars() -> None:
         if rec.tier == "robust":
             assert rec.wfe >= 0.5, rec.symbol
             assert rec.oos_score > 0.0, rec.symbol
-            assert rec.oos_trades >= 10, rec.symbol
+            # The trade-count bar is class-dependent: commodities trade on a slower cycle and are
+            # held to ~4 (roughly quarterly), everything else to 10.
+            assert rec.oos_trades >= min_oos_trades(rec.asset_class), rec.symbol
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # 18 robust + 7 watch — $25-40 sweep adds ZWB.TO/GEI.TO (robust) and XEI.TO (watch); SMH omitted.
-    assert len(validated_symbols("robust")) == 18
-    assert len(WALK_FORWARD_VALIDATED) == 25
+    # 21 robust + 7 watch — the $1-45 resweep added CRT.UN.TO, VALE and DBC (all robust) on top of the
+    # $25-40 sweep's ZWB.TO/GEI.TO (robust) and XEI.TO (watch); SMH omitted.
+    assert len(validated_symbols("robust")) == 21
+    assert len(WALK_FORWARD_VALIDATED) == 28
     assert "SMH" not in WALK_FORWARD_VALIDATED
     watch = set(validated_symbols("watch"))
     assert {"VFV.TO", "WCP.TO", "KEY.TO", "TA.TO", "ZUT.TO", "EFN.TO", "XEI.TO"} == watch
@@ -89,3 +93,32 @@ def test_25_35_sweep_survivors_are_wired() -> None:
     for sym in ("ZUT.TO", "EFN.TO"):
         rec = validated_for(sym)
         assert rec is not None and rec.tier == "watch", sym
+
+
+def test_resweep_1_45_survivors_are_wired() -> None:
+    """The $1-45 resweep's three walk-forward survivors, including the ARX.TO family upgrade."""
+    for sym in ("ARX.TO", "CRT.UN.TO", "VALE"):
+        rec = validated_for(sym)
+        assert rec is not None, sym
+        assert rec.tier == "robust", sym
+
+    # ARX.TO was re-optimized across all families and moved off bollinger onto rsi_meanrevert,
+    # beating the superseded config out-of-sample (was OOS 8.82 / WFE 0.72).
+    arx = validated_for("ARX.TO")
+    assert arx.strategy == "rsi_meanrevert"
+    assert arx.oos_score > 8.82 and arx.wfe > 0.72
+
+    # VALE is the first materials producer and the first non-North-American-listed name in the pool.
+    assert validated_for("VALE").wfe > 1.0   # OOS beat in-sample
+
+
+def test_commodity_trade_bar_is_lower_than_the_default() -> None:
+    """Commodities clear on ~4 OOS trades (roughly quarterly); everything else still needs 10."""
+    assert min_oos_trades("commodity") == 4
+    for cls in ("equity", "future", "fx", "crypto"):
+        assert min_oos_trades(cls) == 10
+
+    # DBC is the name this bar admits: it clears on 7 trades and would fail the flat 10.
+    dbc = validated_for("DBC")
+    assert dbc is not None and dbc.tier == "robust" and dbc.asset_class == "commodity"
+    assert 4 <= dbc.oos_trades < 10

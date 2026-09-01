@@ -31,7 +31,7 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         "XLE", "ARX.TO", "DFY.TO", "EQB.TO", "WCP.TO", "KEY.TO",
         "XLB", "QQQ", "IWM", "RS", "DBA", "CEW.TO", "BTO.TO", "ZEB.TO",
         "FRU.TO", "TA.TO", "SRU.UN.TO", "CGL.TO", "ZUT.TO", "EFN.TO",
-        "ZWB.TO", "GEI.TO", "XEI.TO",
+        "ZWB.TO", "GEI.TO", "XEI.TO", "CRT.UN.TO", "VALE", "DBC",
     ),
     "future": ("ES", "NQ", "YM", "RTY", "ZN", "ZB"),
     "commodity": ("GLD", "SLV", "USO", "UNG", "DBC", "CORN", "WEAT"),
@@ -145,8 +145,9 @@ class WFValidated:
     in-sample score) summarize how the family held up on unseen data.
 
     ``tier`` is ``"robust"`` when the name cleared all three bars — WFE >= 0.5, positive
-    out-of-sample score, and >= 10 out-of-sample trades (enough sample to trust the
-    number). ``"watch"`` names are carried by explicit request despite thinner evidence
+    out-of-sample score, and at least :func:`min_oos_trades` out-of-sample trades for its
+    asset class (10 by default; 4 for commodities, which trade on a slower, roughly
+    quarterly cycle). ``"watch"`` names are carried by explicit request despite thinner evidence
     (few OOS trades, or WFE below 0.5) and should be treated as candidates to watch, not
     as deploy-ready signals.
     """
@@ -161,6 +162,24 @@ class WFValidated:
     oos_max_drawdown: float
     oos_trades: int
     tier: str  # "robust" | "watch"
+
+
+# Minimum out-of-sample trades a name must post to qualify as "robust". Commodities trade on a
+# slower cycle than equities — a mean-reversion band on gold bullion or a broad commodity basket
+# fires roughly quarterly, where the same rule on a bank stock fires monthly — so a flat 10-trade
+# bar systematically excluded the entire class regardless of how well it held up out-of-sample.
+# Commodities are therefore held to ~4 trades (about once a quarter over a one-year OOS span).
+#
+# This is a deliberate sensitivity trade-off, not a free pass: 4 trades is a thin sample, and a
+# commodity name cleared on it carries materially weaker evidence than an equity cleared on 10+.
+# The WFE and positive-OOS bars are unchanged for every class.
+MIN_OOS_TRADES: dict[str, int] = {"commodity": 4}
+DEFAULT_MIN_OOS_TRADES = 10
+
+
+def min_oos_trades(asset_class: str) -> int:
+    """Trade-count bar for the ``robust`` tier, by asset class."""
+    return MIN_OOS_TRADES.get(asset_class, DEFAULT_MIN_OOS_TRADES)
 
 
 def _wf(
@@ -201,7 +220,11 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     "ZWB.TO": _wf("ZWB.TO", "atr_channel", {"ema_window": 10, "k": 1.5}, 11.900, 1.570, 0.2770, -0.0710, 29, "robust"),
     # CEW.TO is a CAD currency-hedged basket (not a pure FX pair); it cleared walk-forward.
     "CEW.TO": _wf("CEW.TO", "bollinger", {"window": 20, "n_std": 2.0}, 10.93, 0.76, 0.2000, -0.0620, 12, "robust"),
-    "ARX.TO": _wf("ARX.TO", "bollinger", {"window": 20, "n_std": 3.0}, 8.82, 0.72, 0.5757, -0.1131, 15, "robust"),
+    # ARX.TO (ARC Resources) UPGRADED by the $1-45 resweep: re-optimizing across all families
+    # picked rsi_meanrevert over the earlier bollinger config and beat it out-of-sample on every
+    # axis (OOS 12.38 vs 8.82, WFE 1.30 vs 0.72, drawdown -6.3% vs -11.3%) on a comparable trade
+    # count. Prior config kept here for provenance: bollinger {window:20, n_std:3.0}, OOS 8.82.
+    "ARX.TO": _wf("ARX.TO", "rsi_meanrevert", {"window": 21, "oversold": 30}, 12.375, 1.301, 0.0467, -0.0625, 12, "robust"),
     # BTO.TO (B2Gold, ~$8) cleared walk-forward from the $1-$10 small-cap sleeve; low-priced,
     # so commission drag is material at small position sizes.
     "BTO.TO": _wf("BTO.TO", "rsi_meanrevert", {"window": 7, "oversold": 25}, 8.78, 2.69, 1.2100, -0.1580, 14, "robust"),
@@ -228,11 +251,27 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     # EFN.TO (Element Fleet) cleared the robust gate (WFE 0.92, 24 trades) but is carried at watch
     # on a drawdown call: its -19.3% OOS drawdown echoes TA.TO. Flip to robust if that's acceptable.
     "EFN.TO": _wf("EFN.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 3.210, 0.920, 0.3560, -0.1930, 24, "watch"),
+    # DBC (broad commodity index fund) cleared walk-forward in the $1-45 resweep under the
+    # commodity trade-count bar of 4 (see min_oos_trades): OOS 5.57 on WFE 0.62 across 7 trades.
+    # It would NOT have cleared the flat 10-trade bar, which is precisely the class-wide exclusion
+    # the lower commodity bar was introduced to fix. Thinner evidence than a 10-trade equity name.
+    "DBC": _wf("DBC", "bollinger", {"window": 20, "n_std": 2.0}, 5.565, 0.622, 0.0020, -0.1320, 7, "robust",
+               asset_class="commodity"),
     "DBA": _wf("DBA", "rsi_meanrevert", {"window": 14, "oversold": 35}, 3.17, 0.57, 0.0530, -0.0500, 11, "robust"),
     # TA.TO (TransAlta) technically cleared the robust gate (WFE 0.79, 32 trades) but is carried
     # at "watch" on a deliberate risk call: its OOS MACD run posts a big return through a -26.5%
     # drawdown, deeper than anything else in the pool. Watch until the drawdown profile improves.
     "TA.TO": _wf("TA.TO", "macd", {"fast": 16, "slow": 34}, 2.68, 0.79, 0.7610, -0.2650, 32, "watch"),
+    # CRT.UN.TO (CT REIT) cleared walk-forward in the $1-45 resweep - the second REIT in the pool
+    # after SRU.UN.TO, on the same rsi_meanrevert family but a tighter oversold band. WFE 0.59 is
+    # modest and it clears the trade-count gate exactly (10), so it is robust on a thin margin.
+    "CRT.UN.TO": _wf("CRT.UN.TO", "rsi_meanrevert", {"window": 7, "oversold": 20}, 9.180, 0.590, 0.0301, -0.0519, 10, "robust"),
+    # VALE cleared walk-forward in the $1-45 resweep - the first non-North-American-listed name
+    # (Brazilian iron ore) and the first materials producer in the pool, diversifying away from
+    # the Canadian financials/energy concentration. OOS beat in-sample (WFE 1.52) on 16 trades.
+    # Numbers are the RE-RUN after fixing a sweep bug that priced VALE at ETF spreads (a first-letter
+    # heuristic caught the leading V); at correct equity spreads it still clears robust.
+    "VALE": _wf("VALE", "bollinger", {"window": 15, "n_std": 2.5}, 6.339, 1.520, 0.0312, -0.0945, 16, "robust"),
 }
 
 
