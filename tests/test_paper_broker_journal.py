@@ -163,6 +163,63 @@ def test_orders_journal_records_ref_price_and_symbol_shape(tmp_path: Path) -> No
     assert row["order_id"] == fill["order_id"]
 
 
+def test_mark_to_market_updates_positions_and_journals_a_new_equity_row(tmp_path: Path) -> None:
+    """MTM refresh: position currentPrice moves to the feed's latest, equity + unrealized reflect it."""
+    feed = _StaticFeed({"EQB.TO": 100.0})
+    pb = PaperBroker(feed=feed, starting_equity=10_000.0, journal_dir=tmp_path,
+                     slippage_bps=0.0, commission_per_trade=0.0)
+    pb.place_order(_order("EQB.TO", OrderAction.BUY, 10))
+
+    with (tmp_path / "paper_equity.csv").open() as fh:
+        pre_rows = list(csv.DictReader(fh))
+    assert len(pre_rows) == 1
+    assert float(pre_rows[-1]["unrealized_pnl"]) == pytest.approx(0.0)   # fill-time snapshot
+
+    # Move the market UP and mark-to-market.
+    feed._prices["EQB.TO"] = 105.0
+    equity_now = pb.mark_to_market()
+
+    with (tmp_path / "paper_equity.csv").open() as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 2                              # a new row was journaled
+    assert float(rows[-1]["unrealized_pnl"]) == pytest.approx(50.0)     # 10 sh * ($105 - $100)
+    assert equity_now == pytest.approx(10_050.0)
+
+
+def test_mark_to_market_uses_supplied_quotes_when_provided(tmp_path: Path) -> None:
+    """A caller with fresh quotes (like LiveMonitor) can pass them to avoid a second feed fetch."""
+    feed = _StaticFeed({"EQB.TO": 100.0})
+    pb = PaperBroker(feed=feed, starting_equity=10_000.0, journal_dir=tmp_path,
+                     slippage_bps=0.0, commission_per_trade=0.0)
+    pb.place_order(_order("EQB.TO", OrderAction.BUY, 10))
+    # Prices supplied directly — feed lookup NOT used for this call.
+    equity_now = pb.mark_to_market(quotes={"EQB.TO": 110.0})
+    assert equity_now == pytest.approx(10_100.0)
+
+
+def test_mark_to_market_is_a_noop_with_no_open_positions(tmp_path: Path) -> None:
+    """A bare cash account produces no fresh row on MTM — no positions, no new information."""
+    pb = PaperBroker(feed=_StaticFeed({}), starting_equity=10_000.0, journal_dir=tmp_path)
+    pb.mark_to_market()
+    assert not (tmp_path / "paper_equity.csv").exists()
+
+
+def test_mark_to_market_survives_a_bad_quote(tmp_path: Path) -> None:
+    """A feed failure on one symbol must not propagate — keep the last known price."""
+    class _FlakyFeed(_StaticFeed):
+        def quote(self, symbol: str):
+            raise RuntimeError("feed exploded")
+
+    pb = PaperBroker(feed=_StaticFeed({"EQB.TO": 100.0}), starting_equity=10_000.0,
+                     journal_dir=tmp_path, slippage_bps=0.0, commission_per_trade=0.0)
+    pb.place_order(_order("EQB.TO", OrderAction.BUY, 10))
+    # Swap the feed for one that raises. MTM should NOT crash.
+    pb._feed = _FlakyFeed({})           # type: ignore[assignment]
+    equity_now = pb.mark_to_market()
+    # currentPrice stayed at $100 (last successful fill price) → equity unchanged.
+    assert equity_now == pytest.approx(10_000.0)
+
+
 def test_journal_is_a_no_op_when_no_journal_dir_is_configured() -> None:
     """A broker used without a journal_dir must still fill orders and not crash."""
     pb = PaperBroker(feed=_StaticFeed({"EQB.TO": 100.0}), starting_equity=10_000.0)

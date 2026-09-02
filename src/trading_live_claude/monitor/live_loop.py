@@ -188,6 +188,16 @@ class LiveMonitor:
 
     def step(self) -> list[MonitorEvent]:
         events: list[MonitorEvent] = []
+        # If the broker supports live mark-to-market (PaperBroker does; QuestradeBroker gets fresh
+        # numbers from the account API directly and doesn't need it), refresh position currentPrice
+        # from the feed and journal a fresh equity row BEFORE reading equity. That way the equity
+        # + drawdown numbers we compute this poll reflect the current mid-market, not the stale
+        # fill-time prices. Duck-typed check so non-paper brokers stay unaffected.
+        if hasattr(self.broker, "mark_to_market"):
+            try:
+                self.broker.mark_to_market()
+            except Exception as e:                     # pragma: no cover — never break the poll
+                log.warning("monitor.mtm.failed", error=str(e))
         equity = self.broker.equity(self.account_number, currency=self.account_currency)
         open_positions = self._open_positions()
         # Per-position risk (ATR-stop proxy by default, or a VaR/CVaR tail estimate of the

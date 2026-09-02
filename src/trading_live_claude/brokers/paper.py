@@ -176,6 +176,42 @@ class PaperBroker(Broker):
         # Paper orders fill immediately; nothing to cancel.
         log.info("paper.order.cancel.noop", order_id=order_id, session_id=self.session_id)
 
+    def mark_to_market(self, quotes: dict[str, float] | None = None) -> float:
+        """Refresh position currentPrice from the feed's quotes, then journal a new equity row.
+
+        Without live MTM the equity CSV only refreshes on fills, so ``unrealized_pnl`` is
+        stuck at zero (positions are stamped with their fill price and never updated). Calling
+        this on a poll cadence makes the equity, unrealized_pnl, peak_equity, and drawdown_pct
+        columns reflect the current mid-market, which is what a P&L reader actually wants.
+
+        ``quotes`` (optional) is a pre-fetched ``{symbol: price}`` map — pass it when the caller
+        already has fresh quotes for the same symbols (e.g. LiveMonitor's per-poll quote fetch)
+        so we don't hit the feed twice per poll. Without it, this fetches per-symbol from the
+        feed. Failures on individual symbols are logged and skipped, not propagated.
+
+        Returns the fresh equity for convenience.
+        """
+        for pos in list(self._positions.values()):
+            px = None
+            if quotes is not None:
+                px = quotes.get(pos.symbol)
+            if px is None:
+                try:
+                    q = self._feed.quote(pos.symbol)
+                    px = q.mid or q.lastTradePrice
+                except Exception as e:
+                    log.warning("paper.mtm.quote_failed",
+                                symbol=pos.symbol, error=str(e))
+                    continue
+            if px is not None and px > 0:
+                pos.currentPrice = float(px)
+        # Only journal a row when there are positions to mark; a bare cash-only account with no
+        # positions produces no new information on MTM (equity == cash, unchanged since last fill).
+        if self._positions:
+            self._journal_equity()
+        positions_value = sum(p.openQuantity * p.currentPrice for p in self._positions.values())
+        return self._cash + positions_value
+
     # ----- helpers ---------------------------------------------------------
 
     def _ensure_journal_dir(self) -> Path | None:
