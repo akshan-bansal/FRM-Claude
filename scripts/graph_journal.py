@@ -1,4 +1,9 @@
-"""Off-cadence graph-poll runner — one canonical polling path shared with the live trading loop.
+"""Graph Journal — off-cadence poller that keeps ``state/intel_graph.jsonl`` growing.
+
+Previously named "thickener"; the new name reflects what the process actually does — it IS the
+graph journal's continuous-fetch counterpart, the read/write half of the OSINT graph that
+otherwise would only see writes when a trading loop happened to be running.
+
 
 Uses :class:`trading_live_claude.intel.routing.OverlayProvider` — the SAME poller the live monitor
 uses when it is running with ``signal --intel-overlay``. Each ``refresh`` computes overlay
@@ -24,6 +29,7 @@ vendor's typical refresh interval.
 Nothing here is on the hot path — the trading loops instantiate their OWN OverlayProvider inside
 the CLI. This process is a separate instance dedicated to accretion when no trading loop is up.
 """
+# renamed 2026-09-02 from scripts/thicken_graph.py
 from __future__ import annotations
 
 import argparse

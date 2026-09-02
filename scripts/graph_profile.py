@@ -1,6 +1,6 @@
 """Inspect the current shape of ``state/intel_graph.jsonl`` without fetching anything.
 
-Companion to ``scripts/thicken_graph.py``: that one grows the journal from live snapshots; this
+Companion to ``scripts/graph_journal.py``: that one grows the journal from live snapshots; this
 one just reports what is already there — vertex counts by type, edge counts by predicate,
 distinct sources, top-N events by corroboration count, and one-line samples per predicate. Cheap
 to run repeatedly during the iterative vertex/edge development posture (NEXT_SESSION.md #6).
@@ -35,7 +35,7 @@ def _corroboration_map(edges: list[Edge]) -> dict[str, set[str]]:
 
 def _lines(edges: list[Edge]) -> list[str]:
     if not edges:
-        return ["_Journal is empty. Run scripts/thicken_graph.py to accrete edges._"]
+        return ["_Journal is empty. Run scripts/graph_journal.py to accrete edges._"]
 
     per_pred: Counter[str] = Counter(e.predicate for e in edges)
     nodes: set[tuple[str, str]] = set()

@@ -48,7 +48,7 @@ python scripts/sweep_universe.py --tag resweep_full --min 0 --max 1000000 --wf-t
 python scripts/resweep_report.py
 
 # 4. Bring the overnight graph poller back up (uses OverlayProvider, unified with the live path)
-python scripts/thicken_graph.py --iterations 96 --sleep 900
+python scripts/graph_journal.py --iterations 96 --sleep 900
 python scripts/graph_profile.py         # inspect what accrued
 
 # 5. Paper sessions (see NEXT_SESSION for options 1-3 in queue)
@@ -95,7 +95,7 @@ Also useful during the vertex/edge iteration:
 
 ```
 # Grow the intel graph off-cadence (default 15-min vendor cadence; --sleep tunable).
-python scripts/thicken_graph.py --iterations 20
+python scripts/graph_journal.py --iterations 20
 
 # Read the current shape any time (writes reports/graph_profile.md).
 python scripts/graph_profile.py
@@ -393,7 +393,7 @@ each track ending at its own journal file.
   `snapshot_to_edges` + per-event via `worldmonitor._write_event_edges`).
 - Live trading path (`signal --intel-overlay`) uses `OverlayProvider` for size scaling.
 - `intel/interpret.py::interpret()` reads snapshots into named theses (rule layer).
-- `scripts/thicken_graph.py` now fires persistence-hit + wash-event alerts to Telegram + email
+- `scripts/graph_journal.py` now fires persistence-hit + wash-event alerts to Telegram + email
   + stdout via the trading-path `Alerter` (commit this session).
 
 **Missing wires (the actual cross-functional work):**
