@@ -78,6 +78,7 @@ class LiveMonitor:
         hedge_policy: HedgePolicy | None = None,
         overlay_for: Callable[[str], OverlayDecision | None] | None = None,
         interpret_for: Callable[[], list[Thesis]] | None = None,
+        weight_bias_for: Callable[[str], float] | None = None,
         strategy_risk: bool = False,
     ) -> None:
         self.broker = broker
@@ -127,6 +128,14 @@ class LiveMonitor:
         # Cache the last-computed bias per symbol so alerts can surface which theses applied
         # without recomputing at the alert boundary.
         self._interpret_last_applied: dict[str, list[str]] = {}
+        # Per-symbol portfolio-allocation weight bias — multiplies conviction at sizing time.
+        # Unlike interpret_for (which trims only, floor 0.25), this CAN boost above 1.0 because
+        # it represents a diversification-aware rebalance rather than a risk signal: a low-
+        # correlation name gets its share of the risk budget lifted, a redundant name gets it
+        # cut, and equal-weight is the neutral case (multiplier 1.0). Bounded [0.1, 3.0] so a
+        # runaway allocator can't leverage past a sane cap.
+        self.weight_bias_for = weight_bias_for
+        self._weight_bias_last: dict[str, float] = {}
         # Strategy-risk gate: the trailing-volatility scalar computed from the strategy's own return
         # stream. Chosen over the gradient-boosted classifier because an honest walk-forward showed
         # the simple rule is the better forward-drawdown predictor (6 of 8 real strategies).
@@ -248,6 +257,18 @@ class LiveMonitor:
                 if interp_bias < 1.0:
                     conviction *= interp_bias
                     self._interpret_last_applied[symbol] = interp_applied
+                # Portfolio-allocator weight bias — applied last so it multiplies whatever the
+                # gates have already left. Bounded so a runaway allocator can't lever past 3x.
+                weight_bias = 1.0
+                if self.weight_bias_for is not None:
+                    try:
+                        weight_bias = float(self.weight_bias_for(symbol))
+                    except Exception:                         # never break the poll on allocator I/O
+                        weight_bias = 1.0
+                    weight_bias = max(0.1, min(3.0, weight_bias))
+                    if weight_bias != 1.0:
+                        conviction *= weight_bias
+                        self._weight_bias_last[symbol] = weight_bias
                 sized = self.sizer.size(
                     equity=equity, entry=price, atr_value=atr_value, side="long",
                     annual_vol=annual_vol, conviction=conviction,
@@ -291,6 +312,10 @@ class LiveMonitor:
                     entry_detail["interpret"] = {
                         "bias": round(interp_bias, 4),
                         "theses": interp_applied,
+                    }
+                if weight_bias != 1.0:
+                    entry_detail["allocator"] = {
+                        "weight_bias": round(weight_bias, 4),
                     }
                 events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, entry_detail))
             elif exit_ and holds:
