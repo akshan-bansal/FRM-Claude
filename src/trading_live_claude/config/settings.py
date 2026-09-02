@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     # only the future KrakenBroker's private endpoints (balances, orders) do.
     kraken_api_key: str = ""
     kraken_api_secret: str = ""
+    # Interactive Brokers — TWS/IB Gateway connection. Credentials live in TWS/Gateway itself
+    # (login is done in the desktop app), so we only need connection knobs here. Never inline
+    # IB_USERNAME / IB_PASSWORD_AUTH in a committed file — those go in .env only, and only get
+    # read by the MCP-launched interactive-brokers subprocess (see .mcp.json).
+    ib_host: str = "127.0.0.1"
+    ib_paper_port: int = 7497                # paper TWS = 7497; paper IB Gateway = 4002
+    ib_live_port: int = 7496                 # live TWS = 7496; live IB Gateway = 4001
+    ib_client_id: int = 42
+    ib_account: str = ""                     # empty = pick first managedAccounts result
+    ib_use_paper: bool = True                # default the paper connection
     # WorldMonitor OSINT/news MCP (Pro). Sent as the X-WorldMonitor-Key header to the data tools;
     # only get_sources works without it. Not required for any trading path.
     worldmonitor_api_key: str = ""

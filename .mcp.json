@@ -1,9 +1,13 @@
 {
+  "$schema": "https://json.schemastore.org/mcp.json",
+  "_comment": "Interactive Brokers MCP for market-data and paper-trading exploration. IB_USERNAME + IB_PASSWORD_AUTH MUST be in the host process env (via .env / shell export) — NEVER inlined here. This file is committed and would leak credentials otherwise. IB_PAPER_TRADING is pinned to 'true' so any MCP call defaults to the paper venue even if a user forgets to set it.",
   "mcpServers": {
-    "worldmonitor": {
-      "url": "https://api.worldmonitor.app/mcp",
-      "headers": {
-        "X-WorldMonitor-Key": "${WORLDMONITOR_API_KEY}"
+    "interactive-brokers": {
+      "command": "npx",
+      "args": ["-y", "interactive-brokers-mcp"],
+      "env": {
+        "IB_HEADLESS_MODE": "true",
+        "IB_PAPER_TRADING": "true"
       }
     }
   }
