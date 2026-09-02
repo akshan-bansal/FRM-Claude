@@ -381,6 +381,69 @@ equity pairs (`RY.TO/BNS.TO` etc). To use it on FX:
   universe widens beyond Kraken's fiat list.
 - Register FX-specific parameter grids (shorter mean-reversion half-lives than equity pairs).
 
+## 9. Cross-path wiring — intel ↔ trading ↔ alerter as one recurrent-learning loop
+
+The pieces are all in place, they just don't talk to each other end-to-end yet. This item names
+the interconnections so future work stays cross-functional / parallel / additive rather than
+each track ending at its own journal file.
+
+**Current state (already wired):**
+- `OverlayProvider` — polls WorldMonitor, computes per-class scalars, journals to both
+  `state/intel_overlay.jsonl` (flat) and `state/intel_graph.jsonl` (edges via
+  `snapshot_to_edges` + per-event via `worldmonitor._write_event_edges`).
+- Live trading path (`signal --intel-overlay`) uses `OverlayProvider` for size scaling.
+- `intel/interpret.py::interpret()` reads snapshots into named theses (rule layer).
+- `scripts/thicken_graph.py` now fires persistence-hit + wash-event alerts to Telegram + email
+  + stdout via the trading-path `Alerter` (commit this session).
+
+**Missing wires (the actual cross-functional work):**
+
+- **Interpret → LiveMonitor.** `interpret()` produces named theses per poll but nothing on the
+  trading path reads them. Hook: LiveMonitor consumes the latest thesis list via a callable
+  passed at construction (parallel to how `overlay_for` is wired), and uses the themes ↔
+  exemplars mapping to bias which symbols get monitored, or to gate new entries in themes with
+  ADVERSE claims. Small change, big meaning — turns rule-based reasoning into an entry filter
+  (never an entry signal on its own — hypotheses only).
+
+- **Graph persistence → entry gate.** `edge_persistence(edges, predicate="elevated_in",
+  object=("domain", X))` already exists. Wire it into the risk gate: an entry in a symbol
+  whose overlay class implicates domain X only fires if X's persistence is ≥ N. That's how
+  "the same 6× event acceleration seen once is noise, the same reading across five polls is a
+  regime" moves from a docstring into an enforceable check.
+
+- **Fills → intel graph.** Every fill is a real point-in-time observation about the market's
+  own state. Write fill rows into the graph as `event` nodes with a `filled_at` predicate.
+  Then persistence queries can see "we've been entering this name for three polls" — same
+  machinery, unified vocabulary.
+
+- **Realized P&L → thesis calibration (recurrent-learning loop).** After N days, correlate
+  which theses were live around each fill and how those fills subsequently performed. Store
+  the correlations in `state/intel_thesis_pnl.jsonl` (a new journal). Feed the resulting
+  hit-rate back into interpret.py's thresholds — the hand-picked constants (VIX<18, fg≥60)
+  become adjusted-against-realized-outcomes over time. This is the "recurrent" part.
+
+- **Prediction evaluation.** Each thesis fired at time T carries an implicated-ticker set. At
+  T+N (N=5, 21 daily bars), measure whether those tickers moved as inferred. Journal the
+  results. Publish as `reports/thesis_prediction.md` alongside the existing paper_report.md
+  cadence. Turns interpret.py from "posture only" into a self-scored predictor — same
+  hypothesis discipline (still not entry signals), plus a measurable track record.
+
+- **Alerter as the notification bridge.** Every cross-path event should land in the same
+  channel: overlay-halt, thesis fire, persistence hit (now wired), fill, drawdown threshold
+  crossing, wash summary (now wired), degraded-feed warning. One channel, tagged by kind, so
+  a phone reader sees the whole system's health at once.
+
+**Sequencing that keeps the build additive and safe:**
+1. Interpret → LiveMonitor read (advisory only, no gate change) — smallest change
+2. Fill → graph write (data plumbing, safe by construction)
+3. Graph persistence → entry gate (introduces a new gate, needs a paper session to validate)
+4. Realized-P&L → thesis calibration (needs weeks of accrued data first)
+5. Prediction evaluation (needs weeks of accrued data first)
+
+Each step is testable in isolation and adds one hook to a boundary already established. None
+require rewriting a hot-path module. All are gate-preserving — a broken cross-path never causes
+a trade to fire without the risk gates that already exist.
+
 ---
 _Also on the board (lower priority): wire microprice/OFI as features into the research strategies;
 promote the paper A-S maker toward gated live quoting on Kraken._

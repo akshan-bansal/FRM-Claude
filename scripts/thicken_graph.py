@@ -7,24 +7,22 @@ the flat overlay row AND the graph edges (aggregate + per-event). Trading loops 
 runner therefore share one code path — no duplicate WorldMonitor client wiring, no duplicate
 journal path, no drift between them.
 
+Two out-of-loop signals get piped to the trading-path Alerter (Telegram + email + stdout):
+
+* **persistence hits** — when ``elevated_in`` for a domain has stood across N consecutive polls,
+  once per crossing. Regime-detected signal. Threshold defaults to 5 polls (~1.25h at the
+  default 900s cadence) and is per-domain de-duplicated so a signal that stays high for hours
+  emits ONCE per crossing, not every poll.
+* **wash events** — every temporal-gate run emits a one-line summary of edges pruned and
+  fraction of the journal collapsed. Deliberately quiet: fires at the wash cadence (default
+  once every 72h, not per poll).
+
 Snapshots are cached with a ``cached_at`` stamp on the vendor side; running at too high a cadence
-just journals the SAME payload against a stale age. The default ``--sleep 900`` (15 minutes)
-matches the vendor's typical refresh interval, which is also OverlayProvider's default
-``refresh_seconds``.
+just journals the SAME payload against a stale age. Default ``--sleep 900`` (15 min) matches the
+vendor's typical refresh interval.
 
 Nothing here is on the hot path — the trading loops instantiate their OWN OverlayProvider inside
 the CLI. This process is a separate instance dedicated to accretion when no trading loop is up.
-
-Usage examples::
-
-    # 20 snapshots at the vendor's refresh cadence
-    python scripts/thicken_graph.py --iterations 20
-
-    # short smoke test that the wiring works end-to-end
-    python scripts/thicken_graph.py --iterations 2 --sleep 5
-
-At the end it prints the vertex/edge profile of the journal so growth is visible without needing a
-second command.
 """
 from __future__ import annotations
 
@@ -32,17 +30,25 @@ import argparse
 import asyncio
 import time
 from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
 
 from trading_live_claude.config import get_settings
 from trading_live_claude.intel.graph import (
     DEFAULT_GRAPH_JOURNAL,
+    edge_persistence,
     load_edges,
     wash_journal_file,
 )
 from trading_live_claude.intel.overlay import IntelSnapshot
 from trading_live_claude.intel.routing import OverlayProvider
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
+from trading_live_claude.monitor import Alerter
+from trading_live_claude.monitor.alerter import AlertConfig
+
+
+# Domains we watch for elevated_in persistence — matches interpret.py's convention.
+_WATCHED_DOMAINS: tuple[str, ...] = ("energy", "conflict", "military", "disaster", "economy")
 
 
 def _build_overlay_provider(refresh_seconds: float) -> OverlayProvider:
@@ -58,13 +64,24 @@ def _build_overlay_provider(refresh_seconds: float) -> OverlayProvider:
     return OverlayProvider(snapshot_fn, refresh_seconds=refresh_seconds, journal=True)
 
 
+def _build_alerter() -> Alerter:
+    s = get_settings()
+    return Alerter(AlertConfig(
+        telegram_bot_token=s.telegram_bot_token,
+        telegram_chat_id=s.telegram_chat_id,
+        smtp_host=s.smtp_host,
+        smtp_user=s.smtp_user,
+        smtp_pass=s.smtp_pass,
+        email_to=s.alert_email_to,
+    ))
+
+
 def _one_snapshot(provider: OverlayProvider) -> None:
     """Force a refresh — bypass the throttle so our --sleep cadence is what counts."""
     provider.refresh(force=True)
 
 
 def _profile_graph(path: str | Path = DEFAULT_GRAPH_JOURNAL) -> dict[str, object]:
-    """Vertex/edge summary of the current journal — what the overlay & interpreter can read."""
     edges = load_edges(path)
     nodes: set[tuple[str, str]] = set()
     per_type: Counter[str] = Counter()
@@ -85,6 +102,28 @@ def _profile_graph(path: str | Path = DEFAULT_GRAPH_JOURNAL) -> dict[str, object
     }
 
 
+def _check_persistence_alerts(
+    edges_now: list,
+    threshold: int,
+    already_alerted: set[str],
+    alerter: Alerter,
+) -> None:
+    """Fire ONE alert per (domain) crossing the persistence threshold. De-dup via the caller's set."""
+    for dom in _WATCHED_DOMAINS:
+        n = edge_persistence(edges_now, predicate="elevated_in", object=("domain", dom))
+        key = f"elevated_in::{dom}"
+        if n >= threshold and key not in already_alerted:
+            alerter.send(
+                f"[intel] persistence hit: {dom} elevated for {n} polls",
+                f"Domain '{dom}' has been elevated_in for {n} consecutive polls "
+                f"(threshold {threshold}). Regime-detected signal from the graph journal.",
+            )
+            already_alerted.add(key)
+        elif n < threshold and key in already_alerted:
+            # Signal dropped back below threshold — clear the dedupe so re-crossings fire again.
+            already_alerted.discard(key)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--iterations", type=int, default=8,
@@ -92,19 +131,35 @@ def main() -> None:
     ap.add_argument("--sleep", type=float, default=900.0,
                     help="Seconds between snapshots. Vendor cache is ~15 min; anything shorter "
                          "re-writes the same payload against a stale age.")
-    ap.add_argument("--wash-every", type=int, default=0,
-                    help="Run the temporal wash+prune (intel.graph.wash_journal_file) every N "
-                         "polls, keeping the journal from growing without bound. 0 = never (safe "
-                         "default for testing). 4 at --sleep 900 = about hourly.")
+    ap.add_argument("--wash-min-hours", type=float, default=72.0,
+                    help="Minimum hours between temporal-gate wash runs. Time-based so it's "
+                         "unaffected by --sleep or --iterations. Default 72h (three days) — the "
+                         "gate is meant to be occasional cleanup, not per-poll churn.")
+    ap.add_argument("--persistence-threshold", type=int, default=5,
+                    help="Emit an alert when an elevated_in run reaches N consecutive polls "
+                         "(default 5). Once-per-crossing, not per-poll.")
+    ap.add_argument("--alerts/--no-alerts", dest="alerts", default=True,
+                    action=argparse.BooleanOptionalAction,
+                    help="Send persistence-hit + wash-event notifications to the alerter "
+                         "(Telegram + email + stdout). Default ON.")
     args = ap.parse_args()
 
     provider = _build_overlay_provider(refresh_seconds=args.sleep)
+    alerter = _build_alerter() if args.alerts else None
+    already_alerted: set[str] = set()
+    # Time-based wash cadence — track the last wash's wall-clock, not iteration count.
+    last_wash_ts: float | None = None
+    wash_min_seconds = args.wash_min_hours * 3600.0
+
     before = _profile_graph()
     print(f"[thicken] start: {before['edges_total']} edges, {before['nodes_total']} nodes",
           flush=True)
     print(f"[thicken] nodes by type: {before['nodes_by_type']}", flush=True)
     print(f"[thicken] polling via OverlayProvider (canonical live-path poller) "
-          f"— overlay decisions computed AND journaled per refresh", flush=True)
+          f"- overlay decisions computed AND journaled per refresh", flush=True)
+    print(f"[thicken] alerts: {'ON' if alerter else 'OFF'} "
+          f"(persistence threshold {args.persistence_threshold}, "
+          f"wash cadence >= {args.wash_min_hours}h)", flush=True)
 
     for i in range(1, args.iterations + 1):
         t0 = time.time()
@@ -118,13 +173,35 @@ def main() -> None:
             print(f"[thicken] iter {i}/{args.iterations}: journal now has "
                   f"{snap_profile['edges_total']} edges (+{grew_edges} since start) in "
                   f"{time.time() - t0:.1f}s", flush=True)
-        # Temporal gate: prune old edges + decay weights per-predicate. Runs AFTER the poll's
-        # own write, so the wash sees what was just journaled and applies the age policy in one
-        # pass. Atomic + backed up by wash_journal_file, so a mid-write crash cannot corrupt.
-        if args.wash_every and i % args.wash_every == 0:
-            summary = wash_journal_file()
-            print(f"[thicken] wash: {summary['before']} -> {summary['after']} edges "
-                  f"(pruned {summary['pruned']})", flush=True)
+            # Persistence check — cheap on the reloaded edge list.
+            if alerter:
+                try:
+                    edges_now = load_edges()
+                    _check_persistence_alerts(edges_now, args.persistence_threshold,
+                                               already_alerted, alerter)
+                except Exception as e:
+                    print(f"[thicken] persistence check failed: {e}", flush=True)
+
+        # Temporal gate — time-based cadence (default 72h min between runs).
+        now = time.time()
+        due_for_wash = last_wash_ts is None or (now - last_wash_ts) >= wash_min_seconds
+        if due_for_wash:
+            try:
+                summary = wash_journal_file()
+                last_wash_ts = now
+                pruned = summary["pruned"]
+                pct = (pruned / summary["before"] * 100.0) if summary["before"] else 0.0
+                print(f"[thicken] wash: {summary['before']} -> {summary['after']} edges "
+                      f"(pruned {pruned}, {pct:.1f}%)", flush=True)
+                if alerter and pruned > 0:
+                    alerter.send(
+                        f"[intel] wash event: pruned {pruned} edges ({pct:.1f}%)",
+                        f"Temporal-gate wash swept {summary['before']} -> {summary['after']} "
+                        f"edges in state/intel_graph.jsonl. Backup at "
+                        f"state/intel_graph.jsonl.bak (last wash undo-able).",
+                    )
+            except Exception as e:
+                print(f"[thicken] wash failed: {e}", flush=True)
         if i < args.iterations:
             time.sleep(args.sleep)
 
