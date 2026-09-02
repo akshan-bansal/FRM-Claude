@@ -19,6 +19,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import asyncio
+
 from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
 from trading_live_claude.brokers.kraken import KrakenBroker
 from trading_live_claude.brokers.paper import PaperBroker
@@ -27,6 +29,10 @@ from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.kraken_ohlc import kraken_ohlc
 from trading_live_claude.data.market import MarketData
 from trading_live_claude.execution.router import Router
+from trading_live_claude.intel.interpret import interpret
+from trading_live_claude.intel.overlay import IntelSnapshot
+from trading_live_claude.intel.routing import OverlayProvider
+from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
 from trading_live_claude.portfolio.allocator import PortfolioAllocator
 from trading_live_claude.risk.sizing import PositionSizer
@@ -119,6 +125,33 @@ def main() -> None:
     sym_list = list(CRYPTO_SLEEVE)
     print(f"[kraken-paper] monitoring {len(sym_list)} pairs: {sym_list}", flush=True)
 
+    # Intel overlay + interpret bias — the same wires the equity `signal --intel-overlay` uses.
+    # OverlayProvider computes a per-class de-risk scalar (crypto is the one that matters here)
+    # AND writes to state/intel_graph.jsonl on every refresh, so this loop's polling now feeds
+    # the graph journal too (closing the gap where Kraken paper contributed nothing to intel).
+    # Interpret_for reuses provider.last_snapshot so the reasoning layer sees the exact same
+    # snapshot the overlay decided on — no drift.
+    overlay_for = None
+    interpret_for = None
+    if settings.worldmonitor_api_key:
+        def _snapshot() -> IntelSnapshot:
+            async def _f() -> IntelSnapshot:
+                async with WorldMonitorClient(settings.worldmonitor_api_key) as wm:
+                    return await wm.snapshot()
+            return asyncio.run(_f())
+        overlay_provider = OverlayProvider(_snapshot, refresh_seconds=900.0)
+        overlay_for = overlay_provider
+
+        def _interpret_current():
+            snap = overlay_provider.last_snapshot
+            return interpret(snap) if snap is not None else []
+        interpret_for = _interpret_current
+        print("[kraken-paper] intel overlay ON — crypto class scalar + interpret filter live; "
+              "polls contribute to state/intel_graph.jsonl", flush=True)
+    else:
+        print("[kraken-paper] intel overlay OFF (no WORLDMONITOR_API_KEY) — sleeve runs on "
+              "allocator + strategy signal only", flush=True)
+
     # Correlation-aware allocator: compute per-pair conviction bias from daily OHLC + screen
     # score. Runs once at startup; the correlation matrix is stable enough at daily cadence
     # that a start-of-session compute is fine (weekly refresh cadence at most).
@@ -151,6 +184,8 @@ def main() -> None:
         emit_on_change_only=False,          # persistence mode; edges + poll counts both preserved
         strategy_map=smap,
         weight_bias_for=_weight_bias_for,
+        overlay_for=overlay_for,
+        interpret_for=interpret_for,
     )
     monitor.run_forever(max_iterations=args.iterations or None)
 

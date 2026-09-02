@@ -356,6 +356,44 @@ def signal(
         console.print("[cyan]interpret entry-filter ON[/cyan] "
                       "(theses trim conviction; advisory, never blocks or boosts).")
 
+    # Correlation-aware allocator on the equity pool. Mirrors what paper_kraken.py does on the
+    # crypto sleeve — computes per-symbol bias from OOS score + return covariance, so a
+    # redundant name (bank ETFs correlated with bank ETFs, sector ETFs with their names) gets
+    # its slot cut, and a low-correlation name gets it lifted. Bounded [0.1, 3.0]; equal-weight
+    # is neutral (multiplier 1.0). Computed ONCE at startup from the local candle cache; the
+    # correlation matrix is stable enough at daily frequency that a session-start compute is
+    # fine. Symbols not in WALK_FORWARD_VALIDATED default to neutral bias.
+    weight_bias_for = None
+    try:
+        from .analysis.universe import WALK_FORWARD_VALIDATED as _WFV
+        from .portfolio.allocator import PortfolioAllocator as _Alloc
+        _score_map = {s: max(_WFV[s].oos_score, 0.0) for s in sym_list if s in _WFV}
+        _ret_map = {}
+        for s in _score_map:
+            try:
+                _df = market.recent(s, bars=252, interval="1d")
+                if not _df.empty and "close" in _df.columns:
+                    _ret_map[s] = _df["close"].pct_change().dropna()
+            except Exception:
+                pass
+        if _ret_map:
+            _res = _Alloc(max_weight=0.20, max_sleeve_weight=1.0, min_score=0.0).allocate(
+                _ret_map, _score_map, regime_scalar=1.0)
+            _n = len(_ret_map)
+            _eqw = 1.0 / _n if _n else 1.0
+            _bias_map = {s: (_res.weights.get(s, 0.0) / _eqw) if _eqw > 0 else 1.0
+                         for s in sym_list}
+            weight_bias_for = lambda sym, _m=_bias_map: _m.get(sym, 1.0)
+            console.print(f"[cyan]allocator bias ON[/cyan] over {_n} names "
+                          f"(equal-weight baseline = 1.0):")
+            for _s in sorted(_bias_map, key=lambda k: -_bias_map[k]):
+                if _s in _score_map:
+                    _v = _bias_map[_s]
+                    _lab = "boost" if _v > 1.05 else "trim" if _v < 0.95 else "neutral"
+                    console.print(f"  {_s:>12}  x{_v:.2f}  ({_lab})")
+    except Exception as e:
+        console.print(f"[yellow]allocator bias OFF — {e}[/yellow]")
+
     monitor = LiveMonitor(
         broker=exec_broker,
         market=market,
@@ -374,6 +412,7 @@ def signal(
         hedge_symbol="UUP" if hedge else None,
         overlay_for=overlay_for,
         interpret_for=interpret_for if intel_overlay else None,
+        weight_bias_for=weight_bias_for,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
