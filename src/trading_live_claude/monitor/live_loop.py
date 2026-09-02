@@ -22,6 +22,7 @@ from ..brokers.base import Broker
 from ..brokers.models import OrderAction
 from ..data.market import MarketData
 from ..execution.router import OrderIntent, Router
+from ..intel.interpret import THEME_EXEMPLARS, Thesis
 from ..intel.overlay import OverlayDecision
 from ..logging_setup import get_logger
 from ..models.risk_mitigation import combine
@@ -30,6 +31,13 @@ from ..risk.hedge import HedgePolicy, hedge_shares, hedge_weight, rebalance_delt
 from ..risk.risk_model import HeatAggregation, RiskModel, per_trade_risk, portfolio_risk
 from ..risk.sizing import PositionSizer
 from ..strategies.base import Strategy, StrategyContext
+
+# Interpret-bias floor. Multi-thesis stacking cannot pull conviction below this multiplier — the
+# interpret layer is advisory, not a halt, so trimming to zero would violate that contract. The
+# overlay layer (with its own floor) and the router's kill-switch handle the actual halt path.
+_INTERPRET_BIAS_FLOOR = 0.25
+# Per-confidence trim factors. tentative → advisory only (no trim). Multiplicative stacking.
+_INTERPRET_BIAS_BY_CONFIDENCE = {"high": 0.5, "moderate": 0.75, "tentative": 1.0}
 
 log = get_logger(__name__)
 
@@ -69,6 +77,7 @@ class LiveMonitor:
         hedge_symbol: str | None = None,
         hedge_policy: HedgePolicy | None = None,
         overlay_for: Callable[[str], OverlayDecision | None] | None = None,
+        interpret_for: Callable[[], list[Thesis]] | None = None,
         strategy_risk: bool = False,
     ) -> None:
         self.broker = broker
@@ -108,6 +117,16 @@ class LiveMonitor:
         # its halt flag blocks NEW entry routing for that class. Exits are never blocked — the overlay
         # can only stand the book down, never trap it in a position.
         self.overlay_for = overlay_for
+        # Interpret-thesis bias: called at each entry evaluation to fetch the CURRENT list of
+        # fired theses (from intel/interpret.py). If the entry symbol appears in any moderate-
+        # or high-confidence thesis's implicated exemplars, conviction is trimmed by the
+        # per-confidence factor. NEVER blocks and NEVER boosts — the interpret layer is advisory,
+        # so it can only trim, and trimming stacks multiplicatively with a floor of 0.25.
+        # Exits are untouched.
+        self.interpret_for = interpret_for
+        # Cache the last-computed bias per symbol so alerts can surface which theses applied
+        # without recomputing at the alert boundary.
+        self._interpret_last_applied: dict[str, list[str]] = {}
         # Strategy-risk gate: the trailing-volatility scalar computed from the strategy's own return
         # stream. Chosen over the gradient-boosted classifier because an honest walk-forward showed
         # the simple rule is the better forward-drawdown predictor (6 of 8 real strategies).
@@ -116,6 +135,43 @@ class LiveMonitor:
     def _strategy_for(self, symbol: str) -> Strategy:
         """The per-symbol strategy, falling back to the default ``strategy``."""
         return self.strategy_map.get(symbol, self.strategy)
+
+    def _interpret_bias(self, symbol: str) -> tuple[float, list[str]]:
+        """Multiplicative conviction bias from the current interpret() theses.
+
+        Returns ``(multiplier, thesis_names_applied)``. When ``interpret_for`` is not wired or
+        no thesis implicates this symbol, returns ``(1.0, [])`` — no effect. When theses do
+        implicate it, the per-confidence factor is applied multiplicatively per thesis, with
+        the product floored at ``_INTERPRET_BIAS_FLOOR``.
+
+        This never boosts and never blocks — it can only trim conviction. The interpret layer
+        is advisory-only per its docstring; enforcing that contract at the gate is the point of
+        the floor. Exits ignore this method entirely (see step()).
+        """
+        if self.interpret_for is None:
+            return 1.0, []
+        try:
+            theses = self.interpret_for() or []
+        except Exception as e:                 # pragma: no cover — never break the poll on interpret I/O
+            log.warning("monitor.interpret_bias.failed", symbol=symbol, error=str(e))
+            return 1.0, []
+        if not theses:
+            return 1.0, []
+        bias = 1.0
+        applied: list[str] = []
+        for t in theses:
+            if t.name == "No notable configuration":
+                continue                        # quiet-tape null is not evidence
+            # Union of exemplar tickers across this thesis's themes.
+            exemplars: set[str] = set()
+            for theme in t.themes:
+                exemplars.update(THEME_EXEMPLARS.get(theme, ()))
+            if symbol in exemplars:
+                factor = _INTERPRET_BIAS_BY_CONFIDENCE.get(t.confidence, 1.0)
+                if factor < 1.0:
+                    bias *= factor
+                    applied.append(t.name)
+        return max(_INTERPRET_BIAS_FLOOR, bias), applied
 
     def _open_positions(self) -> dict[str, float]:
         positions = self.broker.positions(self.account_number)
@@ -185,6 +241,13 @@ class LiveMonitor:
                 mitigation = combine(srisk, decision)
                 overlay_halt = mitigation.halt
                 conviction *= mitigation.scalar
+                # Interpret-thesis bias — trim conviction further when a moderate/high thesis
+                # implicates this symbol. Applied AFTER the overlay/strategy composition so the
+                # floor and the reasons compose cleanly; recorded on the entry event for audit.
+                interp_bias, interp_applied = self._interpret_bias(symbol)
+                if interp_bias < 1.0:
+                    conviction *= interp_bias
+                    self._interpret_last_applied[symbol] = interp_applied
                 sized = self.sizer.size(
                     equity=equity, entry=price, atr_value=atr_value, side="long",
                     annual_vol=annual_vol, conviction=conviction,
@@ -224,6 +287,11 @@ class LiveMonitor:
                     }
                     if overlay_halt:
                         entry_detail["halt_reason"] = "; ".join(mitigation.reasons)
+                if interp_bias < 1.0:
+                    entry_detail["interpret"] = {
+                        "bias": round(interp_bias, 4),
+                        "theses": interp_applied,
+                    }
                 events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, entry_detail))
             elif exit_ and holds:
                 qty = open_positions[symbol]

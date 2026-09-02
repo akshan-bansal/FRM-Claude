@@ -314,6 +314,92 @@ def test_level_mode_marks_transitions_and_counts_polls() -> None:
     assert events[-1].poll_count == 1
 
 
+# --- interpret bias as entry filter --------------------------------------------------------
+
+from trading_live_claude.intel.interpret import Thesis                       # noqa: E402
+
+
+def test_interpret_bias_no_op_when_interpret_for_is_none() -> None:
+    strat = _ToggleStrategy()
+    events: list[MonitorEvent] = []
+    mon = _monitor(strat, events, edge=True)
+    assert mon.interpret_for is None
+    bias, applied = mon._interpret_bias("EQB.TO")
+    assert bias == 1.0 and applied == []
+
+
+def test_interpret_bias_trims_when_symbol_in_moderate_thesis_exemplars() -> None:
+    """A moderate thesis whose theme's exemplars include the symbol trims conviction to 0.75."""
+    # XLE is in THEME_EXEMPLARS['energy']; use a moderate energy thesis.
+    thesis = Thesis(name="Energy event concentration", confidence="moderate",
+                    evidence=["x"], inference="…", action="…", themes=["energy"])
+    strat = _ToggleStrategy()
+    events: list[MonitorEvent] = []
+    mon = _monitor(strat, events, edge=True)
+    mon.interpret_for = lambda: [thesis]
+    bias, applied = mon._interpret_bias("XLE")
+    assert abs(bias - 0.75) < 1e-9
+    assert applied == ["Energy event concentration"]
+
+
+def test_interpret_bias_multiplies_multiple_theses_and_floors_at_25pct() -> None:
+    """Stacked theses multiply; product cannot go below 0.25 (the interpret advisory floor)."""
+    high1 = Thesis(name="Complacency divergence", confidence="high",
+                    evidence=[], inference="", action="", themes=["safe_haven"])
+    high2 = Thesis(name="Conflict escalation watch", confidence="high",
+                    evidence=[], inference="", action="", themes=["safe_haven"])
+    high3 = Thesis(name="Disaster / insurance underpricing", confidence="high",
+                    evidence=[], inference="", action="", themes=["safe_haven"])
+    # GLD is in safe_haven exemplars. Three high theses would give 0.5 * 0.5 * 0.5 = 0.125,
+    # but the floor pins to 0.25.
+    strat = _ToggleStrategy()
+    events: list[MonitorEvent] = []
+    mon = _monitor(strat, events, edge=True)
+    mon.interpret_for = lambda: [high1, high2, high3]
+    bias, applied = mon._interpret_bias("GLD")
+    assert bias == 0.25
+    assert len(applied) == 3
+
+
+def test_interpret_bias_skips_the_null_thesis() -> None:
+    """The quiet-tape null must never touch conviction — it is the honest 'no evidence' state."""
+    null = Thesis(name="No notable configuration", confidence="high",
+                    evidence=[], inference="", action="", themes=[])
+    strat = _ToggleStrategy()
+    events: list[MonitorEvent] = []
+    mon = _monitor(strat, events, edge=True)
+    mon.interpret_for = lambda: [null]
+    bias, applied = mon._interpret_bias("XLE")
+    assert bias == 1.0 and applied == []
+
+
+def test_interpret_bias_tentative_theses_are_advisory_only() -> None:
+    """A tentative-confidence thesis is documented as advisory — no size change."""
+    tentative = Thesis(name="Sentiment stretch — greed", confidence="tentative",
+                       evidence=[], inference="", action="", themes=["volatility_convexity"])
+    strat = _ToggleStrategy()
+    events: list[MonitorEvent] = []
+    mon = _monitor(strat, events, edge=True)
+    mon.interpret_for = lambda: [tentative]
+    # VIXY is in volatility_convexity exemplars, but tentative confidence yields no trim.
+    bias, applied = mon._interpret_bias("VIXY")
+    assert bias == 1.0
+    assert applied == []
+
+
+def test_interpret_bias_never_raises_on_a_broken_interpret_for() -> None:
+    """A broken interpret_for callable must not crash the poll — returns (1.0, [])."""
+    def _broken() -> list[Thesis]:
+        raise RuntimeError("interpret exploded")
+
+    strat = _ToggleStrategy()
+    events: list[MonitorEvent] = []
+    mon = _monitor(strat, events, edge=True)
+    mon.interpret_for = _broken
+    bias, applied = mon._interpret_bias("XLE")
+    assert bias == 1.0 and applied == []
+
+
 def test_edge_mode_still_only_emits_transitions() -> None:
     """The hybrid must not change edge behaviour: still one alert per state change."""
     strat = _ToggleStrategy()

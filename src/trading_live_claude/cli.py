@@ -312,6 +312,7 @@ def signal(
             )
 
     overlay_for = None
+    interpret_for = None
     if intel_overlay:
         if not settings.worldmonitor_api_key:
             console.print("[red]--intel-overlay needs WORLDMONITOR_API_KEY (set it or use --no-intel-overlay).[/red]")
@@ -327,8 +328,21 @@ def signal(
                     return await wm.snapshot()
             return _asyncio.run(_f())
 
-        overlay_for = OverlayProvider(_snapshot, refresh_seconds=float(overlay_refresh))
+        overlay_provider = OverlayProvider(_snapshot, refresh_seconds=float(overlay_refresh))
+        overlay_for = overlay_provider
         console.print(f"[cyan]intel overlay ON[/cyan] (refresh every {overlay_refresh}s; de-risk + halt gate).")
+
+        # Interpret bias — reuse the SAME provider's last_snapshot so decision and reasoning
+        # layers see the same snapshot, no second fetch. When no snapshot has been read yet,
+        # interpret_for returns an empty list so the bias is a no-op.
+        from .intel.interpret import interpret as _interpret
+
+        def _interpret_current():
+            snap = overlay_provider.last_snapshot
+            return _interpret(snap) if snap is not None else []
+        interpret_for = _interpret_current
+        console.print("[cyan]interpret entry-filter ON[/cyan] "
+                      "(theses trim conviction; advisory, never blocks or boosts).")
 
     monitor = LiveMonitor(
         broker=exec_broker,
@@ -347,6 +361,7 @@ def signal(
         emit_on_change_only=not level,
         hedge_symbol="UUP" if hedge else None,
         overlay_for=overlay_for,
+        interpret_for=interpret_for if intel_overlay else None,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
