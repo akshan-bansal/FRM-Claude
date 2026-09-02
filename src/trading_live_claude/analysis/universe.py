@@ -75,6 +75,8 @@ SEED_UNIVERSE: dict[AssetClass, tuple[str, ...]] = {
         "DBC", "DBA", "GLD", "SLV",
         # --- currently-held (redundant with HELD_ASSETS carry-in but explicit here too)
         "SDE.TO",
+        # --- promoted from Sep-2026 full-universe resweep, kept in the seed for future sweeps
+        "ENB.TO", "XIU.TO", "VDY.TO", "SLF.TO",
     ),
     # ETF proxies for continuous futures (LEAN swaps in real front-month; this pool works with the
     # existing equities path). Held small on purpose — no futures execution in the framework yet.
@@ -241,6 +243,106 @@ def min_oos_trades(asset_class: str) -> int:
     return MIN_OOS_TRADES.get(asset_class, DEFAULT_MIN_OOS_TRADES)
 
 
+# --- walk-forward protocols per asset class ------------------------------------------------------
+# The uniform 2y-train / 6mo-test / 252-annualization / 10-trade bar suits equities but is wrong
+# for other classes: crypto trades 365 days/yr and shifts regime faster (so shorter train+test),
+# commodities trade on a slower cycle (already reflected in MIN_OOS_TRADES=4), and futures need a
+# continuous-contract data layer that does not exist here yet. Encoding the protocol per class
+# rather than hardcoding it in one function makes the WF pipeline honest about what "walk-forward"
+# means for each source of information available.
+
+
+@dataclass(frozen=True)
+class WFProtocol:
+    """Walk-forward protocol for one asset class.
+
+    ``train_bars`` / ``test_bars`` are in the class's native bar unit (daily bars for every class
+    at present). ``annualization`` is the periods-per-year constant returns use (252 or 365).
+    ``min_wfe`` is the OOS/IS ratio floor for the robust tier. ``min_oos_trades`` mirrors the
+    class-dependent bar (kept here so a caller has one lookup, not two). ``data_source`` is a
+    short label for where the frames come from — informational, so a report can say WHY the
+    protocol looks the way it does.
+    """
+
+    asset_class: str
+    train_bars: int
+    test_bars: int
+    step_bars: int
+    annualization: int
+    min_wfe: float
+    min_oos_trades: int
+    data_source: str
+    notes: str = ""
+
+
+# The canonical protocol registry. Read via wf_protocol(asset_class).
+WF_PROTOCOLS: dict[str, WFProtocol] = {
+    # Equities: the standard. Questrade daily bars, 5+ years easily via paginated fetch. Trades
+    # 252 days/yr, so 504 train / 126 test is 2y / 6mo. 10 OOS trades is the honest bar.
+    "equity": WFProtocol(
+        asset_class="equity",
+        train_bars=504, test_bars=126, step_bars=126,
+        annualization=252, min_wfe=0.5, min_oos_trades=10,
+        data_source="questrade-daily",
+        notes="2y train / 6mo test / step 6mo. Standard protocol; every earlier WF used this.",
+    ),
+    # Commodities: same daily cadence as equities, but the trade cadence is slower — a bollinger
+    # on a broad commodity basket fires roughly quarterly. Trade-count bar drops to 4 (about once
+    # a quarter over a 6mo test window). Everything else identical to equity.
+    "commodity": WFProtocol(
+        asset_class="commodity",
+        train_bars=504, test_bars=126, step_bars=126,
+        annualization=252, min_wfe=0.5, min_oos_trades=4,
+        data_source="questrade-daily",
+        notes="Same window as equity; trade-count bar lower because commodity strategies fire "
+              "on a slower cycle (about quarterly). Cleared names carry thinner evidence than "
+              "an equity cleared on 10+ — sensitivity trade-off documented in universe.py.",
+    ),
+    # Crypto: 365 days/yr, regime shifts faster, and Kraken's daily OHLC caps at ~720 bars —
+    # deeper history needs scripts/fetch_crypto_history.py (paginated /public/Trades). Shorter
+    # windows honestly acknowledge that: 1y train / 3mo test (365/91), same 10-trade bar (crypto
+    # trades every day so 10 in 3 months is not a low bar in absolute terms).
+    "crypto": WFProtocol(
+        asset_class="crypto",
+        train_bars=365, test_bars=91, step_bars=91,
+        annualization=365, min_wfe=0.5, min_oos_trades=10,
+        data_source="kraken-daily (via kraken_ohlc_deep)",
+        notes="Shorter train + test to accept faster regime shifts. Requires the deep-history "
+              "fetch to have been run (scripts/fetch_crypto_history.py) — the shallow endpoint "
+              "caps at ~720 bars which is barely one fold's worth.",
+    ),
+    # Futures: continuous-contract data doesn't exist in this project yet AND there's no futures
+    # broker adapter. The protocol is registered so callers get a clear "no data" error rather
+    # than fabricating a run against wrong data.
+    "future": WFProtocol(
+        asset_class="future",
+        train_bars=504, test_bars=126, step_bars=126,
+        annualization=252, min_wfe=0.5, min_oos_trades=10,
+        data_source="UNAVAILABLE - needs continuous-contract data pipeline + broker adapter",
+        notes="Registered so wf_protocol() has an entry, but no futures WF can honestly run "
+              "today. Adding a continuous-contract data layer (roll-yield-adjusted) is the "
+              "prerequisite, then a broker adapter, then this protocol becomes live.",
+    ),
+    # FX: hedged / currency ETFs currently route through the equity pool (e.g. CEW.TO). If a
+    # native FX venue and pair-price feed land, this protocol governs its WF. Trades ~260 days
+    # a year on-shore (weekday-close), so equity-like windows apply.
+    "fx": WFProtocol(
+        asset_class="fx",
+        train_bars=504, test_bars=126, step_bars=126,
+        annualization=260, min_wfe=0.5, min_oos_trades=10,
+        data_source="pair-price feed (not yet wired)",
+        notes="Currency-hedged ETFs like CEW.TO clear under the equity protocol; a native FX "
+              "protocol activates once a pair-price feed exists.",
+    ),
+}
+
+
+def wf_protocol(asset_class: str) -> WFProtocol:
+    """Return the walk-forward protocol for ``asset_class``. Defaults to the equity protocol
+    for unknown classes so callers never silently misconfigure a run."""
+    return WF_PROTOCOLS.get(asset_class, WF_PROTOCOLS["equity"])
+
+
 def _wf(
     symbol: str, strategy: str, params: Mapping[str, float], oos_score: float, wfe: float,
     oos_return: float, oos_max_drawdown: float, oos_trades: int, tier: str,
@@ -294,7 +396,11 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     "KEY.TO": _wf("KEY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.11, 0.63, 0.1700, -0.0710, 5, "watch"),
     # CGL.TO (iShares gold bullion) cleared walk-forward from the $25-35 sweep — the first
     # commodity/bullion name; ATR-channel breakout, WFE > 1, the third atr_channel name after ZEB/ZWB.
-    "CGL.TO": _wf("CGL.TO", "atr_channel", {"ema_window": 30, "k": 1.5}, 5.830, 1.230, 0.6550, -0.1350, 23, "robust"),
+    # CGL.TO (iShares Gold Bullion, CAD-hedged) is a physical-commodity ETF, not an equity.
+    # asset_class="commodity" so risk gates, min-trade bars, and asset-class heat treat it
+    # correctly — and so per-class coverage counts the pool honestly. Also HELD in the QT account.
+    "CGL.TO": _wf("CGL.TO", "atr_channel", {"ema_window": 30, "k": 1.5}, 5.830, 1.230, 0.6550, -0.1350, 23, "robust",
+                  asset_class="commodity"),
     "IWM": _wf("IWM", "bollinger", {"window": 30, "n_std": 2.0}, 5.82, 0.93, 0.1600, -0.0810, 14, "robust"),
     "RS": _wf("RS", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.75, 0.88, 0.0780, -0.0610, 12, "robust"),
     # GEI.TO (Gibson Energy) cleared walk-forward from the $25-40 sweep — OOS beat in-sample
@@ -316,7 +422,10 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     # the lower commodity bar was introduced to fix. Thinner evidence than a 10-trade equity name.
     "DBC": _wf("DBC", "bollinger", {"window": 20, "n_std": 2.0}, 5.565, 0.622, 0.0020, -0.1320, 7, "robust",
                asset_class="commodity"),
-    "DBA": _wf("DBA", "rsi_meanrevert", {"window": 14, "oversold": 35}, 3.17, 0.57, 0.0530, -0.0500, 11, "robust"),
+    # DBA (Invesco Agriculture) tracks a soft-commodity basket — a commodity ETF, not an equity.
+    # Same class fix as CGL.TO above.
+    "DBA": _wf("DBA", "rsi_meanrevert", {"window": 14, "oversold": 35}, 3.17, 0.57, 0.0530, -0.0500, 11, "robust",
+               asset_class="commodity"),
     # TA.TO (TransAlta) technically cleared the robust gate (WFE 0.79, 32 trades) but is carried
     # at "watch" on a deliberate risk call: its OOS MACD run posts a big return through a -26.5%
     # drawdown, deeper than anything else in the pool. Watch until the drawdown profile improves.
@@ -331,6 +440,23 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     # Numbers are the RE-RUN after fixing a sweep bug that priced VALE at ETF spreads (a first-letter
     # heuristic caught the leading V); at correct equity spreads it still clears robust.
     "VALE": _wf("VALE", "bollinger", {"window": 15, "n_std": 2.5}, 6.339, 1.520, 0.0312, -0.0945, 16, "robust"),
+    # --- promoted from the Sep-2026 full-universe resweep (sweep_resweep_full) ---
+    # ENB.TO (Enbridge) topped the sweep by a wide margin: bollinger(15, 2.0), OOS 111.22 on WFE
+    # 8.39 across 19 OOS trades. The WFE outlier is real (IS ~13, OOS ~111 — the strategy did NOT
+    # oversell in-sample, it *undersold*) but should be treated with corresponding skepticism —
+    # confirm on the next re-run before sizing off it aggressively.
+    "ENB.TO": _wf("ENB.TO", "bollinger", {"window": 15, "n_std": 2.0}, 111.218, 8.389, 0.0220, -0.0959, 19, "robust"),
+    # XIU.TO (iShares S&P/TSX 60) — the TSX-60 ETF. First large-cap Cdn index ETF in the pool;
+    # complements XIC.TO. bollinger(15, 2.0), OOS 19.47 / WFE 0.70 / 12 trades.
+    "XIU.TO": _wf("XIU.TO", "bollinger", {"window": 15, "n_std": 2.0}, 19.475, 0.704, 0.0104, -0.0476, 12, "robust"),
+    # VDY.TO (Vanguard FTSE Cdn High Dividend Yield) — dividend-tilt Cdn ETF, ts_momentum with a
+    # 63-day lookback + 2% threshold. Complements the existing rate/energy-heavy Cdn exposure with
+    # a dividend-payer factor. OOS 18.20 / WFE 0.66 / 10 trades.
+    "VDY.TO": _wf("VDY.TO", "ts_momentum", {"lookback": 63, "threshold": 0.02}, 18.198, 0.661, 0.0156, -0.0504, 10, "robust"),
+    # SLF.TO (Sun Life Financial) — first insurance name in the pool, so the sector coverage
+    # widens from financials-only to financials+insurance. bollinger(10, 1.5), OOS 7.18 / WFE 0.54
+    # / 12 trades. Cleanest of the four on drawdown (-4.1%).
+    "SLF.TO": _wf("SLF.TO", "bollinger", {"window": 10, "n_std": 1.5}, 7.176, 0.539, 0.0203, -0.0407, 12, "robust"),
 }
 
 

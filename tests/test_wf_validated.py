@@ -32,13 +32,66 @@ def test_robust_tier_meets_all_three_bars() -> None:
 
 
 def test_expected_counts_and_watch_names() -> None:
-    # 21 robust + 7 watch — the $1-45 resweep added CRT.UN.TO, VALE and DBC (all robust) on top of the
+    # 25 robust + 7 watch — the Sep-2026 full-universe resweep added ENB.TO, XIU.TO, VDY.TO and
+    # SLF.TO (all robust) on top of the $1-45 resweep's CRT.UN.TO/VALE/DBC (robust) and the
     # $25-40 sweep's ZWB.TO/GEI.TO (robust) and XEI.TO (watch); SMH omitted.
-    assert len(validated_symbols("robust")) == 21
-    assert len(WALK_FORWARD_VALIDATED) == 28
+    assert len(validated_symbols("robust")) == 25
+    assert len(WALK_FORWARD_VALIDATED) == 32
     assert "SMH" not in WALK_FORWARD_VALIDATED
     watch = set(validated_symbols("watch"))
     assert {"VFV.TO", "WCP.TO", "KEY.TO", "TA.TO", "ZUT.TO", "EFN.TO", "XEI.TO"} == watch
+
+
+def test_wf_protocols_are_registered_for_every_asset_class() -> None:
+    """Every AssetClass in the universe module has a WF protocol; unknown class falls back safely."""
+    from trading_live_claude.analysis.universe import WF_PROTOCOLS, wf_protocol
+    for cls in ("equity", "commodity", "future", "crypto", "fx"):
+        assert cls in WF_PROTOCOLS, cls
+    # unknown class falls back to equity
+    fallback = wf_protocol("does-not-exist")
+    assert fallback.asset_class == "equity"
+
+
+def test_wf_protocols_encode_the_class_specific_calibration() -> None:
+    """Regression pin on the per-class differences that motivated the protocol layer."""
+    from trading_live_claude.analysis.universe import wf_protocol
+    eq = wf_protocol("equity")
+    cr = wf_protocol("crypto")
+    co = wf_protocol("commodity")
+    fu = wf_protocol("future")
+
+    # Equity: 252-annualized, 2y/6mo/6mo, 10-trade bar.
+    assert eq.annualization == 252
+    assert (eq.train_bars, eq.test_bars, eq.step_bars) == (504, 126, 126)
+    assert eq.min_oos_trades == 10
+
+    # Crypto: 365-annualized, shorter windows for faster regime shifts.
+    assert cr.annualization == 365
+    assert cr.train_bars < eq.train_bars      # shorter training window than equity
+    assert cr.test_bars < eq.test_bars
+
+    # Commodity: same window as equity but a lower trade-count bar.
+    assert co.train_bars == eq.train_bars
+    assert co.min_oos_trades == 4 < eq.min_oos_trades
+
+    # Futures: registered but data pipeline unavailable — a caller MUST see the honest label.
+    assert "UNAVAILABLE" in fu.data_source
+
+
+def test_per_asset_class_coverage_of_the_validated_pool() -> None:
+    """Pin per-class diversity so a future promotion can't silently drop or over-represent a class.
+
+    Currently equity-heavy (23 robust equities + 3 commodity + 0 future + 0 crypto). Futures WF is
+    blocked on a continuous-contract data pipeline AND a futures broker adapter — neither exists.
+    Crypto WF is blocked on running the deep-history fetch (scripts/fetch_crypto_history.py) and
+    then scripts/walk_forward_crypto.py. When either lands, promotions will push these counts up.
+    """
+    from collections import Counter
+    by_class = Counter(e.asset_class for e in WALK_FORWARD_VALIDATED.values() if e.tier == "robust")
+    assert by_class["equity"] == 22
+    assert by_class["commodity"] == 3          # DBC + CGL.TO + DBA (last two reclassified from equity)
+    assert by_class.get("future", 0) == 0
+    assert by_class.get("crypto", 0) == 0
 
 
 def test_widened_search_robust_names_are_wired() -> None:
@@ -52,10 +105,18 @@ def test_widened_search_robust_names_are_wired() -> None:
     assert validated_for("XLB").wfe > 1.0
 
 
-def test_all_validated_symbols_are_in_the_equity_seed() -> None:
-    seed = set(SEED_UNIVERSE["equity"])
+def test_all_validated_symbols_are_in_the_seed_for_their_class() -> None:
+    """Symbols must be in the seed pool for THEIR asset class — reclassified names (e.g. CGL.TO
+    and DBA are commodity, not equity) get checked against the commodity seed."""
+    seed_by_class = {c: set(SEED_UNIVERSE[c]) for c in ("equity", "commodity", "future", "crypto")}
+    # A commodity-classed ETF may also appear in the equity seed for legacy reasons; accept
+    # either its own class seed OR the equity seed as valid membership.
     for sym in validated_symbols():
-        assert sym in seed, f"{sym} missing from SEED_UNIVERSE['equity']"
+        rec = WALK_FORWARD_VALIDATED[sym]
+        cls = rec.asset_class
+        assert (sym in seed_by_class.get(cls, set())
+                or sym in seed_by_class["equity"]), \
+            f"{sym} ({cls}) missing from SEED_UNIVERSE[{cls!r}] and SEED_UNIVERSE['equity']"
 
 
 def test_validated_for_lookup() -> None:
