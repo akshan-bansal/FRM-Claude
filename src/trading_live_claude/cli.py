@@ -293,23 +293,35 @@ def signal(
         )
     )
 
+    from .analysis.universe import validated_for as _validated_for
+    from .intel.notification import (
+        format_entry as _fmt_entry,
+        format_exit as _fmt_exit,
+        format_hedge as _fmt_hedge,
+    )
+
     def _emit(ev) -> None:
         if ev.kind == "hedge":
-            d = ev.detail
-            alerter.send(
-                f"HEDGE rebalance: {ev.symbol} {'BUY' if d.get('delta', 0) > 0 else 'SELL'} {abs(d.get('delta', 0))}",
-                f"target weight={d.get('weight')} shares={d.get('target')} at drawdown={d.get('drawdown')} price={ev.price:.4f}",
-            )
-        elif ev.kind in {"entry", "exit"}:
+            title, body = _fmt_hedge(symbol=ev.symbol, detail=ev.detail)
+            alerter.send(title, body)
+        elif ev.kind == "entry":
             sname = smap[ev.symbol].name if ev.symbol in smap else strat.name
-            # In persistence (--level) mode the same signal re-alerts each poll, so say whether it
-            # just appeared or has been standing — otherwise a fresh signal is indistinguishable
-            # from one that has been grinding for hours.
-            state = "NEW" if ev.is_transition else f"persisting, poll {ev.poll_count}"
-            alerter.send(
-                f"{sname} {ev.kind.upper()}: {ev.symbol} ({state})",
-                f"price={ev.price:.4f} detail={ev.detail}",
+            # Statistical evidence for the selection — the walk-forward record, if this symbol
+            # cleared the gate. When it hasn't, format_entry emits the honest disclaimer instead.
+            wf_record = _validated_for(ev.symbol)
+            title, body = _fmt_entry(
+                strategy_name=sname, symbol=ev.symbol, price=ev.price, detail=ev.detail,
+                is_transition=getattr(ev, "is_transition", True),
+                poll_count=getattr(ev, "poll_count", 1),
+                wf_record=wf_record,
             )
+            alerter.send(title, body)
+        elif ev.kind == "exit":
+            sname = smap[ev.symbol].name if ev.symbol in smap else strat.name
+            shares = int(ev.detail.get("shares", 0)) if isinstance(ev.detail, dict) else 0
+            title, body = _fmt_exit(strategy_name=sname, symbol=ev.symbol,
+                                     price=ev.price, shares=shares)
+            alerter.send(title, body)
 
     overlay_for = None
     interpret_for = None

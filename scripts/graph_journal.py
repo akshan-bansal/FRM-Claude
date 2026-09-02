@@ -46,7 +46,12 @@ from trading_live_claude.intel.graph import (
     load_edges,
     wash_journal_file,
 )
-from trading_live_claude.intel.interpret import interpret
+from trading_live_claude.intel.interpret import THEME_EXEMPLARS, interpret
+from trading_live_claude.intel.notification import (
+    format_persistence,
+    format_thesis,
+    format_wash,
+)
 from trading_live_claude.intel.overlay import IntelSnapshot
 from trading_live_claude.intel.routing import OverlayProvider
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
@@ -120,11 +125,8 @@ def _check_persistence_alerts(
         n = edge_persistence(edges_now, predicate="elevated_in", object=("domain", dom))
         key = f"elevated_in::{dom}"
         if n >= threshold and key not in already_alerted:
-            alerter.send(
-                f"[intel] persistence hit: {dom} elevated for {n} polls",
-                f"Domain '{dom}' has been elevated_in for {n} consecutive polls "
-                f"(threshold {threshold}). Regime-detected signal from the graph journal.",
-            )
+            title, body = format_persistence(domain=dom, run_length=n, threshold=threshold)
+            alerter.send(title, body)
             already_alerted.add(key)
         elif n < threshold and key in already_alerted:
             # Signal dropped back below threshold — clear the dedupe so re-crossings fire again.
@@ -203,12 +205,8 @@ def main() -> None:
                             key = f"thesis::{t.name}"
                             live_keys.add(key)
                             if key not in already_alerted:
-                                body = (f"Confidence: {t.confidence}\n\n"
-                                        f"Inference: {t.inference}\n\n"
-                                        f"Action: {t.action}\n\n"
-                                        f"Themes: {', '.join(t.themes) if t.themes else '(none)'}\n"
-                                        f"Evidence: {'; '.join(t.evidence) if t.evidence else '(none)'}")
-                                alerter.send(f"[intel] thesis: {t.name}", body)
+                                title, body = format_thesis(t, theme_exemplars=THEME_EXEMPLARS)
+                                alerter.send(title, body)
                                 already_alerted.add(key)
                         # Clear thesis dedup keys for theses that stopped firing so re-crossings alert.
                         stale = {k for k in already_alerted
@@ -229,12 +227,10 @@ def main() -> None:
                 print(f"[thicken] wash: {summary['before']} -> {summary['after']} edges "
                       f"(pruned {pruned}, {pct:.1f}%)", flush=True)
                 if alerter and pruned > 0:
-                    alerter.send(
-                        f"[intel] wash event: pruned {pruned} edges ({pct:.1f}%)",
-                        f"Temporal-gate wash swept {summary['before']} -> {summary['after']} "
-                        f"edges in state/intel_graph.jsonl. Backup at "
-                        f"state/intel_graph.jsonl.bak (last wash undo-able).",
+                    title, body = format_wash(
+                        before=summary["before"], after=summary["after"], pruned=pruned,
                     )
+                    alerter.send(title, body)
             except Exception as e:
                 print(f"[thicken] wash failed: {e}", flush=True)
         if i < args.iterations:
