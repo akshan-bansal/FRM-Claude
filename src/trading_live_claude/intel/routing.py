@@ -70,7 +70,18 @@ class OverlayProvider:
         self._overrides = class_overrides
         self._journal = journal
         self._decisions: dict[OverlayClass, OverlayDecision] | None = None
+        self._last_snapshot: IntelSnapshot | None = None
         self._ts = 0.0
+
+    @property
+    def last_snapshot(self) -> IntelSnapshot | None:
+        """Last successfully-fetched snapshot, or None if no refresh has succeeded yet.
+
+        Exposed so downstream consumers (interpret, agents, thesis alerters) can act on the
+        exact same snapshot the overlay decided on — no second fetch, no drift between the
+        decision layer and the reasoning layer.
+        """
+        return self._last_snapshot
 
     def refresh(self, *, force: bool = False) -> None:
         if not force and self._decisions is not None and (time.monotonic() - self._ts) < self._refresh:
@@ -78,6 +89,7 @@ class OverlayProvider:
         try:
             snap = self._snapshot_fn()
             self._decisions = self._overlay.evaluate(snap)
+            self._last_snapshot = snap
             self._ts = time.monotonic()
             # Every live read goes into the journal — the monitor is the highest-frequency consumer
             # of the feed, so it is where the point-in-time history actually accrues.

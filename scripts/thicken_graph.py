@@ -40,6 +40,7 @@ from trading_live_claude.intel.graph import (
     load_edges,
     wash_journal_file,
 )
+from trading_live_claude.intel.interpret import interpret
 from trading_live_claude.intel.overlay import IntelSnapshot
 from trading_live_claude.intel.routing import OverlayProvider
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
@@ -181,6 +182,34 @@ def main() -> None:
                                                already_alerted, alerter)
                 except Exception as e:
                     print(f"[thicken] persistence check failed: {e}", flush=True)
+                # Thesis firing — run interpret() on the exact snapshot the overlay decided on
+                # (via provider.last_snapshot, no second fetch), route named theses to Telegram.
+                # De-duplicated by thesis name; a thesis that stops firing clears its dedup so a
+                # re-fire alerts again.
+                try:
+                    snap_used = provider.last_snapshot
+                    if snap_used is not None:
+                        theses = interpret(snap_used)
+                        live_keys: set[str] = set()
+                        for t in theses:
+                            if t.name == "No notable configuration":
+                                continue
+                            key = f"thesis::{t.name}"
+                            live_keys.add(key)
+                            if key not in already_alerted:
+                                body = (f"Confidence: {t.confidence}\n\n"
+                                        f"Inference: {t.inference}\n\n"
+                                        f"Action: {t.action}\n\n"
+                                        f"Themes: {', '.join(t.themes) if t.themes else '(none)'}\n"
+                                        f"Evidence: {'; '.join(t.evidence) if t.evidence else '(none)'}")
+                                alerter.send(f"[intel] thesis: {t.name}", body)
+                                already_alerted.add(key)
+                        # Clear thesis dedup keys for theses that stopped firing so re-crossings alert.
+                        stale = {k for k in already_alerted
+                                  if k.startswith("thesis::") and k not in live_keys}
+                        already_alerted -= stale
+                except Exception as e:
+                    print(f"[thicken] thesis firing failed: {e}", flush=True)
 
         # Temporal gate — time-based cadence (default 72h min between runs).
         now = time.time()
