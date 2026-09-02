@@ -335,6 +335,52 @@ as the offline fork uses) is a later question.
 - The non-negotiables still apply. Nothing here sizes a trade. Every thesis remains a hypothesis
   and any name traded on it still clears walk-forward.
 
+## 7. Crypto WF workaround — run against Kraken's shallow OHLC (no deep-history fetch required)
+
+The crypto protocol landed this session (commit `c3a0d18`, `WF_PROTOCOLS["crypto"]`) is sized
+for exactly this: `train=365 / test=91 / step=91`. Kraken's `/public/OHLC` caps at ~720 daily
+bars, and `(720 − 365) ÷ 91 ≈ 3.9` folds — the honest minimum for a WFE calculation. Thinner
+than the 12-fold equity WF but real out-of-sample scoring with real cost accounting.
+
+**Concrete build (small, ~30 lines):**
+- Extend `scripts/walk_forward_crypto.py` to fall back to `data/kraken_ohlc.py::kraken_ohlc`
+  (shallow, one call) when the deep-history parquet does NOT exist. The `walk_forward` helper
+  already reads the crypto protocol via the wiring in commit `75e3e6a`.
+- Drop `MIN_BARS` from 900 to ~500 for the crypto sleeve only so 720-bar shallow data qualifies.
+- Report label: pairs cleared on shallow WF are "screened+" — better than pure in-sample,
+  thinner than deep-history WF. Not `robust` until the deep-history fetch clears them.
+
+This unlocks a promotion path for the seven `CRYPTO_SLEEVE` pairs today, without waiting for the
+multi-hour `scripts/fetch_crypto_history.py` run in item 2. Doesn't replace item 2 — deep-history
+WF still supersedes shallow WF once the fetch has run.
+
+## 8. Pair-trading strategy oriented to FX pairs
+
+`strategies/examples/pairs.py` is cointegration-based and asset-agnostic — feed it two
+co-integrated symbols and it emits entry/exit against the spread. Currently calibrated on
+equity pairs (`RY.TO/BNS.TO` etc). To use it on FX:
+
+**Blockers:**
+1. **No FX price feed wired.** Questrade returns FX only inside its Cdn ADR / interlisted arb
+   plumbing, not as standalone pair quotes. Kraken quotes `EUR/USD`, `USD/CAD`, etc. natively
+   for the pairs it lists, and via `KrakenBroker.quotes` that's already accessible — enough for
+   a small MVP.
+2. **No FX-side cointegration research.** Equity pairs cointegrate on shared factors (bank
+   fundamentals, sector cyclicality); FX pairs cointegrate on rate differentials, real-vs-
+   nominal moves, and carry — different mean-reversion horizons and different appropriate
+   half-lives.
+3. **`WF_PROTOCOLS["fx"]` is registered** with the right shape (504/126/260-annualization) but
+   `data_source="pair-price feed (not yet wired)"`. Same honest gap as futures.
+
+**Realistic path:**
+- **MVP:** enumerate the FX pairs Kraken lists; use `KrakenBroker.quotes` + `kraken_ohlc` to
+  build daily histories; sweep `pairs.py` across every FX-pair combination that has cointegrated
+  history (Engle-Granger + Johansen, pick the pair pool). Uses the fx protocol.
+- **Later:** add `data/fx.py` alongside `data/kraken_ohlc.py` / `data/market.py` — an FX-vendor
+  adapter (OANDA / Alpha Vantage / Polygon FX) with the canonical OHLCV shape. Then the FX pair
+  universe widens beyond Kraken's fiat list.
+- Register FX-specific parameter grids (shorter mean-reversion half-lives than equity pairs).
+
 ---
 _Also on the board (lower priority): wire microprice/OFI as features into the research strategies;
 promote the paper A-S maker toward gated live quoting on Kraken._
