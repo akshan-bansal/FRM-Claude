@@ -26,6 +26,7 @@ class _StubWF:
     oos_return: float = 0.234
     oos_max_drawdown: float = -0.081
     oos_trades: int = 15
+    oos_win_rate: float | None = None
 
 
 @dataclass
@@ -59,6 +60,32 @@ def test_entry_alert_carries_wf_statistics_in_a_dedicated_block() -> None:
     assert "+23.40%" in body                     # OOS return (formatted %)
     assert "-8.10%" in body                      # OOS max drawdown
     assert "OOS trades: 15" in body
+
+
+def test_entry_alert_shows_win_rate_adjacent_to_oos_trades_when_present() -> None:
+    """Win rate is rendered on the same line as the OOS trade count."""
+    wf = _StubWF(oos_trades=20, oos_win_rate=0.6, params={"lookback": 63})
+    _, body = format_entry(
+        strategy_name="ts_momentum", symbol="EQB.TO", price=100.0,
+        detail={"sized": 50}, wf_record=wf,
+    )
+    # Two-column layout on one line: OOS trades AND win rate together.
+    line = next(l for l in body.splitlines() if "OOS trades: 20" in l)
+    assert "60.0%" in line                          # rendered percentage
+    assert "12/20" in line                          # 0.6 * 20 = 12 wins
+
+
+def test_entry_alert_omits_win_rate_line_when_absent() -> None:
+    """A pre-existing entry with no oos_win_rate must not fabricate a 0% line."""
+    wf = _StubWF(oos_win_rate=None, oos_trades=15)
+    _, body = format_entry(
+        strategy_name="ts_momentum", symbol="EQB.TO", price=100.0,
+        detail={"sized": 60}, wf_record=wf,
+    )
+    line = next(l for l in body.splitlines() if "OOS trades:" in l)
+    assert "OOS trades: 15" in line
+    # Explicitly assert the win-rate qualifier is NOT there — honest omission, not zero.
+    assert "win rate" not in line
 
 
 def test_entry_alert_wfe_gloss_is_class_specific() -> None:

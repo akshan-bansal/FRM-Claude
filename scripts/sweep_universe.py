@@ -159,6 +159,10 @@ def walk_forward(
     is_scores: list[float] = []
     rets: list[float] = []
     dds: list[float] = []
+    # Trade-weighted win rate accumulation: track wins (win_rate * num_trades per fold) and
+    # total trades across all folds so the final win rate is weighted by trade count, not
+    # a naive mean-of-fold-rates. A fold that fired 20 trades matters more than a fold with 2.
+    fold_wins = 0.0
     trades = 0
     start = 0
     while start + train_bars + test_bars <= n:
@@ -178,14 +182,17 @@ def walk_forward(
                 rets.append(got[1].total_return)
                 dds.append(got[1].max_drawdown)
                 trades += got[1].num_trades
+                fold_wins += float(got[1].win_rate) * got[1].num_trades
         start += step_bars
     if not oos_scores:
         return None
     oos = float(np.mean(oos_scores))
     ins = float(np.mean(is_scores))
+    win_rate = (fold_wins / trades) if trades > 0 else 0.0
     return {"oos_score": oos, "wfe": oos / ins if ins > 0 else 0.0,
             "oos_return": float(np.mean(rets)), "oos_maxdd": float(np.min(dds)),
-            "oos_trades": int(trades), "folds": len(oos_scores),
+            "oos_trades": int(trades), "oos_win_rate": win_rate,
+            "folds": len(oos_scores),
             "asset_class": cls, "train_bars": train_bars, "test_bars": test_bars}
 
 

@@ -223,6 +223,11 @@ class WFValidated:
     oos_max_drawdown: float
     oos_trades: int
     tier: str  # "robust" | "watch"
+    # Fraction of OOS trades that closed at a profit, averaged across folds. ``None`` for
+    # rows whose walk-forward run did not persist a win-rate — the pre-existing 32 entries
+    # were scored before this field existed, so their alerts simply omit the win-rate line
+    # rather than showing a fabricated number. Populated on new sweeps going forward.
+    oos_win_rate: float | None = None
 
 
 # Minimum out-of-sample trades a name must post to qualify as "robust". Commodities trade on a
@@ -346,12 +351,13 @@ def wf_protocol(asset_class: str) -> WFProtocol:
 def _wf(
     symbol: str, strategy: str, params: Mapping[str, float], oos_score: float, wfe: float,
     oos_return: float, oos_max_drawdown: float, oos_trades: int, tier: str,
-    asset_class: str = "equity",
+    asset_class: str = "equity", oos_win_rate: float | None = None,
 ) -> WFValidated:
     return WFValidated(
         symbol=symbol, asset_class=asset_class, strategy=strategy, params=params,
         oos_score=oos_score, wfe=wfe, oos_return=oos_return,
         oos_max_drawdown=oos_max_drawdown, oos_trades=oos_trades, tier=tier,
+        oos_win_rate=oos_win_rate,
     )
 
 

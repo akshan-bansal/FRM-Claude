@@ -80,6 +80,7 @@ def format_entry(
         oos_ret = float(getattr(wf_record, "oos_return", 0.0))
         oos_dd = float(getattr(wf_record, "oos_max_drawdown", 0.0))
         oos_tr = int(getattr(wf_record, "oos_trades", 0))
+        oos_wr = getattr(wf_record, "oos_win_rate", None)
         tier = str(getattr(wf_record, "tier", "?"))
         cls = str(getattr(wf_record, "asset_class", "?"))
         strat_wf = str(getattr(wf_record, "strategy", "?"))
@@ -88,12 +89,18 @@ def format_entry(
         wfe_gloss = ("OOS beat in-sample" if wfe > 1.0 else
                        "OOS held ~in-sample" if wfe >= 0.75 else
                        "OOS fell below in-sample but still cleared the gate")
+        # Win rate rendered adjacent to OOS trades so the reader sees the count AND its
+        # quality on one line. Kept off the tier/strategy/score lines because those speak to
+        # gate clearance, and win rate is a hit-rate qualifier, not a gate.
+        oos_trade_line = f"OOS trades: {oos_tr}"
+        if oos_wr is not None:
+            oos_trade_line += f"  ·  win rate: {oos_wr * 100:.1f}% ({int(round(oos_wr * oos_tr))}/{oos_tr})"
         rows = [
             f"Tier: {tier} ({cls}) — cleared WF gate: WFE>=0.5, OOS>0, trades>=class-min",
             f"Strategy: {strat_wf} with {param_str}",
             f"OOS score: {oos:.2f}  ·  WFE: {wfe:.2f}  ({wfe_gloss})",
             f"OOS return: {_pct(oos_ret)}  ·  OOS max drawdown: {_pct(oos_dd)}",
-            f"OOS trades: {oos_tr}",
+            oos_trade_line,
         ]
         lines.append(_bullet(rows))
     else:
