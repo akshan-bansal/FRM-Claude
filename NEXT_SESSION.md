@@ -444,6 +444,64 @@ Each step is testable in isolation and adds one hook to a boundary already estab
 require rewriting a hot-path module. All are gate-preserving — a broken cross-path never causes
 a trade to fire without the risk gates that already exist.
 
+## 10. Correlation-aware allocator on the crypto sleeve
+
+The 7-pair `CRYPTO_SLEEVE` runs equal-weight today. A 720-day daily correlation matrix computed
+2026-09-02 shows the sleeve is thinly diversified — 5 of 7 pairs cluster on one crypto-beta
+factor and equal-weighting is effectively levered long that factor with a small gold hedge:
+
+```
+Correlation clusters (Pearson, daily returns, Sep 2024 – Sep 2026):
+  BTC · ETH         0.83   ← effectively one bet
+  ETH · LINK        0.80
+  BTC · LINK        0.73
+  XRP · LINK        0.71
+  XRP · XLM         0.70
+
+Avg |ρ| with rest of sleeve:
+  PAXG/USD  0.17  ← only genuine diversifier (tokenized gold)
+  XMR/USD   0.32  ← partial (privacy coin)
+  XLM/USD   0.44
+  XRP/USD   0.55
+  LINK/USD  0.55
+  BTC/USD   0.56
+  ETH/USD   0.56
+```
+
+**Concrete build (small — reuses existing code):**
+- `portfolio/allocator.py::correlation_aware` already implements exactly the shape we need:
+  positive-score edge budgeting, inverse-vol scaling, correlation-crowding factor (row-sum of
+  positive correlations), per-name + per-sleeve caps, regime scalar. The equity path already
+  uses it via `portfolio/pipeline.py`. Same allocator, applied to the crypto sleeve.
+- `scripts/paper_kraken.py` currently instantiates `LiveMonitor` with per-symbol strategies and
+  equal-weight sizing via `PositionSizer`. Wire the allocator upstream: compute allocator weights
+  from the 7 pairs' return histories + their `screen_score`, then pass a size cap per symbol to
+  the sizer (or replace with an allocator-derived shares target).
+- Handle the shallow-history constraint: Kraken OHLC caps at ~720 daily bars — more than enough
+  for a stable covariance matrix (need ~60 bars minimum, 720 is comfortable).
+- Add `KrakenFeed.correlation_matrix()` or reuse `pandas.DataFrame.corr()` on the aligned close
+  frame the correlation-check computed today.
+
+**Expected effect** on sizing (illustrative — depends on the score budget and vol at run time):
+- PAXG target weight ↑ meaningfully (low avg ρ, deserves the diversifier premium)
+- XMR ↑ modestly
+- BTC / ETH / LINK ↓ collectively (they split ~one name's worth of weight, not three names')
+- XRP / XLM cluster ↓ similarly
+
+**Guardrails:**
+- Keep the sleeve paper-only per the existing `tier="screened"` posture; a correlation-aware
+  paper sleeve is a research improvement, not a promotion.
+- Enforce the same allocator per-name floor as equity so no pair gets zeroed out entirely — the
+  sleeve still monitors all 7 for signal, size just biases toward the diversifier.
+- Recompute the correlation matrix on some cadence (weekly? daily-of-the-week?) — crypto
+  correlations shift, and a stale covariance is worse than none. Use the same graph-journal
+  pattern of writing correlation snapshots to `state/crypto_corr.jsonl` for auditability.
+
+Same pattern applies to the equity paper session — the sleeve currently sizes each of 14 names
+independently. Equity correlations aren't as tight as crypto, but a resweep-then-allocator pass
+would surface the same "which held names are correlated redundancies" question the crypto
+sleeve just answered.
+
 ---
 _Also on the board (lower priority): wire microprice/OFI as features into the research strategies;
 promote the paper A-S maker toward gated live quoting on Kraken._
