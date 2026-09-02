@@ -25,7 +25,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from trading_live_claude.analysis.universe import HELD_ASSETS, min_oos_trades
+from trading_live_claude.analysis.universe import HELD_ASSETS, min_oos_trades, wf_protocol
 from trading_live_claude.backtest import BacktestEngine
 from trading_live_claude.backtest.costs import CostModel
 from trading_live_claude.intel.routing import classify_symbol
@@ -130,8 +130,28 @@ def best_config(df: pd.DataFrame, sym: str):
     return best
 
 
-def walk_forward(df: pd.DataFrame, sym: str, train: int = 504, test: int = 126):
-    """Re-optimize on each training fold, score only the following out-of-sample block."""
+def walk_forward(
+    df: pd.DataFrame,
+    sym: str,
+    train: int | None = None,
+    test: int | None = None,
+    step: int | None = None,
+    asset_class: str | None = None,
+):
+    """Re-optimize on each training fold, score only the following out-of-sample block.
+
+    Window sizing is now per-asset-class via ``analysis.universe.WF_PROTOCOLS``:
+    ``train_bars`` / ``test_bars`` / ``step_bars`` come from the class's protocol unless
+    explicitly overridden by the ``train`` / ``test`` / ``step`` arguments. ``asset_class`` is
+    inferred from ``sym`` via ``intel.routing.classify_symbol`` if not supplied. Falls back to
+    the equity protocol for unknown classes so a caller never silently misconfigures.
+    """
+    cls = asset_class or classify_symbol(sym.replace("_TO", ".TO").replace("_UN_", ".UN."))
+    protocol = wf_protocol(cls)
+    train_bars = train if train is not None else protocol.train_bars
+    test_bars = test if test is not None else protocol.test_bars
+    step_bars = step if step is not None else protocol.step_bars
+
     eng = BacktestEngine(cost_model=CostModel.from_price(float(df["close"].iloc[-1]),
                                                          is_etf=is_etf_like(sym)))
     n = len(df)
@@ -141,9 +161,9 @@ def walk_forward(df: pd.DataFrame, sym: str, train: int = 504, test: int = 126):
     dds: list[float] = []
     trades = 0
     start = 0
-    while start + train + test <= n:
-        tr = df.iloc[start:start + train].reset_index(drop=True)
-        te = df.iloc[start + train:start + train + test].reset_index(drop=True)
+    while start + train_bars + test_bars <= n:
+        tr = df.iloc[start:start + train_bars].reset_index(drop=True)
+        te = df.iloc[start + train_bars:start + train_bars + test_bars].reset_index(drop=True)
         bt = None
         for sname, grid in PARAM_GRIDS.items():
             for p in combos(grid):
@@ -158,14 +178,15 @@ def walk_forward(df: pd.DataFrame, sym: str, train: int = 504, test: int = 126):
                 rets.append(got[1].total_return)
                 dds.append(got[1].max_drawdown)
                 trades += got[1].num_trades
-        start += test
+        start += step_bars
     if not oos_scores:
         return None
     oos = float(np.mean(oos_scores))
     ins = float(np.mean(is_scores))
     return {"oos_score": oos, "wfe": oos / ins if ins > 0 else 0.0,
             "oos_return": float(np.mean(rets)), "oos_maxdd": float(np.min(dds)),
-            "oos_trades": int(trades), "folds": len(oos_scores)}
+            "oos_trades": int(trades), "folds": len(oos_scores),
+            "asset_class": cls, "train_bars": train_bars, "test_bars": test_bars}
 
 
 def main() -> None:
@@ -259,14 +280,16 @@ def main() -> None:
         w = walk_forward(frames[s], s)
         if w is None:
             continue
-        # Trade-count bar is asset-class dependent: commodities trade on a slower cycle, so a
-        # flat 10 excluded the whole class (see universe.min_oos_trades).
-        cls = classify_symbol(s.replace("_TO", ".TO").replace("_UN_", ".UN."))
+        # walk_forward now returns asset_class + window sizes (from the per-class protocol) so
+        # they're already in ``w``; use the protocol's own min_oos_trades bar for tiering.
+        cls = w.get("asset_class") or classify_symbol(
+            s.replace("_TO", ".TO").replace("_UN_", ".UN."))
+        min_trades = min_oos_trades(cls)
         tier = "robust" if (w["wfe"] >= 0.5 and w["oos_score"] > 0
-                            and w["oos_trades"] >= min_oos_trades(cls)) else "watch"
+                            and w["oos_trades"] >= min_trades) else "watch"
         wf_rows.append({"sym": s, "price": r["price"], "is_score": r["score"],
                         "strategy": r["strategy"], "params": r["params"], **w,
-                        "asset_class": cls, "min_trades": min_oos_trades(cls), "tier": tier,
+                        "min_trades": min_trades, "tier": tier,
                         "held": s in HELD_ASSETS or s.replace("_", ".") in HELD_ASSETS})
         print(f"      {s}{'*' if s in HELD_ASSETS else ' '}: "
               f"OOS {w['oos_score']:.2f} WFE {w['wfe']:.2f} "
