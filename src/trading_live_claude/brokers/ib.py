@@ -438,12 +438,16 @@ def _to_ib_contract(spec: IBContract) -> Any:
         return Stock(spec.symbol, spec.exchange, spec.currency,
                       primaryExchange=spec.primary_exchange)
     if spec.sec_type == "future":
+        # IBContract's exchange defaults to "SMART" which is meaningful for stocks but wrong
+        # for futures — SMART routing doesn't handle CME/GLOBEX/CBOT/NYMEX. Swap the default
+        # sentinel to GLOBEX; a caller who explicitly passes something else keeps it.
+        futures_exchange = "GLOBEX" if spec.exchange in ("", "SMART") else spec.exchange
         if spec.expiry:
-            return Future(spec.symbol, spec.expiry, spec.exchange or "GLOBEX",
+            return Future(spec.symbol, spec.expiry, futures_exchange,
                             currency=spec.currency, multiplier=spec.multiplier,
                             tradingClass=spec.trading_class)
         # Continuous-contract front-month; IB resolves to the current lead expiry.
-        return ContFuture(spec.symbol, spec.exchange or "GLOBEX",
+        return ContFuture(spec.symbol, futures_exchange,
                              currency=spec.currency, multiplier=spec.multiplier,
                              tradingClass=spec.trading_class)
     if spec.sec_type == "option":

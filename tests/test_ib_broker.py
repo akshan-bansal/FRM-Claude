@@ -88,13 +88,20 @@ def test_contract_translation_selects_the_right_ib_shape(monkeypatch: pytest.Mon
     stock = _to_ib_contract(IBContract(symbol="AAPL"))
     assert stock[0] == "Stock"
 
-    # Front-month continuous future when no expiry given
+    # Front-month continuous future when no expiry given. Exchange default swaps SMART→GLOBEX
+    # for futures because IB's SMART routing doesn't handle CME/GLOBEX/CBOT/NYMEX.
     cf = _to_ib_contract(IBContract(symbol="ES", sec_type="future"))
     assert cf[0] == "ContFuture"
+    assert "GLOBEX" in cf[1]                            # positional arg 2 = exchange
 
     # Specific expiry → Future
     dated = _to_ib_contract(IBContract(symbol="ES", sec_type="future", expiry="20261231"))
     assert dated[0] == "Future"
+    assert "GLOBEX" in dated[1]
+
+    # Explicit exchange override — GLOBEX default is a fallback, not a hard-code
+    cme = _to_ib_contract(IBContract(symbol="ES", sec_type="future", exchange="CME"))
+    assert "CME" in cme[1]
 
     opt = _to_ib_contract(IBContract(symbol="SPY", sec_type="option",
                                        expiry="20261219", strike=500.0, right="C"))
