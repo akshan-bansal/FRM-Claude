@@ -368,60 +368,60 @@ def _wf(
 # the widened ~180-asset search and its walk-forward — the two standouts, XLE (energy) and
 # XLB (materials), score higher out-of-sample than in-sample.
 WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
-    "XLE": _wf("XLE", "rsi_meanrevert", {"window": 7, "oversold": 35}, 28.39, 2.60, 0.4620, -0.0480, 24, "robust"),
-    "XLB": _wf("XLB", "bollinger", {"window": 20, "n_std": 2.0}, 20.95, 1.22, 0.3580, -0.0550, 16, "robust"),
-    "XIC.TO": _wf("XIC.TO", "rsi_meanrevert", {"window": 7, "oversold": 35}, 19.60, 1.21, 0.2946, -0.0505, 17, "robust"),
+    "XLE": _wf("XLE", "rsi_meanrevert", {"window": 7, "oversold": 35}, 28.39, 2.60, 0.4620, -0.0480, 24, "robust", oos_win_rate=0.7500),
+    "XLB": _wf("XLB", "bollinger", {"window": 20, "n_std": 2.0}, 20.95, 1.22, 0.3580, -0.0550, 16, "robust", oos_win_rate=0.7333),
+    "XIC.TO": _wf("XIC.TO", "rsi_meanrevert", {"window": 7, "oversold": 35}, 19.60, 1.21, 0.2946, -0.0505, 17, "robust", oos_win_rate=0.7059),
     "VFV.TO": _wf("VFV.TO", "high_52w_breakout", {"high_window": 126, "exit_window": 63}, 18.90, 1.07, 0.1590, -0.0660, 2, "watch"),
     # ZEB.TO (BMO equal-weight Canadian banks) cleared walk-forward on an ATR-channel breakout —
     # the first atr_channel name in the pool; OOS beat in-sample (WFE > 1), like XLE/XLB.
     "ZEB.TO": _wf("ZEB.TO", "atr_channel", {"ema_window": 30, "k": 1.5}, 16.749, 1.123, 0.6086, -0.0924, 27, "robust"),
     # FRU.TO (Freehold Royalties) cleared walk-forward from the $15-25 sweep on a tight Bollinger
     # band; low-drawdown energy-royalty name, OOS ~= in-sample (WFE ~1), the cleanest of that sweep.
-    "FRU.TO": _wf("FRU.TO", "bollinger", {"window": 15, "n_std": 1.5}, 16.510, 1.020, 0.5420, -0.0590, 22, "robust"),
+    "FRU.TO": _wf("FRU.TO", "bollinger", {"window": 15, "n_std": 1.5}, 16.510, 1.020, 0.5420, -0.0590, 22, "robust", oos_win_rate=0.6250),
     # SRU.UN.TO (SmartCentres REIT) cleared walk-forward from the $25-35 sweep — the first REIT in
     # the pool; RSI mean-reversion, OOS beat in-sample (WFE ~1) at the tightest drawdown of that batch.
-    "SRU.UN.TO": _wf("SRU.UN.TO", "rsi_meanrevert", {"window": 7, "oversold": 25}, 13.330, 1.030, 0.3110, -0.0490, 15, "robust"),
+    "SRU.UN.TO": _wf("SRU.UN.TO", "rsi_meanrevert", {"window": 7, "oversold": 25}, 13.330, 1.030, 0.3110, -0.0490, 15, "robust", oos_win_rate=0.8889),
     # ZWB.TO (BMO covered-call Canadian banks) cleared walk-forward from the $25-40 sweep — OOS beat
     # in-sample (WFE 1.57), the covered-call sibling of ZEB.TO (equal-weight banks); correlated but a
     # different payoff. Second atr_channel banks-ETF in the pool.
     "ZWB.TO": _wf("ZWB.TO", "atr_channel", {"ema_window": 10, "k": 1.5}, 11.900, 1.570, 0.2770, -0.0710, 29, "robust"),
     # CEW.TO is a CAD currency-hedged basket (not a pure FX pair); it cleared walk-forward.
-    "CEW.TO": _wf("CEW.TO", "bollinger", {"window": 20, "n_std": 2.0}, 10.93, 0.76, 0.2000, -0.0620, 12, "robust"),
+    "CEW.TO": _wf("CEW.TO", "bollinger", {"window": 20, "n_std": 2.0}, 10.93, 0.76, 0.2000, -0.0620, 12, "robust", oos_win_rate=0.6250),
     # ARX.TO (ARC Resources) UPGRADED by the $1-45 resweep: re-optimizing across all families
     # picked rsi_meanrevert over the earlier bollinger config and beat it out-of-sample on every
     # axis (OOS 12.38 vs 8.82, WFE 1.30 vs 0.72, drawdown -6.3% vs -11.3%) on a comparable trade
     # count. Prior config kept here for provenance: bollinger {window:20, n_std:3.0}, OOS 8.82.
-    "ARX.TO": _wf("ARX.TO", "rsi_meanrevert", {"window": 21, "oversold": 30}, 12.375, 1.301, 0.0467, -0.0625, 12, "robust"),
+    "ARX.TO": _wf("ARX.TO", "rsi_meanrevert", {"window": 21, "oversold": 30}, 12.375, 1.301, 0.0467, -0.0625, 12, "robust", oos_win_rate=0.9167),
     # BTO.TO (B2Gold, ~$8) cleared walk-forward from the $1-$10 small-cap sleeve; low-priced,
     # so commission drag is material at small position sizes.
-    "BTO.TO": _wf("BTO.TO", "rsi_meanrevert", {"window": 7, "oversold": 25}, 8.78, 2.69, 1.2100, -0.1580, 14, "robust"),
-    "EQB.TO": _wf("EQB.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 8.17, 1.36, 0.4588, -0.1605, 11, "robust"),
+    "BTO.TO": _wf("BTO.TO", "rsi_meanrevert", {"window": 7, "oversold": 25}, 8.78, 2.69, 1.2100, -0.1580, 14, "robust", oos_win_rate=0.7500),
+    "EQB.TO": _wf("EQB.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 8.17, 1.36, 0.4588, -0.1605, 11, "robust", oos_win_rate=0.5714),
     "QQQ": _wf("QQQ", "ts_momentum", {"lookback": 189, "threshold": 0.02}, 7.70, 2.72, 0.5030, -0.1420, 16, "robust"),
-    "WCP.TO": _wf("WCP.TO", "confirm_bollinger", {"window": 30, "n_std": 3.0}, 6.62, 0.17, 0.3289, -0.0882, 5, "watch"),
-    "DFY.TO": _wf("DFY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.62, 0.65, 0.2544, -0.0974, 14, "robust"),
-    "KEY.TO": _wf("KEY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.11, 0.63, 0.1700, -0.0710, 5, "watch"),
+    "WCP.TO": _wf("WCP.TO", "confirm_bollinger", {"window": 30, "n_std": 3.0}, 6.62, 0.17, 0.3289, -0.0882, 5, "watch", oos_win_rate=0.5556),
+    "DFY.TO": _wf("DFY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.62, 0.65, 0.2544, -0.0974, 14, "robust", oos_win_rate=0.8571),
+    "KEY.TO": _wf("KEY.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 6.11, 0.63, 0.1700, -0.0710, 5, "watch", oos_win_rate=0.8333),
     # CGL.TO (iShares gold bullion) cleared walk-forward from the $25-35 sweep — the first
     # commodity/bullion name; ATR-channel breakout, WFE > 1, the third atr_channel name after ZEB/ZWB.
     # CGL.TO (iShares Gold Bullion, CAD-hedged) is a physical-commodity ETF, not an equity.
     # asset_class="commodity" so risk gates, min-trade bars, and asset-class heat treat it
     # correctly — and so per-class coverage counts the pool honestly. Also HELD in the QT account.
     "CGL.TO": _wf("CGL.TO", "atr_channel", {"ema_window": 30, "k": 1.5}, 5.830, 1.230, 0.6550, -0.1350, 23, "robust",
-                  asset_class="commodity"),
-    "IWM": _wf("IWM", "bollinger", {"window": 30, "n_std": 2.0}, 5.82, 0.93, 0.1600, -0.0810, 14, "robust"),
-    "RS": _wf("RS", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.75, 0.88, 0.0780, -0.0610, 12, "robust"),
+                  asset_class="commodity", oos_win_rate=0.7500),
+    "IWM": _wf("IWM", "bollinger", {"window": 30, "n_std": 2.0}, 5.82, 0.93, 0.1600, -0.0810, 14, "robust", oos_win_rate=0.6154),
+    "RS": _wf("RS", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.75, 0.88, 0.0780, -0.0610, 12, "robust", oos_win_rate=0.5385),
     # GEI.TO (Gibson Energy) cleared walk-forward from the $25-40 sweep — OOS beat in-sample
     # (WFE 0.65), +28.6% at -7.4% DD; robust but on exactly 10 OOS trades (a thinner sample).
-    "GEI.TO": _wf("GEI.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.490, 0.650, 0.2860, -0.0740, 10, "robust"),
+    "GEI.TO": _wf("GEI.TO", "rsi_meanrevert", {"window": 14, "oversold": 35}, 5.490, 0.650, 0.2860, -0.0740, 10, "robust", oos_win_rate=0.6923),
     # ZUT.TO (BMO utilities) has a huge WFE (4.35) but only 8 out-of-sample trades — too thin a
     # sample to call robust, so it is carried at watch (same reason as VFV.TO).
-    "ZUT.TO": _wf("ZUT.TO", "ts_momentum", {"lookback": 189, "threshold": 0.0}, 5.190, 4.350, 0.2040, -0.1050, 8, "watch"),
+    "ZUT.TO": _wf("ZUT.TO", "ts_momentum", {"lookback": 189, "threshold": 0.0}, 5.190, 4.350, 0.2040, -0.1050, 8, "watch", oos_win_rate=0.7778),
     # XEI.TO (iShares Cdn equal-weight income ETF) topped the $25-40 in-sample sweep (8.4) but the
     # walk-forward re-opt picked atr_channel and the score decayed hard (IS 12.8 -> OOS 3.8) with a
     # WFE right on the 0.5 gate — clears robust on paper but carried at watch on that thin margin.
-    "XEI.TO": _wf("XEI.TO", "atr_channel", {"ema_window": 20, "k": 1.5}, 3.830, 0.530, 0.0570, -0.0680, 20, "watch"),
+    "XEI.TO": _wf("XEI.TO", "atr_channel", {"ema_window": 20, "k": 1.5}, 3.830, 0.530, 0.0570, -0.0680, 20, "watch", oos_win_rate=0.6875),
     # EFN.TO (Element Fleet) cleared the robust gate (WFE 0.92, 24 trades) but is carried at watch
     # on a drawdown call: its -19.3% OOS drawdown echoes TA.TO. Flip to robust if that's acceptable.
-    "EFN.TO": _wf("EFN.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 3.210, 0.920, 0.3560, -0.1930, 24, "watch"),
+    "EFN.TO": _wf("EFN.TO", "ts_momentum", {"lookback": 126, "threshold": 0.0}, 3.210, 0.920, 0.3560, -0.1930, 24, "watch", oos_win_rate=0.8000),
     # DBC (broad commodity index fund) cleared walk-forward in the $1-45 resweep under the
     # commodity trade-count bar of 4 (see min_oos_trades): OOS 5.57 on WFE 0.62 across 7 trades.
     # It would NOT have cleared the flat 10-trade bar, which is precisely the class-wide exclusion
@@ -431,38 +431,38 @@ WALK_FORWARD_VALIDATED: dict[str, WFValidated] = {
     # DBA (Invesco Agriculture) tracks a soft-commodity basket — a commodity ETF, not an equity.
     # Same class fix as CGL.TO above.
     "DBA": _wf("DBA", "rsi_meanrevert", {"window": 14, "oversold": 35}, 3.17, 0.57, 0.0530, -0.0500, 11, "robust",
-               asset_class="commodity"),
+               asset_class="commodity", oos_win_rate=0.7000),
     # TA.TO (TransAlta) technically cleared the robust gate (WFE 0.79, 32 trades) but is carried
     # at "watch" on a deliberate risk call: its OOS MACD run posts a big return through a -26.5%
     # drawdown, deeper than anything else in the pool. Watch until the drawdown profile improves.
-    "TA.TO": _wf("TA.TO", "macd", {"fast": 16, "slow": 34}, 2.68, 0.79, 0.7610, -0.2650, 32, "watch"),
+    "TA.TO": _wf("TA.TO", "macd", {"fast": 16, "slow": 34}, 2.68, 0.79, 0.7610, -0.2650, 32, "watch", oos_win_rate=0.6667),
     # CRT.UN.TO (CT REIT) cleared walk-forward in the $1-45 resweep - the second REIT in the pool
     # after SRU.UN.TO, on the same rsi_meanrevert family but a tighter oversold band. WFE 0.59 is
     # modest and it clears the trade-count gate exactly (10), so it is robust on a thin margin.
-    "CRT.UN.TO": _wf("CRT.UN.TO", "rsi_meanrevert", {"window": 7, "oversold": 20}, 9.180, 0.590, 0.0301, -0.0519, 10, "robust"),
+    "CRT.UN.TO": _wf("CRT.UN.TO", "rsi_meanrevert", {"window": 7, "oversold": 20}, 9.180, 0.590, 0.0301, -0.0519, 10, "robust", oos_win_rate=0.7143),
     # VALE cleared walk-forward in the $1-45 resweep - the first non-North-American-listed name
     # (Brazilian iron ore) and the first materials producer in the pool, diversifying away from
     # the Canadian financials/energy concentration. OOS beat in-sample (WFE 1.52) on 16 trades.
     # Numbers are the RE-RUN after fixing a sweep bug that priced VALE at ETF spreads (a first-letter
     # heuristic caught the leading V); at correct equity spreads it still clears robust.
-    "VALE": _wf("VALE", "bollinger", {"window": 15, "n_std": 2.5}, 6.339, 1.520, 0.0312, -0.0945, 16, "robust"),
+    "VALE": _wf("VALE", "bollinger", {"window": 15, "n_std": 2.5}, 6.339, 1.520, 0.0312, -0.0945, 16, "robust", oos_win_rate=0.6250),
     # --- promoted from the Sep-2026 full-universe resweep (sweep_resweep_full) ---
     # ENB.TO (Enbridge) topped the sweep by a wide margin: bollinger(15, 2.0), OOS 111.22 on WFE
     # 8.39 across 19 OOS trades. The WFE outlier is real (IS ~13, OOS ~111 — the strategy did NOT
     # oversell in-sample, it *undersold*) but should be treated with corresponding skepticism —
     # confirm on the next re-run before sizing off it aggressively.
-    "ENB.TO": _wf("ENB.TO", "bollinger", {"window": 15, "n_std": 2.0}, 111.218, 8.389, 0.0220, -0.0959, 19, "robust"),
+    "ENB.TO": _wf("ENB.TO", "bollinger", {"window": 15, "n_std": 2.0}, 111.218, 8.389, 0.0220, -0.0959, 19, "robust", oos_win_rate=0.7368),
     # XIU.TO (iShares S&P/TSX 60) — the TSX-60 ETF. First large-cap Cdn index ETF in the pool;
     # complements XIC.TO. bollinger(15, 2.0), OOS 19.47 / WFE 0.70 / 12 trades.
-    "XIU.TO": _wf("XIU.TO", "bollinger", {"window": 15, "n_std": 2.0}, 19.475, 0.704, 0.0104, -0.0476, 12, "robust"),
+    "XIU.TO": _wf("XIU.TO", "bollinger", {"window": 15, "n_std": 2.0}, 19.475, 0.704, 0.0104, -0.0476, 12, "robust", oos_win_rate=0.6667),
     # VDY.TO (Vanguard FTSE Cdn High Dividend Yield) — dividend-tilt Cdn ETF, ts_momentum with a
     # 63-day lookback + 2% threshold. Complements the existing rate/energy-heavy Cdn exposure with
     # a dividend-payer factor. OOS 18.20 / WFE 0.66 / 10 trades.
-    "VDY.TO": _wf("VDY.TO", "ts_momentum", {"lookback": 63, "threshold": 0.02}, 18.198, 0.661, 0.0156, -0.0504, 10, "robust"),
+    "VDY.TO": _wf("VDY.TO", "ts_momentum", {"lookback": 63, "threshold": 0.02}, 18.198, 0.661, 0.0156, -0.0504, 10, "robust", oos_win_rate=0.7000),
     # SLF.TO (Sun Life Financial) — first insurance name in the pool, so the sector coverage
     # widens from financials-only to financials+insurance. bollinger(10, 1.5), OOS 7.18 / WFE 0.54
     # / 12 trades. Cleanest of the four on drawdown (-4.1%).
-    "SLF.TO": _wf("SLF.TO", "bollinger", {"window": 10, "n_std": 1.5}, 7.176, 0.539, 0.0203, -0.0407, 12, "robust"),
+    "SLF.TO": _wf("SLF.TO", "bollinger", {"window": 10, "n_std": 1.5}, 7.176, 0.539, 0.0203, -0.0407, 12, "robust", oos_win_rate=0.8333),
 }
 
 
