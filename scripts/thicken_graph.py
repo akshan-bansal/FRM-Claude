@@ -38,6 +38,7 @@ from trading_live_claude.config import get_settings
 from trading_live_claude.intel.graph import (
     DEFAULT_GRAPH_JOURNAL,
     load_edges,
+    wash_journal_file,
 )
 from trading_live_claude.intel.overlay import IntelSnapshot
 from trading_live_claude.intel.routing import OverlayProvider
@@ -91,6 +92,10 @@ def main() -> None:
     ap.add_argument("--sleep", type=float, default=900.0,
                     help="Seconds between snapshots. Vendor cache is ~15 min; anything shorter "
                          "re-writes the same payload against a stale age.")
+    ap.add_argument("--wash-every", type=int, default=0,
+                    help="Run the temporal wash+prune (intel.graph.wash_journal_file) every N "
+                         "polls, keeping the journal from growing without bound. 0 = never (safe "
+                         "default for testing). 4 at --sleep 900 = about hourly.")
     args = ap.parse_args()
 
     provider = _build_overlay_provider(refresh_seconds=args.sleep)
@@ -113,6 +118,13 @@ def main() -> None:
             print(f"[thicken] iter {i}/{args.iterations}: journal now has "
                   f"{snap_profile['edges_total']} edges (+{grew_edges} since start) in "
                   f"{time.time() - t0:.1f}s", flush=True)
+        # Temporal gate: prune old edges + decay weights per-predicate. Runs AFTER the poll's
+        # own write, so the wash sees what was just journaled and applies the age policy in one
+        # pass. Atomic + backed up by wash_journal_file, so a mid-write crash cannot corrupt.
+        if args.wash_every and i % args.wash_every == 0:
+            summary = wash_journal_file()
+            print(f"[thicken] wash: {summary['before']} -> {summary['after']} edges "
+                  f"(pruned {summary['pruned']})", flush=True)
         if i < args.iterations:
             time.sleep(args.sleep)
 

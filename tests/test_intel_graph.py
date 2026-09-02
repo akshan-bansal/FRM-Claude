@@ -202,6 +202,117 @@ def test_recent_events_from_graph_dedupes_repeated_edges() -> None:
     assert recs[0]["sources"] == ["Reuters"]
 
 
+# --- temporal gate: prune + wash ------------------------------------------------------------
+
+from datetime import UTC, datetime as _dt, timedelta as _td            # noqa: E402
+
+from trading_live_claude.intel.graph import (                          # noqa: E402
+    DEFAULT_POLICIES,
+    DecayPolicy,
+    wash_edges,
+    wash_journal_file,
+)
+
+
+def _aged_edge(pred: str, weight: float, hours_ago: float,
+                now: _dt) -> Edge:
+    when = now - _td(hours=hours_ago)
+    return Edge(subject=("poll", "p"), predicate=pred,               # type: ignore[arg-type]
+                object=("domain", "energy"),
+                weight=weight, as_of=when.isoformat())
+
+
+def test_exp_decay_halves_weight_at_the_half_life() -> None:
+    """Exponential mode is the workhorse — one half-life = exactly 0.5x weight."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    e = _aged_edge("observed", 1.0, 72.0, now)      # default observed half-life = 72h
+    (out,) = wash_edges([e], now=now)
+    assert abs(out.weight - 0.5) < 1e-9
+
+
+def test_step_decay_bands_apply_correct_factors() -> None:
+    """step_band1 = 1.0x, step_band2 = mid_factor, tail = tail_factor."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    policies = {"about_domain": DecayPolicy(
+        mode="step", step_band1_h=24.0, step_band2_h=168.0,
+        step_mid_factor=0.6, step_tail_factor=0.2, ttl_h=None, min_weight=0.0)}
+    fresh = _aged_edge("about_domain", 1.0, 5.0, now)          # in band1
+    mid = _aged_edge("about_domain", 1.0, 48.0, now)           # in band2
+    tail = _aged_edge("about_domain", 1.0, 400.0, now)         # past band2
+    out = wash_edges([fresh, mid, tail], policies=policies, now=now)
+    assert [o.weight for o in out] == [1.0, 0.6, 0.2]
+
+
+def test_linear_decay_zeros_at_full_decay_and_drops_when_min_hit() -> None:
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    policies = {"co_occurs": DecayPolicy(mode="linear", full_decay_h=48.0,
+                                          ttl_h=None, min_weight=0.01)}
+    half = _aged_edge("co_occurs", 1.0, 24.0, now)
+    stale = _aged_edge("co_occurs", 1.0, 47.5, now)
+    dead = _aged_edge("co_occurs", 1.0, 48.5, now)
+    out = wash_edges([half, stale, dead], policies=policies, now=now)
+    weights = [o.weight for o in out]
+    assert abs(weights[0] - 0.5) < 1e-9
+    assert weights[1] < 0.05
+    # ``dead`` decayed below min_weight AND past full_decay -> dropped
+    assert len(out) == 2
+
+
+def test_ttl_prunes_edges_past_the_cap_regardless_of_decay() -> None:
+    """A hard TTL is a floor, not affected by decay — an old edge just goes away."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    policies = {"mentioned_by": DecayPolicy(mode="exp", half_life_h=168.0,
+                                              ttl_h=24.0, min_weight=0.0)}
+    fresh = _aged_edge("mentioned_by", 1.0, 12.0, now)
+    old = _aged_edge("mentioned_by", 1.0, 48.0, now)
+    out = wash_edges([fresh, old], policies=policies, now=now)
+    assert len(out) == 1 and out[0].as_of == fresh.as_of
+
+
+def test_edges_with_no_policy_pass_through_untouched() -> None:
+    """A predicate that has no matching policy must not be silently discarded or reweighted."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    e = _aged_edge("mentioned_by", 1.0, 500.0, now)
+    out = wash_edges([e], policies={}, now=now)         # empty policies map
+    assert out == [e]
+
+
+def test_edges_with_unparseable_timestamp_are_kept_as_is() -> None:
+    """No way to know age — keep the edge unchanged rather than drop it."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    bad = Edge(subject=("poll", "p"), predicate="observed",
+                object=("domain", "energy"), weight=1.0, as_of="not-a-timestamp")
+    out = wash_edges([bad], now=now)
+    assert out == [bad]
+
+
+def test_default_policies_encode_the_predicate_memory_hierarchy() -> None:
+    """Regression pin: sources > about_domain > observed > elevated_in > co_occurs."""
+    assert DEFAULT_POLICIES["mentioned_by"].half_life_h > DEFAULT_POLICIES["observed"].half_life_h
+    assert DEFAULT_POLICIES["observed"].half_life_h > DEFAULT_POLICIES["elevated_in"].half_life_h
+    # co_occurs is linear so compare its full_decay to what observed would keep
+    assert DEFAULT_POLICIES["co_occurs"].mode == "linear"
+    assert DEFAULT_POLICIES["co_occurs"].full_decay_h < DEFAULT_POLICIES["observed"].half_life_h
+
+
+def test_wash_journal_file_roundtrips_and_writes_a_backup(tmp_path: Path) -> None:
+    """End-to-end: build a journal, wash it, verify pruning + backup."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    path = tmp_path / "graph.jsonl"
+    edges = [_aged_edge("observed", 1.0, 12.0, now),        # keep (fresh)
+             _aged_edge("observed", 1.0, 8 * 24, now)]      # keep (decayed, above min)
+    # add one WAY-old that will be pruned by observed's 30-day TTL
+    ancient = _aged_edge("observed", 1.0, 60 * 24, now)
+    from trading_live_claude.intel.graph import append_edges as _ae
+    _ae([*edges, ancient], path=path)
+
+    summary = wash_journal_file(path, now=now)
+    assert summary["before"] == 3
+    assert summary["after"] == 2
+    assert summary["pruned"] == 1
+    assert (tmp_path / "graph.jsonl.bak").exists()          # backup was written
+
+
 def test_recent_events_from_graph_returns_empty_when_no_event_edges() -> None:
     edges = [Edge(subject=("poll", "p"), predicate="observed",
                    object=("domain", "energy"), as_of="t")]

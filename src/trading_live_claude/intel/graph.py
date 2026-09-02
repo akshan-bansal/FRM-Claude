@@ -226,6 +226,167 @@ def event_records_to_edges(
     return out
 
 
+# ---- temporal gate: prune + wash ---------------------------------------------
+# The graph journal grows monotonically — every poll appends, nothing is ever removed. Over weeks
+# that becomes: an event mentioned six months ago is still counting toward corroboration; a
+# co-occurrence from an unrelated regime is still an edge. The temporal gate below fixes both:
+# **prune** drops edges past a hard TTL, and **wash** multiplicatively decays their ``weight``
+# with age so old edges contribute less to weighted queries without going away entirely.
+#
+# Policies are per-predicate so different edge types can decay at different rates. Reasonable
+# defaults reflect what each predicate actually means: source mentions are long-memory (a news
+# outlet reporting on an event stays a source months later), co-occurrences are short-memory
+# (they describe a specific regime), event->domain edges are medium (categorization is stable
+# while the event is fresh).
+
+from dataclasses import replace as _dc_replace
+from datetime import UTC, datetime as _datetime, timedelta as _timedelta
+
+
+@dataclass(frozen=True)
+class DecayPolicy:
+    """One temporal decay + prune rule for a single predicate.
+
+    ``mode`` picks the curve:
+      * ``"exp"`` — exponential ``w_out = w * 0.5 ** (age_h / half_life_h)``
+      * ``"step"`` — piecewise: ``w * 1.0`` in the first band, ``* mid_factor`` in the second,
+        ``* tail_factor`` after that. Bands set by ``step_band1_h`` / ``step_band2_h``.
+      * ``"linear"`` — ``w * max(0, 1 - age_h/full_decay_h)``
+      * ``"none"`` — no decay, only pruning is applied
+
+    ``ttl_h`` prunes edges older than this many hours (``None`` = no hard TTL, keep everything
+    that survives the decay). Set both together to control shape and age cap.
+    """
+
+    mode: Literal["exp", "step", "linear", "none"] = "exp"
+    half_life_h: float = 24.0                # exp only
+    step_band1_h: float = 24.0               # step only
+    step_band2_h: float = 168.0              # step only
+    step_mid_factor: float = 0.5             # step only
+    step_tail_factor: float = 0.1            # step only
+    full_decay_h: float = 168.0              # linear only
+    ttl_h: float | None = None
+    min_weight: float = 0.01                 # drop after decay if below this
+
+
+# Default per-predicate policies. Overrideable; a caller can pass a custom map to wash_edges.
+DEFAULT_POLICIES: dict[Predicate, DecayPolicy] = {
+    "observed":       DecayPolicy(mode="exp", half_life_h=72.0, ttl_h=30 * 24),
+    "elevated_in":    DecayPolicy(mode="exp", half_life_h=24.0, ttl_h=14 * 24),
+    "co_occurs":      DecayPolicy(mode="linear", full_decay_h=48.0, ttl_h=14 * 24),
+    "stressed_by":    DecayPolicy(mode="exp", half_life_h=24.0, ttl_h=14 * 24),
+    "mentioned_by":   DecayPolicy(mode="exp", half_life_h=168.0, ttl_h=90 * 24),
+    "about_domain":   DecayPolicy(mode="step", step_band1_h=48.0, step_band2_h=336.0,
+                                    step_mid_factor=0.6, step_tail_factor=0.2, ttl_h=60 * 24),
+    "affects_region": DecayPolicy(mode="step", step_band1_h=48.0, step_band2_h=336.0,
+                                    step_mid_factor=0.6, step_tail_factor=0.2, ttl_h=60 * 24),
+}
+
+
+def _age_hours(edge: Edge, now: _datetime) -> float | None:
+    """Positive age in hours from ``edge.as_of`` to ``now``. ``None`` if the stamp is unparseable."""
+    if not edge.as_of:
+        return None
+    try:
+        stamp = _datetime.fromisoformat(str(edge.as_of).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    delta = now - stamp
+    return max(0.0, delta.total_seconds() / 3600.0)
+
+
+def _decayed_weight(w: float, age_h: float, policy: DecayPolicy) -> float:
+    """Apply the policy's decay curve to a weight at a given age."""
+    if policy.mode == "none":
+        return w
+    if policy.mode == "exp":
+        return w * float(0.5 ** (age_h / max(policy.half_life_h, 1e-9)))
+    if policy.mode == "step":
+        if age_h < policy.step_band1_h:
+            return w
+        if age_h < policy.step_band2_h:
+            return w * policy.step_mid_factor
+        return w * policy.step_tail_factor
+    if policy.mode == "linear":
+        f = max(0.0, 1.0 - age_h / max(policy.full_decay_h, 1e-9))
+        return w * f
+    return w   # unknown mode: no-op
+
+
+def wash_edges(
+    edges: Sequence[Edge],
+    *,
+    policies: dict[Predicate, DecayPolicy] | None = None,
+    now: _datetime | None = None,
+) -> list[Edge]:
+    """Return a NEW list of edges with weights decayed and hard-TTL survivors only.
+
+    Edges with an unparseable timestamp are kept unchanged (no way to know their age). Edges
+    whose predicate has no policy are also kept unchanged. Never mutates the input.
+    """
+    # Distinguish "no argument" (use defaults) from "explicitly empty" (opt out of decay).
+    pol_map = DEFAULT_POLICIES if policies is None else policies
+    when = now or _datetime.now(UTC)
+    out: list[Edge] = []
+    for e in edges:
+        pol = pol_map.get(e.predicate)
+        if pol is None:
+            out.append(e)
+            continue
+        age_h = _age_hours(e, when)
+        if age_h is None:
+            out.append(e)
+            continue
+        if pol.ttl_h is not None and age_h > pol.ttl_h:
+            continue                    # pruned by hard TTL
+        new_w = _decayed_weight(e.weight, age_h, pol)
+        if new_w < pol.min_weight:
+            continue                    # decayed below the noise floor
+        if abs(new_w - e.weight) < 1e-12:
+            out.append(e)
+        else:
+            out.append(_dc_replace(e, weight=new_w))
+    return out
+
+
+def wash_journal_file(
+    path: str | Path = DEFAULT_GRAPH_JOURNAL,
+    *,
+    policies: dict[Predicate, DecayPolicy] | None = None,
+    now: _datetime | None = None,
+    backup: bool = True,
+) -> dict[str, int]:
+    """Rewrite the journal in place with wash_edges applied. Returns a before/after summary.
+
+    Atomically writes to a ``.washing`` sibling then swaps in, so a crash mid-write cannot
+    corrupt the journal. When ``backup=True`` (default) the pre-wash file is preserved at
+    ``<path>.bak`` so the last wash is always undoable.
+    """
+    p = Path(path)
+    if not p.exists():
+        return {"before": 0, "after": 0, "pruned": 0}
+    before_edges = load_edges(p)
+    after_edges = wash_edges(before_edges, policies=policies, now=now)
+
+    tmp = p.with_suffix(p.suffix + ".washing")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for e in after_edges:
+            fh.write(json.dumps(e.to_row(), default=str) + chr(10))
+    if backup:
+        bak = p.with_suffix(p.suffix + ".bak")
+        try:
+            if bak.exists():
+                bak.unlink()
+            p.replace(bak)
+        except OSError:
+            pass
+    tmp.replace(p)
+    return {"before": len(before_edges), "after": len(after_edges),
+            "pruned": len(before_edges) - len(after_edges)}
+
+
 def append_edges(edges: Iterable[Edge], path: str | Path = DEFAULT_GRAPH_JOURNAL) -> None:
     """Append a batch of edges to the graph journal. Never raises."""
     try:
