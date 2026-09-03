@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     ib_client_id: int = 42
     ib_account: str = ""                     # empty = pick first managedAccounts result
     ib_use_paper: bool = True                # default the paper connection
+    # IBKR Web API — Client Portal Gateway defaults. When the Gateway is running (java program
+    # from IBKR Campus), it serves the REST surface on https://localhost:5000/v1/api by default.
+    # verify_ssl=False because the Gateway ships a self-signed certificate.
+    ib_web_host: str = "localhost"
+    ib_web_port: int = 5000
+    ib_web_verify_ssl: bool = False
     # WorldMonitor OSINT/news MCP (Pro). Sent as the X-WorldMonitor-Key header to the data tools;
     # only get_sources works without it. Not required for any trading path.
     worldmonitor_api_key: str = ""
