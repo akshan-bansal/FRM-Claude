@@ -228,3 +228,64 @@ def test_journal_is_a_no_op_when_no_journal_dir_is_configured() -> None:
     # depends on other tests, so only assert that one WAS stamped and that the fill was recorded.
     assert filled.id is not None
     assert len(pb.fills) == 1
+
+
+# ---- venue tag + fills→intel-graph edge ------------------------------------------------
+
+
+class _VenueFeed(_StaticFeed):
+    """A feed that declares its own venue slug, so PaperBroker inherits it."""
+    venue = "kraken"
+
+
+def test_paper_broker_inherits_venue_from_the_feed_broker(tmp_path: Path) -> None:
+    """Paper-broker journal rows carry the feed's venue slug, not a fixed 'paper' string."""
+    pb = PaperBroker(feed=_VenueFeed({"BTC/USD": 65_000.0}), starting_equity=100_000.0,
+                     journal_dir=tmp_path)
+    pb.place_order(_order("BTC/USD", OrderAction.BUY, 1))
+    fills = [json.loads(l) for l in (tmp_path / "paper_fills.jsonl").read_text().splitlines()]
+    orders = [json.loads(l) for l in (tmp_path / "paper_orders.jsonl").read_text().splitlines()]
+    assert fills[0]["venue"] == "kraken"
+    assert orders[0]["venue"] == "kraken"
+
+
+def test_paper_broker_venue_kwarg_overrides_feed_declaration(tmp_path: Path) -> None:
+    """Explicit ``venue=`` at construction wins over ``feed.venue`` inheritance."""
+    pb = PaperBroker(feed=_VenueFeed({"BTC/USD": 65_000.0}), starting_equity=100_000.0,
+                     journal_dir=tmp_path, venue="my-custom-venue")
+    pb.place_order(_order("BTC/USD", OrderAction.BUY, 1))
+    fills = [json.loads(l) for l in (tmp_path / "paper_fills.jsonl").read_text().splitlines()]
+    assert fills[0]["venue"] == "my-custom-venue"
+
+
+def test_paper_broker_appends_a_traded_edge_to_the_intel_graph_on_fill(tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every fill closes the loop back into ``state/intel_graph.jsonl`` as a ``traded`` edge.
+
+    The edge is subject=(venue,X) → predicate=traded → object=(symbol,Y), weight=signed notional
+    (positive for Buys, negative for Sells), and carries session/order/qty/price in ``meta``. This
+    is what lets the dashboard and thesis calibration correlate trades with the news bridges the
+    same graph journal carries.
+    """
+    # PaperBroker calls ``append_edges([edge])`` with no explicit path so it lands at the module
+    # default ``state/intel_graph.jsonl`` — a relative path resolved against the working directory.
+    # Chdir to tmp_path so the file lands there and doesn't pollute the real state/ during tests.
+    monkeypatch.chdir(tmp_path)
+
+    pb = PaperBroker(feed=_VenueFeed({"BTC/USD": 65_000.0}), starting_equity=100_000.0,
+                     journal_dir=tmp_path, slippage_bps=0.0, commission_per_trade=0.0)
+    pb.place_order(_order("BTC/USD", OrderAction.BUY, 2))
+    pb.place_order(_order("BTC/USD", OrderAction.SELL, 1))
+
+    graph_path = tmp_path / "state" / "intel_graph.jsonl"
+    assert graph_path.exists(), "fill should have appended an edge"
+    lines = graph_path.read_text().splitlines()
+    assert len(lines) == 2, "one edge per fill"
+    buy, sell = (json.loads(l) for l in lines)
+    assert buy["subject"] == ["venue", "kraken"]
+    assert buy["predicate"] == "traded"
+    assert buy["object"] == ["symbol", "BTC/USD"]
+    assert buy["weight"] == pytest.approx(2 * 65_000.0)                          # signed +ve on buy
+    assert sell["weight"] == pytest.approx(-1 * 65_000.0)                        # signed -ve on sell
+    assert buy["meta"]["session_id"] == pb.session_id
+    assert buy["meta"]["qty"] == 2 and buy["meta"]["price"] == pytest.approx(65_000.0)

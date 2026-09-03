@@ -148,6 +148,7 @@ class IBBroker(Broker):
     """
 
     name = "interactive-brokers"
+    venue = "ib"
 
     def __init__(
         self,

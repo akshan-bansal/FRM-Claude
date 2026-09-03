@@ -201,6 +201,7 @@ class IBWebBroker(Broker):
     """Interactive Brokers Web API adapter. Speaks REST/JSON via the auth surface passed in."""
 
     name = "interactive-brokers-web"
+    venue = "ib_web"
 
     def __init__(
         self,
@@ -217,6 +218,10 @@ class IBWebBroker(Broker):
         # conid cache keyed by (symbol, sec_type). Populated on first quote/order for a symbol
         # since the Web API is conid-driven — no bare-symbol endpoint accepts a ticker directly.
         self._conid_cache: dict[tuple[str, str], int] = {}
+        # Per-symbol sec_type override; empty means "resolve as STK". Callers register futures /
+        # options / bonds here so the Broker protocol's plain-symbol surface still gets the right
+        # contract type. See :meth:`set_sec_type` and :meth:`resolve_conid`.
+        self._sec_type_overrides: dict[str, str] = {}
 
     def close(self) -> None:
         if self._owns_client:
@@ -267,21 +272,79 @@ class IBWebBroker(Broker):
 
     # ---- contract resolution -----------------------------------------------
 
-    def resolve_conid(self, symbol: str, sec_type: str = "STK") -> int:
-        """Symbol → IB contract id (``conid``). Cached per (symbol, sec_type)."""
-        key = (symbol.upper(), sec_type.upper())
+    def set_sec_type(self, symbol: str, sec_type: str) -> None:
+        """Override the default STK resolution for a symbol.
+
+        The Broker protocol surface (``quote``, ``candles``, ``place_order``) takes plain symbol
+        strings and has no sec_type parameter. When a monitor needs a non-STK contract — an ES
+        futures front-month rather than the Eversource stock ticker — the caller registers the
+        override once at setup time. Subsequent calls transparently resolve against the right
+        contract type.
+        """
+        self._sec_type_overrides[symbol.upper()] = sec_type.upper()
+        # Invalidate any prior STK cache entry so the next call resolves against the new type.
+        for key in list(self._conid_cache.keys()):
+            if key[0] == symbol.upper() and key[1] != sec_type.upper():
+                del self._conid_cache[key]
+
+    def _sec_type_for(self, symbol: str) -> str:
+        return self._sec_type_overrides.get(symbol.upper(), "STK")
+
+    def resolve_conid(self, symbol: str, sec_type: str | None = None) -> int:
+        """Symbol → IB contract id (``conid``). Cached per (symbol, sec_type).
+
+        Sec_type resolution order: explicit ``sec_type`` argument (call-site override) → registered
+        symbol override via :meth:`set_sec_type` → default ``STK``. Futures (``sec_type='FUT'``)
+        route through the dedicated ``/trsrv/futures`` endpoint so the front-month conid is picked
+        deterministically; every other type goes through the general ``/iserver/secdef/search``.
+        """
+        stype = (sec_type or self._sec_type_for(symbol)).upper()
+        key = (symbol.upper(), stype)
         if key in self._conid_cache:
             return self._conid_cache[key]
-        body = self._post("/iserver/secdef/search", {"symbol": symbol, "name": False,
-                                                       "secType": sec_type})
-        # Response is a list of candidates; the first entry with a matching ticker wins.
-        if not isinstance(body, list) or not body:
-            raise BrokerError(f"IB Web API: no contracts found for {symbol!r} ({sec_type})")
-        cand = body[0]
-        conid = int(cand.get("conid") or 0)
-        if conid <= 0:
-            raise BrokerError(f"IB Web API: contract for {symbol!r} has no conid")
+
+        if stype == "FUT":
+            conid = self._resolve_futures_front_month(symbol)
+        else:
+            body = self._post("/iserver/secdef/search", {"symbol": symbol, "name": False,
+                                                           "secType": stype})
+            if not isinstance(body, list) or not body:
+                raise BrokerError(f"IB Web API: no contracts found for {symbol!r} ({stype})")
+            cand = body[0]
+            conid = int(cand.get("conid") or 0)
+            if conid <= 0:
+                raise BrokerError(f"IB Web API: contract for {symbol!r} has no conid")
+
         self._conid_cache[key] = conid
+        return conid
+
+    def _resolve_futures_front_month(self, symbol: str) -> int:
+        """Pick the front-month futures contract for a root symbol via ``/trsrv/futures``.
+
+        ``/iserver/secdef/search`` returns futures roots (one entry per root) but not the
+        individual expiration conids that trading needs — the real conid lives one level down at
+        ``/trsrv/futures?symbols=ES``, which returns an array per root of every listed expiration.
+        Front-month = earliest ``expirationDate`` strictly after today. Falls back to the earliest
+        entry if none are strictly in the future (a stale mid-roll response), and raises with an
+        actionable message if the root is unknown to IB.
+        """
+        body = self._get("/trsrv/futures", {"symbols": symbol})
+        # Response shape: {"ES": [{"conid": ..., "expirationDate": "20260918", ...}, ...]}
+        entries = body.get(symbol.upper()) if isinstance(body, dict) else None
+        if not entries:
+            raise BrokerError(f"IB Web API: no futures listed for root {symbol!r}. "
+                              f"Check the root symbol matches IB's convention (ES, NQ, CL, GC, ZN).")
+        today_yyyymmdd = int(datetime.now(UTC).strftime("%Y%m%d"))
+        def _exp(e: dict) -> int:
+            try:
+                return int(str(e.get("expirationDate") or "99999999"))
+            except (TypeError, ValueError):
+                return 99999999
+        future_entries = [e for e in entries if _exp(e) > today_yyyymmdd]
+        pick = min(future_entries, key=_exp) if future_entries else min(entries, key=_exp)
+        conid = int(pick.get("conid") or 0)
+        if conid <= 0:
+            raise BrokerError(f"IB Web API: futures front-month for {symbol!r} has no conid")
         return conid
 
     # ---- Broker protocol ----------------------------------------------------
@@ -345,8 +408,18 @@ class IBWebBroker(Broker):
         days = max(1, (end - start).days)
         period = f"{days}d" if days <= 30 else f"{max(1, days // 30)}m"
         bar = _INTERVAL_TO_BAR.get(interval, "1d")
-        body = self._get("/iserver/marketdata/history",
-                          {"conid": str(conid), "period": period, "bar": bar})
+        try:
+            body = self._get("/iserver/marketdata/history",
+                              {"conid": str(conid), "period": period, "bar": bar})
+        except BrokerError as e:
+            # IB Web's history endpoint 500s with "Chart data unavailable" on symbols whose
+            # snapshot hasn't fully warmed up yet, or on instruments with no historical chart
+            # entitlement on this account. Return empty so LiveMonitor skips this symbol
+            # (insufficient_history warning) rather than killing the whole poll loop.
+            msg = str(e).lower()
+            if "chart data unavailable" in msg or "-> 500" in msg or "-> 404" in msg:
+                return []
+            raise
         rows = body.get("data") or []
         out: list[Candle] = []
         for row in rows:

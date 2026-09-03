@@ -48,9 +48,12 @@ log = get_logger(__name__)
 DEFAULT_GRAPH_JOURNAL = "state/intel_graph.jsonl"
 
 # Node types. ``event`` was added when per-event decomposition landed — before that, edges only
-# saw the vendor's already-aggregated fields. Actor / venue nodes come later if a richer
-# entity-extraction step gets added.
-NodeType = Literal["poll", "domain", "region", "source", "market", "event"]
+# saw the vendor's already-aggregated fields. ``venue`` and ``symbol`` were added when the paper
+# brokers started closing the fills→graph loop, giving downstream queries like "which venues
+# traded X" or "did fills cluster around a stressed_by market bridge" first-class node targets.
+NodeType = Literal[
+    "poll", "domain", "region", "source", "market", "event", "venue", "symbol",
+]
 
 # Edge predicates.
 #   ``observed`` — a poll observed a domain / region / source at some weight
@@ -60,9 +63,12 @@ NodeType = Literal["poll", "domain", "region", "source", "market", "event"]
 #   ``mentioned_by`` — an event has a source that reported it (feeds corroboration counts)
 #   ``about_domain`` — an event categorized under a domain
 #   ``affects_region`` — an event associated with a specific region/country
+#   ``traded`` — a venue executed a fill on a symbol; weight is the notional, meta carries
+#                action / qty / price / session_id / order_id / ts_fill (a per-fill decomposition,
+#                paired with venue and symbol nodes to keep the record queryable)
 Predicate = Literal[
     "observed", "elevated_in", "co_occurs", "stressed_by",
-    "mentioned_by", "about_domain", "affects_region",
+    "mentioned_by", "about_domain", "affects_region", "traded",
 ]
 
 # Threshold below which "elevated" is not asserted. Matches the interpret.py convention that a
@@ -402,6 +408,30 @@ def append_edges(edges: Iterable[Edge], path: str | Path = DEFAULT_GRAPH_JOURNAL
 def append_snapshot_edges(snap: IntelSnapshot, path: str | Path = DEFAULT_GRAPH_JOURNAL) -> None:
     """Convenience: decompose ``snap`` into edges and append them all."""
     append_edges(snapshot_to_edges(snap), path=path)
+
+
+def fill_edge(*, venue: str, symbol: str, action: str, quantity: float, price: float,
+              session_id: str, order_id: int | str, as_of: str) -> Edge:
+    """Compose one ``traded`` edge for a fill. Weight is signed notional so downstream queries
+    can distinguish net buying vs. net selling by venue-symbol without joining back to ``meta``.
+
+    Kept as a plain constructor rather than a class method so the paper broker can call it without
+    importing the graph module's dataclass surface directly — the fills journal must never crash a
+    trading step, so the caller wraps ``append_edges([fill_edge(...)])`` in its own try/except.
+    """
+    sign = 1.0 if action.upper().startswith("B") else -1.0
+    notional = float(quantity) * float(price)
+    return Edge(
+        subject=("venue", venue),
+        predicate="traded",
+        object=("symbol", symbol),
+        weight=round(sign * notional, 4),
+        as_of=as_of,
+        meta={
+            "action": action, "qty": float(quantity), "price": float(price),
+            "session_id": session_id, "order_id": str(order_id),
+        },
+    )
 
 
 def load_edges(path: str | Path = DEFAULT_GRAPH_JOURNAL) -> list[Edge]:

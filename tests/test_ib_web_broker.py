@@ -85,6 +85,90 @@ def test_resolve_conid_raises_a_broker_error_when_no_match() -> None:
         _mk_broker().resolve_conid("NOSUCH")
 
 
+# ---- futures resolution ---------------------------------------------------------------------
+
+
+@respx.mock
+def test_set_sec_type_routes_futures_through_trsrv_futures_and_picks_front_month() -> None:
+    """FUT-registered roots must resolve via /trsrv/futures — /iserver/secdef/search returns roots
+    only, not per-expiration conids. Front-month = earliest expiration strictly after today.
+    """
+    # Three expirations: one already past, front-month, and one further out. Broker must pick the
+    # middle one (earliest that is strictly after today).
+    respx.get(f"{_CP_BASE}/trsrv/futures").mock(
+        return_value=httpx.Response(200, json={
+            "ES": [
+                {"conid": 100, "expirationDate": "20200101"},        # past
+                {"conid": 200, "expirationDate": "20991231"},        # far
+                {"conid": 150, "expirationDate": "20990101"},        # front
+            ]
+        })
+    )
+    b = _mk_broker()
+    b.set_sec_type("ES", "FUT")
+    assert b.resolve_conid("ES") == 150
+
+
+@respx.mock
+def test_set_sec_type_falls_back_to_earliest_when_all_expirations_are_past() -> None:
+    """A stale mid-roll response (every listed contract already expired) must still return a
+    conid rather than raise — pick the earliest of the stale list and let the market-data call
+    surface any real issue downstream.
+    """
+    respx.get(f"{_CP_BASE}/trsrv/futures").mock(
+        return_value=httpx.Response(200, json={
+            "GC": [
+                {"conid": 700, "expirationDate": "20200101"},
+                {"conid": 800, "expirationDate": "20210101"},
+            ]
+        })
+    )
+    b = _mk_broker()
+    b.set_sec_type("GC", "FUT")
+    assert b.resolve_conid("GC") == 700
+
+
+@respx.mock
+def test_futures_root_unknown_to_ib_raises_actionable_error() -> None:
+    respx.get(f"{_CP_BASE}/trsrv/futures").mock(
+        return_value=httpx.Response(200, json={"ZZZZ": []})
+    )
+    b = _mk_broker()
+    b.set_sec_type("ZZZZ", "FUT")
+    with pytest.raises(BrokerError, match="no futures listed for root"):
+        b.resolve_conid("ZZZZ")
+
+
+@respx.mock
+def test_set_sec_type_invalidates_a_stale_stk_cache_entry_for_the_same_symbol() -> None:
+    """Registering an override AFTER a symbol was already resolved as STK must clear the stale
+    cache — otherwise the next call would still return the equity ticker's conid (Eversource for
+    'ES', Colgate for 'CL') rather than the future.
+    """
+    respx.post(f"{_CP_BASE}/iserver/secdef/search").mock(
+        return_value=httpx.Response(200, json=[{"conid": 999, "symbol": "ES"}])
+    )
+    fut_route = respx.get(f"{_CP_BASE}/trsrv/futures").mock(
+        return_value=httpx.Response(200, json={
+            "ES": [{"conid": 555, "expirationDate": "20990101"}]
+        })
+    )
+    b = _mk_broker()
+    assert b.resolve_conid("ES") == 999                    # first as STK
+    b.set_sec_type("ES", "FUT")                            # override
+    assert b.resolve_conid("ES") == 555                    # now as FUT
+    assert fut_route.call_count == 1
+
+
+def test_sec_type_default_is_still_stk_when_no_override_registered() -> None:
+    """Backward compat: the resolve_conid default hasn't changed. Symbols without an override
+    keep their historical STK resolution path."""
+    b = _mk_broker()
+    assert b._sec_type_for("AAPL") == "STK"
+    b.set_sec_type("AAPL", "OPT")
+    assert b._sec_type_for("AAPL") == "OPT"
+
+
 # ---- accounts / positions / equity ---------------------------------------------------------
 
 

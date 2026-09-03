@@ -34,9 +34,22 @@ to use directly — the monitor loop here uses only the ``Broker`` protocol surf
 from __future__ import annotations
 
 import argparse
+import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
+
+# Windows console defaults to cp1252, which crashes on Unicode arrows / bullets in log lines
+# (structlog prints an exception body that contains them). Force stdout/stderr to UTF-8 so a
+# single bad log line doesn't kill the whole monitor process. errors="replace" is intentional
+# — surviving with a '?' is strictly better than a UnicodeEncodeError crash mid-poll.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[union-attr]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[union-attr]
+    except Exception:                                                  # pragma: no cover
+        pass
 
 from trading_live_claude.brokers.base import Broker
 from trading_live_claude.brokers.ib import IBBroker
@@ -55,21 +68,61 @@ DEFAULT_SYMBOLS = ("AAPL", "MSFT", "SPY", "QQQ", "IWM")
 
 
 class _TickleThread(threading.Thread):
-    """Daemon thread that pings CP Gateway's ``/tickle`` on a cadence.
+    """Daemon thread that pings CP Gateway's ``/tickle`` on a cadence and monitors session age.
 
-    The Gateway drops the session after a few minutes of idle. Our poll interval is 300 s by
-    default, right at the edge of the safe window, so a 90 s tickle keeps the session alive
-    between polls even if no positions exist (no MTM traffic).
+    The Gateway drops the session after a few minutes of idle, so a 90s tickle keeps it warm
+    between our 300s polls. Independent of that idle cap, CP Gateway itself hard-caps a session
+    at ~24h even when kept tickled — after that the session dies and only a fresh browser login
+    at ``https://localhost:5000`` restores it. Neither QT nor Kraken has this: their brokers
+    auto-refresh their own tokens. This thread therefore also:
+
+    * Escalates a WARN at ``warn_after_hours`` (default 20h) — enough runway to schedule a
+      re-auth manually before it hard-fails mid-poll.
+    * Escalates a CRITICAL at ``critical_after_hours`` (default 23h) — session is minutes away
+      from expiring.
+    * Escalates a CRITICAL on any tickle failure whose message looks like an auth expiry.
+
+    ``warn_fn`` is a plain callable ``(level, message) → None`` — plumbed rather than hardcoded
+    to stdout so that when the Alerter (queued gap #1) gets wired into paper_ib.py, threading it
+    through to Telegram is a one-line change here.
     """
 
-    def __init__(self, broker: IBWebBroker, interval_s: float = 90.0) -> None:
+    def __init__(self, broker: IBWebBroker, interval_s: float = 90.0, *,
+                 warn_after_hours: float = 20.0, critical_after_hours: float = 23.0,
+                 warn_fn: "Callable[[str, str], None] | None" = None) -> None:
         super().__init__(daemon=True, name="ibweb-tickle")
         self.broker = broker
         self.interval_s = interval_s
         self._stop = threading.Event()
+        self._started_at = time.monotonic()
+        self._warn_after_s = warn_after_hours * 3600.0
+        self._critical_after_s = critical_after_hours * 3600.0
+        self._warn_fn = warn_fn or (lambda level, msg: print(f"[ib-paper] {level} {msg}",
+                                                              flush=True))
+        # Ensure each escalation lands exactly once per instance (not once per tickle after the
+        # threshold is crossed) so the phone doesn't get spammed every 90s for the last four hours.
+        self._warn_fired = False
+        self._critical_fired = False
 
     def stop(self) -> None:
         self._stop.set()
+
+    def _age_hours(self) -> float:
+        return (time.monotonic() - self._started_at) / 3600.0
+
+    def _check_session_age(self) -> None:
+        elapsed = time.monotonic() - self._started_at
+        if not self._critical_fired and elapsed >= self._critical_after_s:
+            self._critical_fired = True
+            self._warn_fn("CRITICAL",
+                           f"IB Web session is {self._age_hours():.1f}h old — expires imminently. "
+                           f"Re-auth at https://localhost:5000 NOW to avoid mid-poll failure.")
+        elif not self._warn_fired and elapsed >= self._warn_after_s:
+            self._warn_fired = True
+            self._warn_fn("WARN",
+                           f"IB Web session is {self._age_hours():.1f}h old — CP Gateway caps at "
+                           f"~24h. Plan a re-auth at https://localhost:5000 before the window "
+                           f"closes.")
 
     def run(self) -> None:
         # Wait BEFORE the first tickle so we don't stampede against the first quote call.
@@ -77,7 +130,21 @@ class _TickleThread(threading.Thread):
             try:
                 self.broker.tickle()
             except Exception as e:                        # pragma: no cover
-                print(f"[ib-paper] tickle failed: {e}", flush=True)
+                # A tickle failure this late in the loop almost always means the session died —
+                # fire a CRITICAL once so the human sees it in the alert stream. Suppress repeats
+                # of the same failure so the log doesn't fill with the same line every 90s.
+                msg = str(e).lower()
+                if not self._critical_fired and (
+                    "unauthorized" in msg or "not authenticated" in msg
+                    or "401" in msg or "403" in msg
+                ):
+                    self._critical_fired = True
+                    self._warn_fn("CRITICAL",
+                                   f"IB Web tickle failed — session likely expired: {e}. "
+                                   f"Re-auth at https://localhost:5000.")
+                else:
+                    print(f"[ib-paper] tickle failed: {e}", flush=True)
+            self._check_session_age()
 
 
 def _build_ib_feed(args: argparse.Namespace, settings) -> tuple[Broker, _TickleThread | None]:
@@ -107,6 +174,16 @@ def main() -> None:
                     help="Comma-separated symbols to monitor. Default is a US equity smoke-test set.")
     ap.add_argument("--strategy", default="bollinger",
                     help="Fallback strategy name (matched against strategies.STRATEGIES).")
+    ap.add_argument("--strategy-map", dest="strategy_map", default="",
+                    help="Per-symbol strategy overrides, e.g. 'GLD=atr_channel,USO=rsi_meanrevert'. "
+                         "Symbols not in the map use --strategy as fallback. Same shape as the QT "
+                         "CLI 'trading signal --strategy-map'.")
+    ap.add_argument("--futures", default="",
+                    help="Comma-separated futures roots to add to --symbols and resolve as FUT "
+                         "front-month contracts, e.g. 'ES,NQ,CL,GC,ZN'. Only meaningful for "
+                         "--transport web. Without this flag those symbols would collide with "
+                         "the STK tickers of the same name (ES=Eversource, CL=Colgate) and land "
+                         "the wrong contract.")
     ap.add_argument("--transport", default="web", choices=("web", "socket"),
                     help="How to reach IB. 'web' hits the Client Portal Gateway REST API "
                          "(default). 'socket' uses TWS/IB Gateway via ib_insync.")
@@ -148,9 +225,46 @@ def main() -> None:
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
 
     sym_list = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    futures_list = [s.strip().upper() for s in args.futures.split(",") if s.strip()]
+    # Register FUT sec_type overrides BEFORE the monitor starts polling, so the first quote/candle
+    # call resolves against the futures front-month rather than the STK ticker of the same name.
+    if futures_list:
+        if args.transport != "web":
+            raise SystemExit("--futures is currently wired only for --transport web (IBWebBroker). "
+                             "For the socket transport, use IBBroker directly with an IBContract "
+                             "carrying assetClass='future'.")
+        for root in futures_list:
+            feed.set_sec_type(root, "FUT")
+        # Union with any --symbols the user also passed, preserving order and de-duping.
+        sym_list = list(dict.fromkeys(sym_list + futures_list))
+        print(f"[ib-paper] {len(futures_list)} futures roots registered as FUT front-month: "
+              f"{futures_list}", flush=True)
     strat = STRATEGIES[args.strategy]()
-    print(f"[ib-paper] monitoring {len(sym_list)} symbols with strategy '{args.strategy}': "
-          f"{sym_list}", flush=True)
+
+    smap: dict[str, object] = {}
+    smap_names: dict[str, str] = {}                  # parallel dict keeping the raw strategy name
+    for pair in args.strategy_map.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise SystemExit(f"bad --strategy-map entry {pair!r}: expected SYMBOL=strategy")
+        sym, sname = pair.split("=", 1)
+        sym = sym.strip().upper()
+        sname = sname.strip()
+        if sname not in STRATEGIES:
+            raise SystemExit(f"--strategy-map: unknown strategy {sname!r}. "
+                             f"Known: {sorted(STRATEGIES)}")
+        smap[sym] = STRATEGIES[sname]()
+        smap_names[sym] = sname
+    if smap:
+        print(f"[ib-paper] monitoring {len(sym_list)} symbols; per-symbol strategy map:", flush=True)
+        for s in sym_list:
+            print(f"           {s:8s} <- {smap_names.get(s, args.strategy + ' (fallback)')}",
+                  flush=True)
+    else:
+        print(f"[ib-paper] monitoring {len(sym_list)} symbols with strategy '{args.strategy}': "
+              f"{sym_list}", flush=True)
 
     # Optional OSINT overlay + interpret filter — same as QT paper's --intel-overlay path.
     overlay_for = None
@@ -199,6 +313,7 @@ def main() -> None:
         on_event=_emit,
         account_currency="USD",
         emit_on_change_only=False,
+        strategy_map=smap or None,
         overlay_for=overlay_for,
         interpret_for=interpret_for,
     )

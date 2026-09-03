@@ -42,6 +42,7 @@ _EQUITY_COLUMNS = (
 
 class PaperBroker(Broker):
     name = "paper"
+    venue = "paper"                # overwritten below by the feed's declared venue
 
     _order_counter: Iterator[int] = itertools.count(1)
 
@@ -53,8 +54,14 @@ class PaperBroker(Broker):
         commission_per_trade: float = 4.95,
         journal_dir: Path | None = None,
         session_id: str | None = None,
+        venue: str | None = None,
     ) -> None:
         self._feed = feed
+        # Venue tag on every journal row + intel-graph edge. Explicit ``venue`` wins; otherwise
+        # inherit from the feed broker's declared ``.venue`` (QuestradeBroker→"questrade",
+        # KrakenBroker→"kraken", IBBroker→"ib", IBWebBroker→"ib_web"); fall back to feed's ``name``
+        # for any future broker that doesn't declare one.
+        self._venue = venue or getattr(feed, "venue", None) or getattr(feed, "name", "unknown")
         self._starting_equity = starting_equity
         self._equity = starting_equity
         self._cash = starting_equity
@@ -224,11 +231,34 @@ class PaperBroker(Broker):
         d = self._ensure_journal_dir()
         if d is None:
             return
-        # Session id is carried alongside the fill payload; the Fill model itself is broker-neutral,
-        # so the wrapper row keeps the schema stable while adding what we need.
-        row = {"session_id": self.session_id, **fill.model_dump(mode="json")}
+        # Session id + venue live on the wrapper so the Fill model itself stays broker-neutral.
+        # Venue tag is essential once more than one paper venue writes to the same journal_dir —
+        # session_id disambiguates runs, venue disambiguates books.
+        # ``venue`` last so it wins over the Fill model's own ``venue`` field, which is a Literal
+        # narrowed to the pre-multi-venue set ("paper", "questrade-practice", "questrade-live") and
+        # would otherwise clobber the true wrapper venue (kraken, ib_web, …).
+        row = {"session_id": self.session_id,
+               **fill.model_dump(mode="json"),
+               "venue": self._venue}
         with (d / "paper_fills.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, default=str) + "\n")
+        # Close the feedback loop: every fill also lands in the intel graph as a ``traded`` edge
+        # so downstream queries (dashboard, thesis calibration) can correlate trades with the news
+        # bridges the same graph already carries. Failure to append here must never crash the
+        # trade path — wrap and log-only.
+        try:
+            from ..intel.graph import append_edges, fill_edge
+            edge = fill_edge(
+                venue=self._venue, symbol=fill.symbol, action=str(fill.side),
+                quantity=float(fill.quantity), price=float(fill.price),
+                session_id=self.session_id,
+                order_id=fill.order_id if fill.order_id is not None else "",
+                as_of=fill.fill_time.isoformat(),
+            )
+            append_edges([edge])
+        except Exception as e:                                      # pragma: no cover
+            log.warning("paper.fill.intel_graph_failed",
+                        symbol=fill.symbol, venue=self._venue, error=str(e))
 
     def _journal_order(self, order: Order, *, ref_price: float | None, accepted: bool,
                        rejected_reasons: list[str]) -> None:
@@ -237,6 +267,7 @@ class PaperBroker(Broker):
             return
         row = {
             "session_id": self.session_id,
+            "venue": self._venue,
             "order_id": order.id,
             "symbol": order.symbol,
             "action": order.action.value,

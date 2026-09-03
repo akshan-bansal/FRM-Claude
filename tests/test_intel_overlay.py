@@ -16,7 +16,8 @@ from trading_live_claude.portfolio.allocator import AllocationResult
 
 def test_calm_world_leaves_full_exposure() -> None:
     dec = RiskOverlay().evaluate(IntelSnapshot())
-    assert set(dec) == {"equity", "future", "commodity", "fx", "crypto"}
+    assert set(dec) == {"equity", "future", "commodity", "fx", "crypto",
+                        "fixed_income", "precious_metals"}
     for d in dec.values():
         assert d.scalar == 1.0 and not d.halt_new_entries and d.reasons == []
 
@@ -66,11 +67,25 @@ def test_halt_threshold_below_the_floor_disables_halting() -> None:
                           category_alert_counts={"economy": 20},
                           market={"equity_vol": 80.0, "crypto_chg": 30.0},
                           event_acceleration={"energy": 10.0, "conflict": 10.0})
-    for d in RiskOverlay().evaluate(worst).values():
-        assert d.scalar == cfg.floor
+    dec = RiskOverlay().evaluate(worst)
+    # Risk-off classes (equity, future, commodity, fx, crypto) trim all the way to the floor on a
+    # worst-case snapshot. Safe-haven classes (fixed_income, precious_metals) deliberately use
+    # dilution weights on the same risk gates because a global squeeze is a WEAKER de-risking
+    # signal for duration and gold than it is for stocks — the whole point of splitting them out.
+    _RISK_OFF = ("equity", "future", "commodity", "fx", "crypto")
+    _SAFE_HAVEN = ("fixed_income", "precious_metals")
+    for c in _RISK_OFF:
+        assert dec[c].scalar == cfg.floor, f"{c} must floor on worst-case, got {dec[c].scalar}"
+    for c in _SAFE_HAVEN:
+        # Safe-haven classes stay above the hard floor but still receive real trimming.
+        assert cfg.floor < dec[c].scalar < 1.0, (
+            f"{c} should trim but not to the hard floor, got {dec[c].scalar}")
+    for d in dec.values():
         assert not d.halt_new_entries          # nothing halts at this configuration
 
-    # ...and halting comes back the moment the floor is lowered under the threshold.
+    # ...and halting comes back the moment the floor is lowered under the threshold. The safe-
+    # haven classes may or may not fall past halt_below (their dilution keeps them higher), so
+    # only assert that at least ONE class trips halt — which the risk-off cohort guarantees.
     reachable = OverlayConfig(floor=0.10, halt_below=0.20)
     assert any(d.halt_new_entries for d in RiskOverlay(reachable).evaluate(worst).values())
 
@@ -139,7 +154,11 @@ def test_classify_symbol_routes_to_overlay_classes() -> None:
     assert classify_symbol("XBT/USD") == "crypto"
     assert classify_symbol("BTC-USD") == "crypto"
     assert classify_symbol("USDCAD") == "fx"
-    assert classify_symbol("CGL.TO") == "commodity"
+    # CGL.TO (physical gold ETF) is now precious_metals — split out from broad commodity so bond-
+    # like safe-haven scalars apply instead of the oil/agriculture stress model.
+    assert classify_symbol("CGL.TO") == "precious_metals"
+    assert classify_symbol("USO") == "commodity"           # oil ETF stays in the broad bucket
+    assert classify_symbol("TLT") == "fixed_income"        # bond ETF routes to fixed_income
     assert classify_symbol("/ES") == "future"
     assert classify_symbol("XIC.TO") == "equity"   # the common default
     assert classify_symbol("XIC.TO", {"XIC.TO": "commodity"}) == "commodity"  # override wins

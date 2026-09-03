@@ -70,18 +70,70 @@ python scripts/dashboard.py --refresh 300
 
 ## What's queued and unfixed
 
-- **Cross-path tier 2 — Fills → intel graph event nodes.** (Gap #3 in the audit.) Small builder,
-  one call from PaperBroker/Router. Would let `edge_persistence` see "we've been entering this
-  name for N polls."
-- **Cross-path tier 3 — Graph persistence → entry gate.** (Gap #4 in the audit.) A
-  `persistence_for(symbol) → float` callable on LiveMonitor mirroring `interpret_for`. Enforces
-  "regime must have persisted N polls before adding class-X risk."
+**IB-paper introduction (2026-09-03) opened four new gaps of its own.** Fixes #3 and #5 landed
+in-session; #1, #2, #4, #6 are here.
+
+- **IB-paper feedback-loop gap #1 — no Alerter wiring in `scripts/paper_ib.py` (and none in
+  `scripts/paper_kraken.py` either).** Fills on both venues currently reach stdout + shared journal
+  only; QT (via the CLI `signal` command) is the sole path that pushes to Telegram. Mirror QT's
+  `_build_alerter()` construction and thread an `Alerter` through both scripts. ~15 min each.
+- **IB-paper feedback-loop gap #2 — no `PortfolioAllocator` in `scripts/paper_ib.py`.** Kraken has
+  correlation-aware weight bias (PAXG boost, ETH/LINK/XLM trim). IB's ETF set clusters equally
+  obviously (3 duration ETFs + 3 commodity ETFs) with no correction. Mirror the paper_kraken
+  wiring on top of the 6 ETFs.
 - **Cross-path tiers 4 + 5** — Realized P&L → thesis calibration; prediction evaluation. Need
   weeks of accrued data before they can be built honestly.
 - **`enrich_with_agents`** — built + tested + never called. Held pending Anthropic Console key.
 
 **Held (built but off):** the LLM agent layer (`intel/agents.py`, `enrich_with_agents`) stays
 inert without `ANTHROPIC_API_KEY` in `.env` and no caller runs it. See item 6.
+
+**Closed in-session (2026-09-03, later pass):**
+- **IB-paper feedback-loop gap #4 — fixed_income + precious_metals classes.** `OverlayClass`
+  Literal + `OVERLAY_CLASSES` tuple extended in `intel/overlay.py`; `_compose` grows two new
+  branches with class-appropriate risk-off character (bonds get lightly-blended global + economy +
+  conflict gates because flight-to-quality usually rallies duration; metals get the full dxy gate
+  plus lightly-blended conflict/disaster because they're safe-haven with mild systemic squeeze
+  risk). `intel/routing.py` grows `_FIXED_INCOME_SYMBOLS` (TLT/IEF/SHY/BND/AGG/LQD/HYG + XBB.TO/
+  ZAG.TO/VAB.TO) and `_PRECIOUS_METALS_SYMBOLS` (GLD/SLV/PSLV/CGL.TO/…), and `classify_symbol`
+  now checks them BEFORE the broad-commodity list. Bond ETFs on IB paper no longer inherit the
+  equity scalar; metals no longer bucket with oil.
+- **IB-paper feedback-loop gap #6 — CP Gateway 24h re-auth warning.** `_TickleThread` in
+  `scripts/paper_ib.py` now tracks wall-clock session age and escalates once each at 20h (WARN)
+  and 23h (CRITICAL). Any tickle failure whose response looks like an auth expiry (401/403/
+  unauthorized) also fires the CRITICAL once. Warnings are plumbed through a `warn_fn` callable
+  so when the queued Alerter wiring (gap #1) lands, threading through to Telegram is one line.
+- **IB-native futures wire-up.** `IBWebBroker.set_sec_type(symbol, sec_type)` registers a
+  per-symbol override; `resolve_conid` routes FUT-type resolutions through `/trsrv/futures`
+  (which returns per-expiration conids, unlike `/iserver/secdef/search` which only returns
+  roots), picking the front-month = earliest expirationDate strictly after today with a
+  fallback to earliest-of-stale if every listed contract already expired. `scripts/paper_ib.py`
+  grows `--futures ES,NQ,CL,GC,ZN` which registers each root as FUT before the monitor's first
+  quote call. 5 new respx-mocked tests covering front-month pick, stale fallback, unknown root,
+  cache invalidation on override, and default STK behavior — all green.
+- **Cross-path tier 3 — Graph persistence → entry gate.** `intel/routing.py` grows
+  `_CLASS_TO_DOMAINS` (a mapping from overlay class to the graph domains that class is exposed
+  to) and `PersistenceGate` (callable, refreshes on cadence, returns `(halt, reason)`).
+  `LiveMonitor` grows a `persistence_for` hook mirroring `overlay_for` — an entry in a symbol
+  whose class touches a persistently-elevated domain (≥ `min_polls` consecutive polls, default 5)
+  is halted (router skipped) with the halt reason landing on the alert. Fail-open on every
+  failure path: missing graph, parse errors, refresh exceptions all resolve to "no halt" so a
+  broken intel path never causes an unexpected trading halt. 11 focused tests in
+  `test_intel_routing.py`.
+
+**Closed in-session (2026-09-03, earlier pass):**
+- IB-paper feedback-loop gap #3 — `venue` tag on every PaperBroker journal row. `.venue`
+  class-attr on every real broker (`questrade`, `kraken`, `ib`, `ib_web`); `PaperBroker.__init__`
+  inherits from the feed and accepts an explicit `venue=` override. `paper_fills.jsonl` and
+  `paper_orders.jsonl` now carry the venue on every row so the shared journal is groupable by
+  dashboard. Equity CSV schema deliberately unchanged (join by `session_id` to derive venue,
+  avoiding a schema break in `state/paper_equity.csv`). Tests in `tests/test_paper_broker_journal.py`.
+- IB-paper feedback-loop gap #5 — Fills → intel graph event nodes. Extended `intel.graph` with
+  `venue`/`symbol` node types and a `traded` predicate; new `fill_edge(...)` helper composes one
+  edge per fill (weight = signed notional; meta carries action/qty/price/session_id/order_id).
+  `PaperBroker._journal_fill` appends the edge via `append_edges(...)` in the same call site as
+  `paper_fills.jsonl`, in a try/except so a graph-write failure never crashes a trade path.
+  Closes what was cross-path tier 2 in the earlier audit — `edge_persistence` can now see fills.
 
 ---
 

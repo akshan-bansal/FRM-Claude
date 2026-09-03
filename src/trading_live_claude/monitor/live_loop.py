@@ -79,6 +79,7 @@ class LiveMonitor:
         overlay_for: Callable[[str], OverlayDecision | None] | None = None,
         interpret_for: Callable[[], list[Thesis]] | None = None,
         weight_bias_for: Callable[[str], float] | None = None,
+        persistence_for: Callable[[str], tuple[bool, str]] | None = None,
         strategy_risk: bool = False,
     ) -> None:
         self.broker = broker
@@ -136,6 +137,14 @@ class LiveMonitor:
         # runaway allocator can't leverage past a sane cap.
         self.weight_bias_for = weight_bias_for
         self._weight_bias_last: dict[str, float] = {}
+        # Cross-path tier 3: graph-persistence entry gate. Same shape as ``overlay_for`` (returns
+        # a halt decision + reason), but grounded in the intel graph's ``edge_persistence`` query
+        # rather than the current-poll overlay scalar. Enforces "the same 6x reading across five
+        # polls is a regime, not noise" — an entry in a symbol whose overlay class is exposed to a
+        # persistently-elevated domain is blocked, and the reason lands on the rejection alert.
+        # Fail-open: if not wired, entries proceed unaffected.
+        self.persistence_for = persistence_for
+        self._persistence_last_reason: dict[str, str] = {}
         # Strategy-risk gate: the trailing-volatility scalar computed from the strategy's own return
         # stream. Chosen over the gradient-boosted classifier because an honest walk-forward showed
         # the simple rule is the better forward-drawdown predictor (6 of 8 real strategies).
@@ -283,7 +292,22 @@ class LiveMonitor:
                     equity=equity, entry=price, atr_value=atr_value, side="long",
                     annual_vol=annual_vol, conviction=conviction,
                 )
-                if sized.shares > 0 and not overlay_halt:
+                # Cross-path tier 3: persistence-driven halt. Queries the intel graph via the
+                # injected ``persistence_for`` callable; blocks the router submit (but not the
+                # alert) when the symbol's overlay class has been exposed to a persistently-
+                # elevated domain. Fail-open: if the callable is not wired or its refresh raises,
+                # halt stays False and the entry proceeds as before.
+                persistence_halt = False
+                persistence_reason = ""
+                if self.persistence_for is not None:
+                    try:
+                        persistence_halt, persistence_reason = self.persistence_for(symbol)
+                    except Exception as e:                       # never break the poll on graph I/O
+                        log.warning("monitor.persistence.failed", symbol=symbol, error=str(e))
+                        persistence_halt, persistence_reason = False, ""
+                    if persistence_halt:
+                        self._persistence_last_reason[symbol] = persistence_reason
+                if sized.shares > 0 and not overlay_halt and not persistence_halt:
                     entry_rets = df["close"].pct_change() if self.risk_model != "atr" else None
                     risk_dollars = per_trade_risk(
                         sized.shares, price, stop_distance=abs(price - sized.stop),
@@ -327,6 +351,8 @@ class LiveMonitor:
                     entry_detail["allocator"] = {
                         "weight_bias": round(weight_bias, 4),
                     }
+                if persistence_halt:
+                    entry_detail["persistence"] = {"halt": True, "reason": persistence_reason}
                 events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, entry_detail))
             elif exit_ and holds:
                 qty = open_positions[symbol]

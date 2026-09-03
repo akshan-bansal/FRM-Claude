@@ -36,6 +36,7 @@ class QuestradeBroker(Broker):
     """
 
     name = "questrade"
+    venue = "questrade"
 
     def __init__(
         self,

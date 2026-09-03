@@ -74,6 +74,7 @@ class KrakenBroker(Broker):
     """
 
     name = "kraken"
+    venue = "kraken"
 
     def __init__(
         self,

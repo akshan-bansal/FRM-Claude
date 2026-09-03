@@ -26,8 +26,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import ClassVar, Literal
 
-OverlayClass = Literal["equity", "future", "commodity", "fx", "crypto"]
-OVERLAY_CLASSES: tuple[OverlayClass, ...] = ("equity", "future", "commodity", "fx", "crypto")
+OverlayClass = Literal[
+    "equity", "future", "commodity", "fx", "crypto",
+    "fixed_income", "precious_metals",
+]
+OVERLAY_CLASSES: tuple[OverlayClass, ...] = (
+    "equity", "future", "commodity", "fx", "crypto",
+    "fixed_income", "precious_metals",
+)
 
 
 @dataclass(frozen=True)
@@ -239,6 +245,24 @@ class RiskOverlay:
             comps = {"global": g, "economy": self._econ_gate(s), "dxy": self._dxy_gate(s),
                      "conflict": _blend(self._conflict_gate(s), 0.5),
                      "event_flow": self._accel_gate(s, "conflict", "energy")}
+        elif asset_class == "fixed_income":
+            # Bonds have their own risk story. Rate/economy stress lifts them (flight-to-quality),
+            # so the economy and global gates apply only lightly — this is a de-risking framework,
+            # never a lean-in one, but we don't want to trim bonds as hard as we trim equity when
+            # the overlay is telling us the same news that usually rallies duration. Conflict is a
+            # safe-haven trigger for treasuries, so its weight is halved.
+            comps = {"global": _blend(g, 0.4), "economy": _blend(self._econ_gate(s), 0.5),
+                     "conflict": _blend(self._conflict_gate(s), 0.3),
+                     "event_flow": _blend(self._accel_gate(s, "conflict", "military"), 0.5)}
+        elif asset_class == "precious_metals":
+            # Gold / silver / platinum are safe-haven assets. Their strongest exposure is to a
+            # sharp dollar move — the dxy gate applies at full weight. Conflict and disaster are
+            # buying triggers, so their gates apply lightly; global risk-off gets partial weight
+            # because a systemic squeeze (2008-style) can still take metals down alongside equity.
+            comps = {"global": _blend(g, 0.3), "dxy": self._dxy_gate(s),
+                     "conflict": _blend(self._conflict_gate(s), 0.3),
+                     "disaster": _blend(self._disaster_gate(s), 0.3),
+                     "event_flow": _blend(self._accel_gate(s, "conflict", "energy"), 0.5)}
         else:  # crypto — high beta to global risk-off
             comps = {"global": g ** self.cfg.crypto_beta, "crypto_vol": self._crypto_vol_gate(s),
                      "fear": self._fear_gate(s), "economy": self._econ_gate(s),

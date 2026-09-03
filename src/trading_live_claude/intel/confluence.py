@@ -51,6 +51,15 @@ ATTENTION: dict[OverlayClass, dict[str, float]] = {
     # Crypto behaves as a high-beta risk asset here, not as a haven.
     "crypto":    {"strategic_risk": -0.35, "alerts": -0.30, "conflict": -0.20, "energy": -0.05,
                   "disasters": 0.00, "equity_vol": -0.30, "fear": -0.30, "event_flow": -0.25},
+    # Fixed income is LONG risk-off (flight-to-quality lifts duration) and SHORT inflation
+    # (energy stress = rate-hike risk = duration down). Conflict is positive for US treasuries
+    # (safe-haven), and the vol-spike / fear-spike axes both mechanically rally duration.
+    "fixed_income": {"strategic_risk": +0.15, "alerts": +0.10, "conflict": +0.15, "energy": -0.20,
+                      "disasters": +0.05, "equity_vol": +0.20, "fear": +0.15, "event_flow": +0.10},
+    # Precious metals are the archetypal safe-haven: constructive on essentially every risk-off
+    # signal, strongest on conflict / disaster / fear. Signed opposite to equity across the board.
+    "precious_metals": {"strategic_risk": +0.25, "alerts": +0.15, "conflict": +0.30, "energy": +0.20,
+                         "disasters": +0.25, "equity_vol": +0.15, "fear": +0.25, "event_flow": +0.20},
 }
 
 # Which snapshot source backs each evidence dimension, for the freshness discount.
