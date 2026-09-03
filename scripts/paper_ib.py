@@ -60,6 +60,7 @@ from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.market import MarketData
 from trading_live_claude.execution.router import Router
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
+from trading_live_claude.portfolio.allocator import PortfolioAllocator
 from trading_live_claude.risk.sizing import PositionSizer
 from trading_live_claude.strategies import STRATEGIES
 
@@ -296,10 +297,87 @@ def main() -> None:
         print("[ib-paper] interpret entry-filter ON (theses trim conviction; advisory only).",
               flush=True)
 
+    # Correlation-aware allocator: compute per-symbol conviction bias from ~2 years of daily
+    # returns pulled via MarketData (IB → cache). Screen score defaults to the past-year Sharpe so
+    # a name that's trended cleanly gets a higher slot than one that's been noisy. Runs once at
+    # startup; the correlation matrix is stable enough at daily cadence that weekly refresh is
+    # the honest upper bound. If a symbol's history fetch fails, its bias defaults to 1.0 rather
+    # than dropping it from monitoring.
+    import numpy as _np
+    import pandas as _pd
+    print("[ib-paper] computing correlation-aware allocator weights...", flush=True)
+    returns_map: dict[str, _pd.Series] = {}
+    scores_map: dict[str, float] = {}
+    for sym in sym_list:
+        try:
+            df = market.history(sym, years=2.0, interval="1d")
+            if df is None or len(df) < 60:
+                continue
+            rets = df["close"].pct_change().dropna()
+            returns_map[sym] = rets
+            annual_vol = float(rets.std(ddof=0) * _np.sqrt(252.0)) or 1e-9
+            annual_ret = float(rets.mean() * 252.0)
+            scores_map[sym] = max(0.0, annual_ret / annual_vol)   # non-negative Sharpe proxy
+        except Exception as e:
+            print(f"[ib-paper] allocator: {sym} fetch failed ({e}); bias defaults to 1.0", flush=True)
+    bias_map: dict[str, float] = {s: 1.0 for s in sym_list}
+    if returns_map:
+        # min_score=0.0 lets every scoring name in; the max-weight cap keeps a single ETF from
+        # dominating. Since these are all ETFs, no per-sleeve cap needed beyond the natural 1.0.
+        allocator = PortfolioAllocator(max_weight=0.30, max_sleeve_weight=1.0, min_score=0.0)
+        result = allocator.allocate(returns_map, scores_map, regime_scalar=1.0)
+        if result.weights:
+            equal_weight = 1.0 / len(returns_map)
+            for s in sym_list:
+                if equal_weight > 0:
+                    bias_map[s] = result.weights.get(s, 0.0) / equal_weight
+    print("[ib-paper] allocator conviction bias (baseline = 1.0):", flush=True)
+    for sym in sorted(bias_map, key=lambda s: -bias_map[s]):
+        arrow = "boost" if bias_map[sym] > 1.05 else "trim" if bias_map[sym] < 0.95 else "neutral"
+        print(f"    {sym:>10}  x{bias_map[sym]:.2f}  ({arrow})", flush=True)
+
+    def _weight_bias_for(symbol: str) -> float:
+        return bias_map.get(symbol, 1.0)
+
+    # Alerter — mirrors the QT CLI wiring. Fills are silent to phone without this. The AlertConfig
+    # takes its credentials from settings (Telegram + optional SMTP); empty creds mean stdout-only,
+    # so the venue works whether or not the user has an .env with keys.
+    from trading_live_claude.monitor import Alerter
+    from trading_live_claude.monitor.alerter import AlertConfig
+    from trading_live_claude.intel.notification import (
+        format_entry as _fmt_entry,
+        format_exit as _fmt_exit,
+    )
+    alerter = Alerter(AlertConfig(
+        telegram_bot_token=settings.telegram_bot_token,
+        telegram_chat_id=settings.telegram_chat_id,
+        smtp_host=settings.smtp_host,
+        smtp_user=settings.smtp_user,
+        smtp_pass=settings.smtp_pass,
+        email_to=settings.alert_email_to,
+    ))
+    # Route the tickle-thread warnings through the same Alerter so the 20h/23h escalation lands
+    # on Telegram, not just stdout. This is the one-line wire mentioned in the queued gap.
+    if tickle is not None:
+        tickle._warn_fn = lambda level, msg: alerter.send(f"[ib-paper] {level}", msg)
+
     def _emit(ev: MonitorEvent) -> None:
         state = "NEW" if ev.is_transition else f"persisting ({ev.poll_count})"
         print(f"[ib-paper] {ev.kind.upper()} {ev.symbol} @ {ev.price:.4f} "
               f"({state}) detail={ev.detail}", flush=True)
+        if ev.kind == "entry":
+            sname = smap_names.get(ev.symbol, args.strategy)
+            title, body = _fmt_entry(strategy_name=sname, symbol=ev.symbol, price=ev.price,
+                                       detail=ev.detail,
+                                       is_transition=getattr(ev, "is_transition", True),
+                                       poll_count=getattr(ev, "poll_count", 1))
+            alerter.send(title, body)
+        elif ev.kind == "exit":
+            sname = smap_names.get(ev.symbol, args.strategy)
+            shares = int(ev.detail.get("shares", 0)) if isinstance(ev.detail, dict) else 0
+            title, body = _fmt_exit(strategy_name=sname, symbol=ev.symbol, price=ev.price,
+                                      shares=shares)
+            alerter.send(title, body)
 
     monitor = LiveMonitor(
         broker=exec_broker,
@@ -316,6 +394,7 @@ def main() -> None:
         strategy_map=smap or None,
         overlay_for=overlay_for,
         interpret_for=interpret_for,
+        weight_bias_for=_weight_bias_for,
     )
 
     if tickle is not None:

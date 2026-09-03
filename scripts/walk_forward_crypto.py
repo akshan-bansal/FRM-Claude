@@ -27,6 +27,7 @@ from pathlib import Path
 import pandas as pd
 
 from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
+from trading_live_claude.data.kraken_ohlc import kraken_ohlc
 
 # Reuse the exact walk-forward helper the equity sweep uses so the numbers stay comparable.
 sys.path.insert(0, str(Path(__file__).parent))
@@ -34,18 +35,43 @@ from sweep_universe import walk_forward       # noqa: E402
 
 
 DEFAULT_CACHE = Path("data/cache")
-MIN_BARS = 900         # about 2.5 years of daily bars — enough for two folds
+MIN_BARS_DEEP = 900              # about 2.5 years — enough for two 6-mo test folds
+MIN_BARS_SHALLOW = 500           # Kraken /public/OHLC caps at ~720 bars → ~3.9 folds — the honest
+                                  # minimum for a WFE calculation, thinner than deep-history WF but
+                                  # real out-of-sample scoring with real cost accounting.
 REPORT_PATH = Path("reports/walk_forward_crypto.csv")
 
 
-def _load_cached_daily(pair_code: str, cache_dir: Path) -> pd.DataFrame | None:
+def _load_cached_daily(pair_code: str, cache_dir: Path,
+                        min_bars: int = MIN_BARS_DEEP) -> pd.DataFrame | None:
     """Load ``{pair_code}_daily.parquet`` (as written by kraken_ohlc_deep) if it exists and has bars."""
     p = cache_dir / f"{pair_code}_daily.parquet"
     if not p.exists():
         return None
     df = pd.read_parquet(p)
-    if df.empty or len(df) < MIN_BARS:
+    if df.empty or len(df) < min_bars:
         return None
+    return df
+
+
+def _load_shallow_daily(pair_code: str, min_bars: int = MIN_BARS_SHALLOW) -> pd.DataFrame | None:
+    """Fetch shallow (~720-bar) daily OHLC directly from Kraken's /public/OHLC as a fallback for
+    pairs without a deep-history parquet. One call per pair, ~1 second, no caching.
+
+    Kraken's cap of ~720 bars means the walk-forward has only ~3.9 folds (720 - 365 train)/91 step,
+    which is thinner than the 12+ folds a deep-history run supports. Rows scored this way are
+    reported with tier=``screened+`` — better than pure in-sample, not ``robust`` until deep
+    history clears them. Runs the same walk-forward helper, so the OOS scores stay comparable.
+    """
+    try:
+        df = kraken_ohlc(pair_code, interval=1440)          # 1440 min = daily
+    except Exception as e:
+        print(f"  shallow fetch failed for {pair_code}: {type(e).__name__}: {e}", flush=True)
+        return None
+    if df is None or df.empty or len(df) < min_bars:
+        return None
+    # kraken_ohlc returns columns time / open / high / low / close / volume — the shape the equity
+    # sweep's walk_forward expects.
     return df
 
 
@@ -63,27 +89,45 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cache", type=Path, default=DEFAULT_CACHE,
                     help="Directory of {pair}_daily.parquet caches (from kraken_ohlc_deep).")
-    ap.add_argument("--min-bars", type=int, default=MIN_BARS)
+    ap.add_argument("--min-bars", type=int, default=MIN_BARS_DEEP,
+                    help="Minimum bars for deep-history tier. Deep parquets below this are skipped; "
+                         "the shallow-fallback threshold (MIN_BARS_SHALLOW = 500) is applied "
+                         "separately when the deep parquet is absent.")
+    ap.add_argument("--no-shallow-fallback", dest="shallow_fallback", action="store_false",
+                    default=True,
+                    help="Disable the shallow /public/OHLC fallback and only score pairs with a "
+                         "deep-history parquet. Default is to fall back — a shallow WF (tier="
+                         "'screened+') is better than a full skip.")
     args = ap.parse_args()
 
-    print(f"[crypto WF] cache={args.cache} min_bars={args.min_bars}", flush=True)
+    print(f"[crypto WF] cache={args.cache} min_bars_deep={args.min_bars} "
+          f"shallow_fallback={args.shallow_fallback}", flush=True)
     rows: list[dict[str, object]] = []
     for routed, entry in CRYPTO_SLEEVE.items():
-        df = _load_cached_daily(entry.pair, args.cache)
+        df = _load_cached_daily(entry.pair, args.cache, min_bars=args.min_bars)
+        source = "deep"
+        if df is None and args.shallow_fallback:
+            df = _load_shallow_daily(entry.pair)
+            source = "shallow"
         if df is None:
-            print(f"  {routed}: cache missing or too shallow ({entry.pair}) — SKIP", flush=True)
+            print(f"  {routed}: no usable history for {entry.pair} — SKIP", flush=True)
             continue
         wf = walk_forward(df, entry.pair)
         if wf is None:
             print(f"  {routed}: no walk-forward result — SKIP", flush=True)
             continue
         bar = _crypto_min_oos_trades()
-        tier = ("robust" if (wf["wfe"] >= 0.5 and wf["oos_score"] > 0
-                             and wf["oos_trades"] >= bar) else "watch")
+        # Shallow-fallback pairs are capped at "screened+" — better than pure in-sample, thinner
+        # than deep-history WF, and NOT ``robust`` until the deep-history fetch clears them.
+        if source == "shallow":
+            tier = "screened+" if wf["oos_score"] > 0 else "watch"
+        else:
+            tier = ("robust" if (wf["wfe"] >= 0.5 and wf["oos_score"] > 0
+                                 and wf["oos_trades"] >= bar) else "watch")
         row = {"symbol": routed, "pair": entry.pair, "screen_score": entry.screen_score,
-               **wf, "min_trades": bar, "tier": tier}
+               "source": source, **wf, "min_trades": bar, "tier": tier}
         rows.append(row)
-        print(f"  {routed:>10}: OOS {wf['oos_score']:.2f} WFE {wf['wfe']:.2f} "
+        print(f"  {routed:>10}: [{source:7s}] OOS {wf['oos_score']:.2f} WFE {wf['wfe']:.2f} "
               f"trades {wf['oos_trades']} -> {tier}", flush=True)
 
     if not rows:

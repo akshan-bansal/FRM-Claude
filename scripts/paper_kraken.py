@@ -165,10 +165,41 @@ def main() -> None:
     def _weight_bias_for(symbol: str) -> float:
         return bias_map.get(symbol, 1.0)
 
+    # Alerter — silent to phone without this. Mirrors the QT CLI wiring. Credentials from settings;
+    # empty creds means stdout-only, so the venue works whether or not .env has keys.
+    from trading_live_claude.monitor import Alerter
+    from trading_live_claude.monitor.alerter import AlertConfig
+    from trading_live_claude.intel.notification import (
+        format_entry as _fmt_entry,
+        format_exit as _fmt_exit,
+    )
+    alerter = Alerter(AlertConfig(
+        telegram_bot_token=settings.telegram_bot_token,
+        telegram_chat_id=settings.telegram_chat_id,
+        smtp_host=settings.smtp_host,
+        smtp_user=settings.smtp_user,
+        smtp_pass=settings.smtp_pass,
+        email_to=settings.alert_email_to,
+    ))
+    strategy_name_for = {entry.symbol: entry.strategy for entry in CRYPTO_SLEEVE.values()}
+
     def _emit(ev: MonitorEvent) -> None:
         state = "NEW" if ev.is_transition else f"persisting ({ev.poll_count})"
         print(f"[kraken-paper] {ev.kind.upper()} {ev.symbol} @ {ev.price:.4f} "
               f"({state}) detail={ev.detail}", flush=True)
+        if ev.kind == "entry":
+            sname = strategy_name_for.get(ev.symbol, fallback_entry.strategy)
+            title, body = _fmt_entry(strategy_name=sname, symbol=ev.symbol, price=ev.price,
+                                       detail=ev.detail,
+                                       is_transition=getattr(ev, "is_transition", True),
+                                       poll_count=getattr(ev, "poll_count", 1))
+            alerter.send(title, body)
+        elif ev.kind == "exit":
+            sname = strategy_name_for.get(ev.symbol, fallback_entry.strategy)
+            shares = int(ev.detail.get("shares", 0)) if isinstance(ev.detail, dict) else 0
+            title, body = _fmt_exit(strategy_name=sname, symbol=ev.symbol, price=ev.price,
+                                      shares=shares)
+            alerter.send(title, body)
 
     monitor = LiveMonitor(
         broker=exec_broker,

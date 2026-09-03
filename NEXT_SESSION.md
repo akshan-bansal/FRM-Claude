@@ -73,20 +73,45 @@ python scripts/dashboard.py --refresh 300
 **IB-paper introduction (2026-09-03) opened four new gaps of its own.** Fixes #3 and #5 landed
 in-session; #1, #2, #4, #6 are here.
 
-- **IB-paper feedback-loop gap #1 — no Alerter wiring in `scripts/paper_ib.py` (and none in
-  `scripts/paper_kraken.py` either).** Fills on both venues currently reach stdout + shared journal
-  only; QT (via the CLI `signal` command) is the sole path that pushes to Telegram. Mirror QT's
-  `_build_alerter()` construction and thread an `Alerter` through both scripts. ~15 min each.
-- **IB-paper feedback-loop gap #2 — no `PortfolioAllocator` in `scripts/paper_ib.py`.** Kraken has
-  correlation-aware weight bias (PAXG boost, ETH/LINK/XLM trim). IB's ETF set clusters equally
-  obviously (3 duration ETFs + 3 commodity ETFs) with no correction. Mirror the paper_kraken
-  wiring on top of the 6 ETFs.
 - **Cross-path tiers 4 + 5** — Realized P&L → thesis calibration; prediction evaluation. Need
   weeks of accrued data before they can be built honestly.
 - **`enrich_with_agents`** — built + tested + never called. Held pending Anthropic Console key.
+- **IB sweep — execute the run.** `scripts/sweep_ib.py` is built and CLI-tested. Needs CP
+  Gateway auth'd (`https://localhost:5000` browser login) to actually fetch. One command:
+  `python scripts/sweep_ib.py`. Writes `reports/ib_sweep_YYYY-MM-DD.{csv,md}`. Bounded work,
+  under 10 minutes wall-time for the default universe (~30 ETFs + 5 futures).
+- **Item 0 — full resweep** and **item 8 (FX walk-forward)** — both need long-running compute.
+  Resweep: ~50 min after cache warm. FX WF over the scan shortlist: needs a
+  `walk_forward_pairs.py` wrapper (not built) plus WF runtime.
 
 **Held (built but off):** the LLM agent layer (`intel/agents.py`, `enrich_with_agents`) stays
 inert without `ANTHROPIC_API_KEY` in `.env` and no caller runs it. See item 6.
+
+**Closed in-session (2026-09-04):**
+- **IB-paper feedback-loop gap #1 — Alerter wiring on paper_ib.py + paper_kraken.py.** Both
+  scripts now build an `Alerter` (same shape as the QT CLI's `_build_alerter`), format entries /
+  exits via `intel.notification`, and push them to Telegram + email + stdout on every fill.
+  Empty creds fall back to stdout-only so the venue works with or without `.env` keys. IB's
+  tickle-thread 20h/23h escalation is now routed through the same `Alerter`, so the queued
+  wire from gap #6 is closed too.
+- **IB-paper feedback-loop gap #2 — PortfolioAllocator on paper_ib.py.** Mirrors the paper_kraken
+  wiring: builds a returns matrix from ~2y daily bars via MarketData (IB → cache), scores each
+  name by past-year Sharpe as a screen-score proxy, runs `PortfolioAllocator(max_weight=0.30)`,
+  and passes the resulting bias map as `weight_bias_for` on the LiveMonitor.
+- **IB sweep script built** — `scripts/sweep_ib.py`. Executes CP-Gateway-side (needs auth); one
+  pass over a bond / commodity / precious-metals ETF + FUT front-month universe, computing base
+  stats + overlay scalar + interpret matches per symbol. Writes CSV + compact markdown to
+  `reports/ib_sweep_<tag>.{csv,md}`. Queued execution moved to the "unfixed" list above.
+- **Item 7 — Crypto WF shallow fallback.** `scripts/walk_forward_crypto.py` now falls back to
+  `kraken_ohlc(pair, interval=1440)` when the deep-history parquet is absent. Shallow-derived
+  rows report tier=`screened+` (better than pure in-sample, thinner than deep-history WF; never
+  `robust`). `--no-shallow-fallback` disables to keep the old strict behavior.
+- **Item 8 — FX pair-trading discovery MVP.** `scripts/fx_pairs_scan.py` fetches shallow daily
+  OHLC for Kraken's most-liquid fiat FX pairs, enumerates `C(n, 2)` combinations, runs Engle-
+  Granger cointegration via the existing `analysis/pairs.py::enumerate_pairs`, and reports the
+  tradeable shortlist (cointegrated + finite half-life). FX-tuned defaults (`max_half_life=60d`
+  vs. 252d for equity) reflect faster mean-reversion. Discovery only — walk-forward wrapper for
+  the shortlist is still queued.
 
 **Closed in-session (2026-09-03, later pass):**
 - **IB-paper feedback-loop gap #4 — fixed_income + precious_metals classes.** `OverlayClass`
