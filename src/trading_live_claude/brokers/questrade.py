@@ -21,6 +21,11 @@ from .models import Account, Candle, Order, Position, Quote
 from .token_store import TokenSet, TokenStore
 
 LOGIN_HOST = "https://login.questrade.com"
+
+# Canonical interval → Questrade REST wire word. Every other broker's canonical lexicon
+# already matches Questrade's except for the 30-minute bar (``ThirtyMinutes`` → ``HalfHour``);
+# unrecognized words pass through unchanged so callers can still hand in a native QT word.
+_QT_INTERVAL_ALIAS: dict[str, str] = {"ThirtyMinutes": "HalfHour"}
 TOKEN_PATH = "/oauth2/token"
 API_VERSION = "v1"
 
@@ -192,10 +197,14 @@ class QuestradeBroker(Broker):
         interval: str = "OneDay",
     ) -> list[Candle]:
         sid = self._symbol_id(symbol)
+        # MarketData standardizes on the IB/Kraken lexicon (``ThirtyMinutes``); Questrade's
+        # REST wire word for the 30-minute bar is ``HalfHour``. Translate here so
+        # ``interval=30m`` stops silently degrading to daily bars on this broker.
+        wire = _QT_INTERVAL_ALIAS.get(interval, interval)
         params = {
             "startTime": start.isoformat(),
             "endTime": end.isoformat(),
-            "interval": interval,
+            "interval": wire,
         }
         data = self._request("GET", f"markets/candles/{sid}", params=params).json()
         return [Candle(**c) for c in data.get("candles", [])]

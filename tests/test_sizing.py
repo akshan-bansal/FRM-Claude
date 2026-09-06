@@ -13,11 +13,27 @@ def test_conviction_scales_the_risk_budget() -> None:
     assert half == 125          # conviction halves the risk budget
 
 
-def test_conviction_is_clipped_to_unit_interval() -> None:
+def test_conviction_clipped_to_allocator_boost_ceiling() -> None:
+    # Ceiling is 3.0 (matches the weight_bias cap in monitor/live_loop.py) so an
+    # allocator boost of 2.0x or 3.0x actually amplifies size; earlier the [0, 1]
+    # clip silently discarded every allocator boost above unity.
     s = PositionSizer()
     base = s.size(equity=100_000, entry=100, atr_value=2.0).shares
-    assert s.size(equity=100_000, entry=100, atr_value=2.0, conviction=5.0).shares == base
+    boosted = s.size(equity=100_000, entry=100, atr_value=2.0, conviction=2.0).shares
+    ceiling = s.size(equity=100_000, entry=100, atr_value=2.0, conviction=5.0).shares
+    assert boosted == base * 2
+    assert ceiling == base * 3               # clipped at ceiling, not silently discarded
     assert s.size(equity=100_000, entry=100, atr_value=2.0, conviction=-1.0).shares == 0
+
+
+def test_vol_target_leverage_cap_still_binds_over_conviction_boost() -> None:
+    # Even with conviction=3.0 the vol-target path is capped at max_leverage, so runaway
+    # boost never escapes the leverage ceiling — the safety guard we kept when raising
+    # the conviction clip.
+    s = PositionSizer()
+    r = s.size_vol_target(equity=100_000, price=100, annual_vol=0.30, target_vol=0.15,
+                          conviction=3.0, max_leverage=1.0)
+    assert r.vol_scale == 1.0                # 0.5 base scale × 3.0 conviction = 1.5 → capped at 1.0
 
 
 def test_vol_target_sizes_inverse_to_volatility() -> None:

@@ -19,6 +19,7 @@ from .config import write_trading_yaml
 from .data import CandleCache, MarketData
 from .logging_setup import get_logger
 from .scoring.objective import ObjectiveAdapter, ObjectiveInput
+from .analysis.calibration import calibrate_for
 from .strategies import STRATEGIES
 from .strategies.base import StrategyContext
 
@@ -121,7 +122,12 @@ def run_tune(
             df = market.history(symbol=symbol, years=years, interval="1d")
             if df.empty or len(df) < 252:
                 return None
-            strat = STRATEGIES[strategy_name]()
+            # Asset-class calibrated instance: Bollinger bands widen for crypto, tighten
+            # for FX; windows scale with the symbol's mean-reversion half-life. Strategies
+            # without a calibrator (kalman_pairs, arima_garch, …) fall through to defaults.
+            if strategy_name not in STRATEGIES:
+                return None
+            strat = calibrate_for(strategy_name, symbol)
             signals = strat.generate_signals(df, StrategyContext(symbol=symbol))
             labels = label_events(df, horizon=label_horizon, up_threshold=label_up_threshold)
             rep = confusion(signals["entry"], labels)

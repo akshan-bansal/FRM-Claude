@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+# NOTE: The asset-class calibration helpers (``calibrate_for``, ``profile_for``,
+# ``calibrated_kwargs``, ``confirm_patterns_for``) live in ``trading_live_claude.analysis.
+# calibration`` and are intentionally NOT re-exported here. Re-exporting would import
+# ``analysis/__init__.py`` at strategies-load time, which in turn imports ``matrix.py``,
+# which pulls ``backtest.engine`` — closing a circle with ``backtest.engine``'s own
+# ``from ..strategies.base import Strategy`` and breaking cold imports on any consumer
+# whose chain touches ``portfolio`` or ``backtest`` before ``strategies``.
 from .base import Strategy, StrategyContext
 from .candlestick import CANDLE_STRATEGIES, CandlestickStrategy
 from .composite import CompositeStrategy, DefaultComposite

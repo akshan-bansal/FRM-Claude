@@ -119,12 +119,24 @@ def _check_persistence_alerts(
     threshold: int,
     already_alerted: set[str],
     alerter: Alerter,
+    held_domains: set[str] | None = None,
 ) -> None:
-    """Fire ONE alert per (domain) crossing the persistence threshold. De-dup via the caller's set."""
+    """Fire ONE alert per (domain) crossing the persistence threshold. De-dup via the caller's set.
+
+    When ``held_domains`` is non-empty, only domains in that set can fire — this filters the
+    persistence stream to what the current book is actually exposed to (via _CLASS_TO_DOMAINS
+    lookups on the held names' classes). Domains outside the exposure set are still tracked (so
+    a stopping-then-restarting run still de-dupes correctly) but their fires are suppressed.
+    """
     for dom in _WATCHED_DOMAINS:
         n = edge_persistence(edges_now, predicate="elevated_in", object=("domain", dom))
         key = f"elevated_in::{dom}"
         if n >= threshold and key not in already_alerted:
+            if held_domains and dom not in held_domains:
+                print(f"[thicken] SUPPRESSED persistence '{dom}' (run={n}) - not in "
+                      f"held-book exposure", flush=True)
+                already_alerted.add(key)
+                continue
             title, body = format_persistence(domain=dom, run_length=n, threshold=threshold)
             alerter.send(title, body)
             already_alerted.add(key)
@@ -151,7 +163,61 @@ def main() -> None:
                     action=argparse.BooleanOptionalAction,
                     help="Send persistence-hit + wash-event notifications to the alerter "
                          "(Telegram + email + stdout). Default ON.")
+    ap.add_argument("--held-scope", dest="held_scope", default=False,
+                    action=argparse.BooleanOptionalAction,
+                    help="Load the current held baskets (WALK_FORWARD_VALIDATED + CRYPTO_SLEEVE) "
+                         "at startup and FILTER alerts to those touching the book. Thesis alerts "
+                         "suppress unless the thesis's implicated exemplars intersect the held "
+                         "names; persistence-hit alerts suppress unless the driving domain is in "
+                         "the union of the held classes' exposed domains. Startup prints the "
+                         "held-class → domain map so the filter surface is visible.")
+    ap.add_argument("--pools", default=None,
+                    help="Comma-separated subset of {equity,crypto} to restrict the held-scope "
+                         "basket to. Implies --held-scope. Example: --pools crypto scopes the "
+                         "graph poll to just CRYPTO_SLEEVE and drops WALK_FORWARD_VALIDATED "
+                         "equities from the filter. Default None = all pools (unchanged behavior).")
     args = ap.parse_args()
+
+    # --pools implies --held-scope; a subset is only meaningful when the filter is engaged.
+    if args.pools:
+        args.held_scope = True
+        selected_pools = {p.strip().lower() for p in args.pools.split(",") if p.strip()}
+        unknown = selected_pools - {"equity", "crypto"}
+        if unknown:
+            raise SystemExit(f"[thicken] --pools: unknown pool(s) {sorted(unknown)}; "
+                              f"choose from equity, crypto")
+    else:
+        selected_pools = {"equity", "crypto"}
+
+    # Held-basket scope — read once at startup. Includes QT walk-forward-validated names
+    # (equities + ETFs + commodity + REIT + hedged) and the Kraken crypto sleeve. IB paper
+    # holdings intentionally NOT included here — they're transient per-session state, not
+    # a durable book. Extend if that changes.
+    held_syms: set[str] = set()
+    held_domains: set[str] = set()
+    if args.held_scope:
+        from trading_live_claude.analysis.universe import CRYPTO_SLEEVE, WALK_FORWARD_VALIDATED
+        from trading_live_claude.intel.routing import _CLASS_TO_DOMAINS, classify_symbol
+        if "equity" in selected_pools:
+            held_syms |= {s.upper() for s in WALK_FORWARD_VALIDATED}
+        if "crypto" in selected_pools:
+            held_syms |= {routed.upper() for routed in CRYPTO_SLEEVE}
+        # Union of exposed graph domains across every held name's class. Persistence alerts get
+        # filtered against this set — a domain outside it is noise for our current book.
+        for sym in held_syms:
+            cls = classify_symbol(sym)
+            held_domains |= set(_CLASS_TO_DOMAINS.get(cls, ()))
+        print(f"[thicken] held-scope FILTER: pools={sorted(selected_pools)} "
+              f"{len(held_syms)} held names, exposed domains = {sorted(held_domains)}",
+              flush=True)
+        from collections import Counter
+        cls_count: Counter = Counter()
+        if "equity" in selected_pools:
+            for wf in WALK_FORWARD_VALIDATED.values():
+                cls_count[wf.asset_class] += 1
+        if "crypto" in selected_pools:
+            cls_count["crypto"] += len(CRYPTO_SLEEVE)
+        print(f"[thicken] held by class: {dict(cls_count)}", flush=True)
 
     provider = _build_overlay_provider(refresh_seconds=args.sleep)
     alerter = _build_alerter() if args.alerts else None
@@ -187,7 +253,8 @@ def main() -> None:
                 try:
                     edges_now = load_edges()
                     _check_persistence_alerts(edges_now, args.persistence_threshold,
-                                               already_alerted, alerter)
+                                               already_alerted, alerter,
+                                               held_domains=held_domains if args.held_scope else None)
                 except Exception as e:
                     print(f"[thicken] persistence check failed: {e}", flush=True)
                 # Thesis firing — run interpret() on the exact snapshot the overlay decided on
@@ -205,7 +272,25 @@ def main() -> None:
                             key = f"thesis::{t.name}"
                             live_keys.add(key)
                             if key not in already_alerted:
-                                title, body = format_thesis(t, theme_exemplars=THEME_EXEMPLARS)
+                                # Held-scope FILTER: suppress the alert entirely when none of the
+                                # thesis's implicated exemplars touch a held name. Held-touching
+                                # alerts still fire and lead with the HELD IN BOOK line so the
+                                # reader sees the tie-in immediately.
+                                if held_syms:
+                                    try:
+                                        implicated = {s.upper() for s in t.exemplars()}
+                                    except Exception:
+                                        implicated = set()
+                                    touched = sorted(implicated & held_syms)
+                                    if not touched:
+                                        print(f"[thicken] SUPPRESSED thesis '{t.name}' - no "
+                                              f"held-book exposure", flush=True)
+                                        already_alerted.add(key)     # still dedup so no re-print
+                                        continue
+                                    title, body = format_thesis(t, theme_exemplars=THEME_EXEMPLARS)
+                                    body = "HELD IN BOOK: " + ", ".join(touched) + "\n\n" + body
+                                else:
+                                    title, body = format_thesis(t, theme_exemplars=THEME_EXEMPLARS)
                                 alerter.send(title, body)
                                 already_alerted.add(key)
                         # Clear thesis dedup keys for theses that stopped firing so re-crossings alert.

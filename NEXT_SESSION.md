@@ -76,13 +76,133 @@ in-session; #1, #2, #4, #6 are here.
 - **Cross-path tiers 4 + 5** — Realized P&L → thesis calibration; prediction evaluation. Need
   weeks of accrued data before they can be built honestly.
 - **`enrich_with_agents`** — built + tested + never called. Held pending Anthropic Console key.
+- **IB OAuth 1.0a for CP Gateway auth-skip — queued 2026-09-04.** User confirmed OAuth1 flavor
+  (the Third-Party API path — RSA-SHA256 signed requests + Diffie-Hellman key exchange for a
+  Live Session Token, then LST-signed HMAC-SHA1 for `/v1/api/*` calls). Real build, ~4-6 hrs.
+  **BLOCKED on user-side setup** — needs the following artifacts before code can start (all
+  from IBKR Client Portal → Settings → OAuth Access → Configure Third-Party API):
+    1. `IBKR_OAUTH_CONSUMER_KEY` — assigned when the app is registered
+    2. `IBKR_OAUTH_TOKEN` — one pasted this session as `e0d75b4c5c1d2c0f2af7` **must be rotated
+       first** (it appeared in the session transcript at
+       `.claude/projects/C--Users-PC-Downloads-FRM-Claude/bac3334b-*.jsonl`, session-local but
+       persistent). Rotate → new token → put in `.env` (never chat).
+    3. `IBKR_OAUTH_TOKEN_SECRET` — paired with the token
+    4. `IBKR_OAUTH_SIGNING_KEY_PATH` — path to a local RSA-2048 private key `.pem` whose public
+       half is uploaded to IBKR (`openssl genrsa -out ibkr_signing_key.pem 2048`)
+    5. Confirmed DH prime + generator from IBKR's OAuth docs (public constants, baked in code)
+  Build shape:
+    * New `OAuth1Auth` class in `src/trading_live_claude/brokers/ib_web.py` implementing
+      `IBWebAuth` interface
+    * Live Session Token exchange + HMAC-SHA1 request signing
+    * New `--auth oauth1` flag on `scripts/paper_ib.py` (default stays `browser` for backward
+      compat)
+    * 4 new secret fields in `settings.py` (all default empty)
+    * respx-mocked tests for the DH + signed-request flow
+    * Update `.env.example` with the field names
+  Semantics: this REPLACES the manual browser-login step on CP Gateway. CP Gateway (the Java
+  daemon) still needs to be running — OAuth just handles authentication automatically instead
+  of requiring the click-through login page.
+- **Liquidity-gated entry/exit — queued behind the accumulator.** 2026-09-05 forward decision:
+  once the rolling `state/liquidity_hourly.parquet` accumulator has deep-enough coverage
+  (~20 obs/cell target, ~140 days), turn the heatmap into a live gate. Design:
+  * New `LiquidityGate` primitive mirroring `PersistenceGate` shape — refreshes daily from
+    the accumulator, callable `(symbol, ts) → (mult, reason)` returning a size multiplier
+    in `[0.1, 1.0]` per that symbol's (hour, weekday) z-score.
+  * Wired into `LiveMonitor.step()` alongside `overlay_for` / `interpret_for` /
+    `weight_bias_for` — applied last so the chain is
+    `conviction *= overlay × interpret × weight_bias × liquidity_mult`.
+  * Two prototypes: (a) pure trim (cold cells only cut, hot cells no boost — matches the
+    "de-risk for period inactivity" framing, safer to launch); (b) full amplification (hot
+    cells up to 1.5× within the calibration ceiling of 3.0 — needs WF evidence).
+  * Validation prerequisite: compare cell-hot vs cell-cold realized slippage on accumulated
+    fills. Only ship the gate if cold-cell slippage is measurably worse (e.g., 2×+ typical).
+    Without this, gate risks cutting sizing on a cost proxy that doesn't actually cost.
+  * Fail-open on every path: missing accumulator, refresh exception, unknown symbol all
+    resolve to mult=1.0. Same discipline as PersistenceGate.
+  * Revisit earliest at ~2026-Dec (accumulator reaches ~90 days at 30-obs equivalent for
+    fewer cells).
+
+- **Liquidity heat map — rolling accumulation not yet wired.** 2026-09-05 preliminary run
+  produced heatmaps on the sparse windows available (crypto ~30d hourly via Kraken cap;
+  IB STK/equity/fixed_income/precious_metals/commodity ~90d hourly via IB Web). Per-cell
+  observation density on that first pass is 4-5 (crypto) to 13 (IB STK) — enough for a
+  visual guide, marginal for stable per-cell statistics. To get comfortable 20-30 obs/cell
+  (~140 days everywhere), the honest path is a rolling accumulator:
+  * Cron/scheduled hourly append of the latest hour's volume-per-symbol into
+    `state/liquidity_hourly.parquet` — one row per (ts, symbol, volume).
+  * Kraken side is trivial (no auth, one call/pair/hour); IB side needs the CP Gateway
+    24h re-auth loop already known + the tickle machinery (`_TickleThread` in
+    `scripts/paper_ib.py`) — probably better run daily as a batched 24-hour fetch than
+    hourly to reduce auth pressure.
+  * Regenerate heatmap on demand from the accumulator, no fresh fetches needed.
+  * Revisit at ~2026-Dec (~90 days) or ~2027-Q1 (~140 days) for the density threshold.
+  * FUT class stays blocked on Alt B (TWS socket) regardless of accumulator progress.
+  Full heatmap re-generation is bounded (~10s) once the accumulator exists.
+
+- **Liquidity heat map (Option B) — queued 2026-09-04.** Script built as
+  `scripts/liquidity_heatmap.py`; syntax-verified but NOT yet executed to avoid competing with
+  the running FX + crypto Kraken deep-fetch chains for bandwidth. Produces one PNG per asset
+  class (rows=hour UTC, cols=weekday, per-asset normalization) plus a combined markdown at
+  `reports/liquidity_heatmap_<tag>.md` with top-3 hot/cold buckets per asset. Data sources:
+  IB Web `/iserver/marketdata/history` (bar=1h, period=90d) for equity + fixed_income +
+  precious_metals + commodity + futures (FUT front-month); Kraken `/public/OHLC` (interval=60)
+  for crypto + FX. Run after the deep-fetch chains complete: `python scripts/liquidity_heatmap.py`.
+  Needs CP Gateway auth'd for the IB classes.
+- **FX single-name sleeve: DROPPED (2026-09-05, explicit user decision).** After the FX
+  pair-trading rejection (below), a small FX single-name sleeve (4 EUR-cross legs on
+  bollinger/confirm_bollinger/rsi_meanrevert/candle_hammer) was stood up on paper_kraken to
+  collect empirical tuning data. After ~70 min of live polling the sleeve produced 0 fills
+  across 14 polls — Kraken FX quotes essentially static at 5-min cadence and every calibrated
+  threshold too tight vs the FX daily excursion. `FXSleeveEntry`, `FX_SLEEVE`, the
+  `--pool crypto|fx` selector on paper_kraken, and the `fx` option on graph_journal's
+  `--pools` were all removed. Do NOT re-propose an FX single-name sleeve unless (a) an FX
+  vendor with sub-minute quote resolution is wired in place of Kraken's 5-min OHLC, or (b)
+  the calibration signal-statistics honing (see follow-up section above) produces asset-
+  class-specific FX thresholds materially looser than the current calibrator defaults.
+  Deep-fetched FX parquets stay on disk for reuse (`data/cache/EUR{GBP,CAD,CHF,JPY}_{daily,
+  trades}.parquet`). Calibration's `fx` asset-class defaults remain in place — they're
+  generic, not sleeve-specific.
+
+- **FX pair-trading: NOT tradeable in this framework (2026-09-04, explicit user decision).**
+  Deep parquets built for the 4 EUR-cross legs (2100-2400 bars each, ~5.9-6.5y daily); pairs
+  strategy WF'd against three grid iterations — original (window 20-60, entry_z 1.5-2.5), first
+  widening (up to window 180, entry_z 1.2), and FX-oriented sub-1σ (entry_z 0.1-0.75). Widest
+  grid produced 2-4 OOS trades vs 0-1 on the tighter grids, but every additional trade LOST
+  money. Empirical conclusion: cost-drag on retail Kraken-fill assumptions (5-15 bp per round-
+  trip) is 25-75% of typical FX daily-cross excursion, so the small mean-reversion edges don't
+  survive. Hourly bars would likely make it worse (excursions shrink by √t, cost unchanged).
+  **Do not re-propose FX pair-trading in the WF-validated pool** unless (a) a professional-grade
+  cost model is wired (spread <1 pip) or (b) `KalmanPairs` (adaptive hedge) is tried in place
+  of the current fixed-hedge crossing-trigger strategy. Full reports in
+  `reports/fx_pairs_wf_2026-09-04-*.md`. FX deep parquets stay on disk for later reuse.
+- **Excluded from selection (2026-09-04, explicit user decision).** The 2026-09-04 overnight WF
+  produced 3 robust survivors from the ETF-proxy set — `LQD` (IG corporate bonds), `MUB` (US
+  munis), `DBA` (agricultural commodities). The user explicitly rejected adopting these into
+  `WALK_FORWARD_VALIDATED` and asked they be omitted from selection. Do NOT re-propose them in
+  a future session unless the user brings them back. Full WF results still live at
+  `reports/wf_symbols_proxies_2026-09-04.{csv,md}` for reference.
+- **Futures continuous-contract pipeline via ib_insync socket API (Alt B).** Queued 2026-09-04
+  after Phase 1 probe against CP Gateway proved IB Web does NOT expose expired-contract data at
+  all (every `/iserver/secdef/*` path returns "No Contracts retrieved" for historical months;
+  `/trsrv/futures` returns forward contracts only). IB's socket API (TWS or IB Gateway binary
+  + `ib_insync.IB.reqHistoricalData` with an expired Contract) does support historical bars —
+  the Web API is a REST subset that omits it. Path: install TWS/IB Gateway, enable API, rewrite
+  `data/ib_futures_history.py` to use `ib_insync` for the per-contract fetch. Phases 2 (calendar)
+  and 4 (continuous-series builder) already built and data-source-agnostic — they can be reused
+  as-is. Files landed this session: `src/trading_live_claude/data/futures_calendar.py` and
+  `src/trading_live_claude/data/futures_continuous.py`. Estimate: 3 hrs (install + rewrite Phase
+  3 + smoke test end-to-end on ES).
 - **IB sweep — execute the run.** `scripts/sweep_ib.py` is built and CLI-tested. Needs CP
   Gateway auth'd (`https://localhost:5000` browser login) to actually fetch. One command:
   `python scripts/sweep_ib.py`. Writes `reports/ib_sweep_YYYY-MM-DD.{csv,md}`. Bounded work,
   under 10 minutes wall-time for the default universe (~30 ETFs + 5 futures).
-- **Item 0 — full resweep** and **item 8 (FX walk-forward)** — both need long-running compute.
-  Resweep: ~50 min after cache warm. FX WF over the scan shortlist: needs a
-  `walk_forward_pairs.py` wrapper (not built) plus WF runtime.
+- **Item 0 — full resweep** — needs ~50 min of compute after cache warm. Runbook already in item 0
+  below. Nothing to code; just run when the block window allows.
+- **Item 8 execution — walk_forward_pairs.py** built (2026-09-04, uncommitted). Reads the latest
+  `fx_pairs_scan_*.csv`, filters tradeable rows, fetches both legs via `kraken_ohlc`, walks
+  forward the PairsZScore grid under the FX protocol (train=504 / test=126 / step=126) with a
+  36-combo per-fold search, tiers by the same equity bar (WFE >= 0.5, OOS > 0, >= 10 trades).
+  Needs `fx_pairs_scan.py` run first to produce the shortlist. Bounded work (~15s per pair).
 
 **Held (built but off):** the LLM agent layer (`intel/agents.py`, `enrich_with_agents`) stays
 inert without `ANTHROPIC_API_KEY` in `.env` and no caller runs it. See item 6.
@@ -159,6 +279,246 @@ inert without `ANTHROPIC_API_KEY` in `.env` and no caller runs it. See item 6.
   `PaperBroker._journal_fill` appends the edge via `append_edges(...)` in the same call site as
   `paper_fills.jsonl`, in a try/except so a graph-write failure never crashes a trade path.
   Closes what was cross-path tier 2 in the earlier audit — `edge_persistence` can now see fills.
+
+---
+
+## OSINT × commodity-proxy correlation study — DESIGNED, PARKED  🟡 WAITING ON DATA DEPTH
+
+Designed 2026-09-05, parked same-session on window mismatch. The regression spec is ready
+to run; the data corpus is not deep enough for it to produce non-noise results yet.
+
+**Research question:** does OSINT domain elevation (from the 15-min graph poll) systematically
+precede forward returns in commodity/futures ETF proxies at 1/5/21-day horizons?
+
+**Regression spec (frozen for later):**
+* Response: `log(close_{i, t+h} / close_{i, t})` for h ∈ {1, 5, 21}
+* Features per domain d ∈ {energy_stress, conflict, natural_disasters, dxy, safe_haven,
+  economy, financial_stress}: raw scalar `s_{d,t}`, 90-day-trailing z-score
+  `elev_{d,t}`, consecutive-poll persistence count `pers_{d,t}` (via existing
+  `edge_persistence`).
+* Controls per proxy i: 21-day momentum `mom_{i,t}`, 21-day realized vol `rv_{i,t}`.
+* OLS + Newey-West SE (h-lag overlap induces serial correlation).
+* Benjamini-Hochberg FDR at α=0.10 across the 14 × 3 × 7 = 294 individual γ tests.
+* Cadence alignment: EOD OSINT aggregate (last poll before 16:00 ET), daily ETF close.
+
+**Symbol list (14 ETF proxies):** USO/UNG (energy), GLD/SLV/PPLT/CPER (metals),
+WEAT/CORN/SOYB (grains), TLT/IEF/HYG (rates/credit), UUP (dollar), VXX (vol).
+
+**Blocker:** intel journal too shallow.
+* `state/intel_overlay.jsonl` — 143 rows, 2026-08-29 → 2026-09-05 (7 days).
+* `state/intel_graph.jsonl` — 8974 edges, 2026-09-01 → 2026-09-05 (4 days).
+* No backfill path (WorldMonitorClient is live-only; can't retroactively query historical
+  DXY_chg or category_alert_counts).
+* 5-day and 21-day horizons: essentially zero observations.
+* 1-day horizon: ~7 obs per proxy (98 pooled) against 9-10 parameters — over-parameterized.
+
+**Revisit criteria:** intel journal spans ≥ 3 months (~60 trading days per proxy → ~10:1
+obs:param at the 1-day horizon; supports pooled cross-sectional OLS). ≥ 6 months for the
+5-day horizon to be defensible; ≥ 12 months for 21-day. So earliest honest revisit is
+~2026-Dec (3 mo from now), full-scope revisit is ~2027-Mar.
+
+**Available today without waiting:** ETF proxy historical bars are already cachable via
+IB Web STK path — the fetch layer is not the blocker. Only the OSINT feature side is.
+Anyone who wants to work on this before the intel corpus deepens should build ONLY the
+proxy-side data pipeline + the regression harness (so ~2026-Dec re-run is one command),
+NOT run the regression itself with the shallow corpus dressed as findings.
+
+**Related standing decision:** same window-depth logic applies to any other cross-signal
+study on the intel graph — calibration signal-statistics honing (section above), thesis-
+calibration recurrent-learning loop (item 9 tier 4), prediction evaluation (item 9 tier 5).
+All four studies wait on the same underlying corpus.
+
+## Asset-class calibration — signal-statistics follow-up  🟡 QUEUED
+
+Landed 2026-09-05: `src/trading_live_claude/analysis/calibration.py` translates a symbol into
+per-class strategy kwargs (window, n_std, oversold, entry_z, exit_ma, atr_window), wired
+through `tune.py` and the `confirm_<base>`/`candle_<pattern>` factories. Matrix output on
+2026-09-05 confirmed the **time-scale side is sound** — windows track half-life, ema/donchian
+scale with `bar_scale`, exit_ma tracks the 0.7·HL rule.
+
+**What still needs honing (the microstructure-signal side):**
+- `n_std` on Bollinger — currently a simple `vol/0.20` multiplier around a regime-based
+  base (2.0/2.5/1.8). Doesn't yet reflect that crypto's fat-tail distribution needs a
+  higher-percentile band than the same annualized-vol gaussian would predict; FX majors'
+  tight-spread microstructure means the 1.44 band probably over-triggers on cost.
+- `entry_z` on ZScoreOU — currently `1.5 + spread/(bar_bps)`, which lands 1.5-1.7 across
+  every asset class. That's a suspiciously flat surface: crypto with 8-20bps spreads
+  should demand a wider entry_z than FX at 1bp, and the current formula compresses them.
+  Recompute against realized round-trip cost drag, not just spread nominal.
+- `oversold` on RSI — the three-way 25/30/35 discretization is coarse. Fixed_income
+  gets 35 across the board even though a short-duration bond and a long-duration bond
+  have very different reversion timescales; either add a duration-scaled oversold or
+  accept the coarseness and document.
+- Confirmation-pattern filter — currently drops only `piercing_line` on 24/7 markets.
+  Should probably also drop `bullish_engulfing` on crypto (its "gap-below-prior-close"
+  criterion is a rounding artefact on continuous bars), and consider adding session-
+  specific patterns for FX (Asian-session hammers behave differently from NY-session
+  hammers). Requires per-symbol backtest evidence, not a-priori reasoning.
+
+**Path forward:** run a sweep of Bollinger n_std ∈ {1.5, 2.0, 2.5, 3.0, 3.5} × asset-class
+representative symbols with the walk-forward harness, scored on sortino_over_dd, and let
+the surface pick the class-specific band width empirically. Same for ZScoreOU entry_z
+∈ {0.5, 1.0, 1.5, 2.0, 2.5, 3.0}. Then fold the winners back into the calibration table
+as class-specific constants replacing the current heuristic formulas. Bounded work
+(~30 min per strategy × 4 asset classes) but needs the deep-history parquets already
+built for crypto/FX + the equity cache.
+
+## Audit gaps — 2026-09-04
+
+Explore-agent audit sweep across the whole repository, ranked by severity, excluding items
+already elsewhere in this document. Format: `severity file:line — one-liner`. Do NOT redesign
+solutions; call out and prioritize. Full agent report lives in the session transcript.
+
+### 🔴 Critical (act soon — live-path risk or silent correctness bugs)
+
+- 🔴 `cli.py:483,1422` — `trading live` AND `autonomous_run` build `LiveMonitor` without
+  `overlay_for`, `interpret_for`, `weight_bias_for`, `persistence_for`. The two CLI entry points
+  that can touch real money bypass EVERY intel/overlay/allocator/persistence gate that the
+  paper path uses. One-diff fix — copy the wiring block from `signal --paper` (cli.py ~189+).
+- 🔴 `data/market.py:51` — `end = end or datetime.now(UTC)` is then part of the parquet cache
+  key. `datetime.now()` changes every call, so `MarketData.history()`/`.recent()` NEVER hit
+  the cache. Every `LiveMonitor.step()` symbol is a fresh live-broker fetch. Cache module
+  exists but the primary caller can't reach it.
+- 🔴 `data/market.py:22` vs `brokers/{kraken,ib,ib_web}.py` — interval-name mismatch. `MarketData`
+  uses Questrade lexicon (`"HalfHour"`); Kraken uses `_INTERVAL_MINUTES` (numeric); IB uses
+  `_INTERVAL_TO_BAR` (`"ThirtyMinutes"`). Non-QT 30-minute requests silently fall through to
+  `OneDay`.
+- 🔴 `monitor/live_loop.py:245` — `float(last.get("atr", price * 0.02)) or price * 0.02` returns
+  `NaN` when `last["atr"]` is `NaN` (NaN is truthy). Strategy with NaN ATR silently sizes off
+  NaN, corrupting stop distance and downstream risk math.
+- 🔴 `monitor/live_loop.py:283-290` — `conviction *= weight_bias` is passed to `PositionSizer.size`
+  which clips conviction to `[0, 1]`. All `weight_bias > 1.0` boost is discarded. The
+  correlation-aware allocator's up-side amplification is silently no-op; only trims work.
+- 🔴 `risk/kill_switch.py:67-80` — `KillSwitch.evaluate()` is defined + would auto-trip on
+  drawdown/daily-loss, but NO CALLER anywhere invokes it. The drawdown-based auto-halt shown
+  in the README architecture diagram (§#4) is manual-only.
+- 🔴 `brokers/ib_web.py:509-511` — `place_order` auto-confirms IB warning prompts in a while
+  loop with NO CAP. In live mode this can accept margin/exchange warnings a human should
+  approve; also potentially loops unbounded on a misbehaving API.
+- 🔴 `README.md:141` — Quick-start block includes `EXECUTION_MODE=live uv run trading live …`.
+  `CLAUDE.md:24` explicitly says "Never set `EXECUTION_MODE=live` in code, tests, or example
+  snippets." README example directly contradicts the CLAUDE.md non-negotiable.
+- 🔴 `cli.py:1381-1383` — `os.environ["QUESTRADE_ENV"] = chosen_account` is written AFTER
+  `get_settings()` has been called and after `_make_questrade(settings)` used the loaded
+  settings. Runtime override is a no-op — users flipping `AUTONOMOUS_ACCOUNT=live` still hit
+  whatever the frozen settings resolved.
+- 🔴 `config/settings.py:210` — `@lru_cache(maxsize=1)` on `get_settings()`. Any test/process
+  that mutates env/yaml AFTER first call gets stale settings. Compounds with the autonomous_run
+  env-mutation bug above.
+
+### 🟡 Medium (correctness / hygiene)
+
+- 🟡 `brokers/kraken.py:382-387` — `_txid_to_int` uses `hash(txid)` which is randomized per
+  Python process (PYTHONHASHSEED). Docstring calls it "stable" — it is not. Kraken fill row
+  `order_id` changes across restarts; joining fills back to orders breaks post-restart.
+- 🟡 `execution/daily_budget.py:54-88` — `snapshot()` re-parses the entire `state/orders.jsonl`
+  from disk on every gate check. Scales linearly with journal size; runs synchronously inside
+  `Router._gate` on every intent.
+- 🟡 `data/cache.py:40-45` — `put()` writes parquet directly with no atomic rename. Crash
+  mid-write leaves a corrupt file; subsequent `get()` returns `None` but the corrupted file
+  stays forever (never overwritten because of the time-varying key bug).
+- 🟡 `brokers/ib.py:354` — `Stock(order.symbol, "SMART", "USD")` hardcoded. Non-US equities
+  (e.g. `XIC.TO`) become the wrong contract; futures/bonds registered via `IBContract` elsewhere
+  are not consulted by `place_order`. Silent mis-routing on the socket path.
+- 🟡 `monitor/live_loop.py:398` — `heat = existing_risk / equity`, but `existing_risk` is DOLLAR
+  CVaR/ATR risk while `hedge_weight` expects a fraction. Units mismatch when the hedge
+  overlay is enabled.
+- 🟡 `brokers/models.py:161` — `Fill.venue: Literal["paper", "questrade-practice",
+  "questrade-live"]`. Kraken/IB/IB-Web fills MUST be constructed with `venue="paper"` (see
+  `paper.py:165`); any adapter that writes `Fill` directly with `venue="kraken"` fails Pydantic
+  validation. Schema anchored to pre-multi-venue world.
+- 🟡 `execution/asset_router.py:23-37` — `DEFAULT_ASSET_BROKERAGE`/`ASSET_LEAN_SPEC` still say
+  `InteractiveBrokersBrokerage`, but the runtime brokers implemented are `IBBroker`,
+  `IBWebBroker`, `KrakenBroker`, `QuestradeBroker`. AssetRouter is LEAN-oriented and doesn't
+  route to any real Broker adapters.
+- 🟡 `execution/asset_router.py:16` — `AssetClass = Literal["equity","future","commodity",
+  "crypto"]`. But `intel/overlay.py::OverlayClass` now carries `fixed_income`, `precious_metals`
+  (2026-09-03 close of gap #4). Two class enums have drifted apart.
+- 🟡 `intel/apply.py::apply_overlay` — Grep shows only the `intel/__init__` export and its test
+  import it; no runtime code path. Public API surface that's effectively dead.
+- 🟡 `brokers/paper.py:186-220` — `mark_to_market` swallows quote failures per symbol. If the
+  feed is throttled/down, equity CSV keeps writing STALE unrealized P&L with no telemetry that
+  the marks are stale — the max-drawdown kill-switch invariant would read a lying number.
+- 🟡 `brokers/base.py:22-48` — `Broker` `Protocol` does not declare `venue: str`, but every
+  concrete broker declares it and `PaperBroker.__init__` depends on it. A new adapter that
+  omits `venue` type-checks fine but silently falls back to `.name` at `paper.py:64`.
+- 🟡 `cli.py:496-497` — `trading live` command WARNs but does NOT abort when
+  `QUESTRADE_ENV != "live"`. User typing the phrase can run "live" mode against the practice
+  environment thinking it's live (or vice versa).
+- 🟡 `data/cache.py:22-28` — Path uses first 16 chars of SHA-256 hex, no schema version in the
+  filename. Future OHLCV column change can't invalidate existing parquets.
+- 🟡 `data/market.py` — no gap-filling / incremental append. Every `history()` call re-fetches
+  entire window rather than fetching only missing tail.
+- 🟡 `brokers/ib_web.py:107` and `config/settings.py:73` — `verify_ssl=False` default (CP Gateway
+  self-signed cert). If a caller mis-points `ib_web_host` off `localhost`, TLS validation is
+  silently skipped. No guard that the target IS localhost.
+- 🟡 `monitor/alerter.py:43-60` — `_telegram` no rate-limit (30-msg/sec Telegram cap will 429),
+  no response-status check, no scrub for anything containing secrets (fine today but no
+  guardrails).
+- 🟡 Test coverage — no test files for `data/market.py`, `data/cache.py`, `execution/journal.py`,
+  new futures pipeline (`data/futures_calendar.py`, `data/futures_continuous.py`,
+  `data/ib_futures_history.py`), `microstructure/{bitstamp_l2,coinbase_l2,simulator,arbitrage}.py`,
+  `intel/{apply,chart,worldmonitor}.py`, `scripts/liquidity_heatmap.py`,
+  `scripts/walk_forward_pairs.py`, `scripts/sweep_ib.py`.
+
+### 🟢 Minor (docs / cleanup / future risk)
+
+- 🟢 `README.md:186-206` — "What ships in the box" table lists 6 strategies but
+  `strategies/examples/` actually holds 11 files (also arima_garch, mean_reversion, momentum,
+  seasonality, volatility). Stale.
+- 🟢 `README.md:232-234` vs `CLAUDE.md:118-120` — Two docs disagree on the agent set. README
+  lists 2, CLAUDE.md lists 3 (adds `autonomous-monitor`).
+- 🟢 `CLAUDE.md:60-64` — "Entry points" section is stale relative to actual layout — doesn't
+  mention `intel/`, `portfolio/`, `microstructure/`, `models/` or the four broker adapters.
+- 🟢 `brokers/paper.py:47` — `_order_counter: Iterator[int] = itertools.count(1)` is a CLASS
+  variable. Two PaperBroker instances in the same process share it. Fine today; will bite
+  two-broker research scripts.
+- 🟢 `brokers/token_store.py:39` — Fixed salt `b"trading-live-claude/v1/tokens"`. If two users
+  share the same `TOKEN_ENCRYPTION_KEY`, they get the same Fernet key. Per-install random salt
+  would be safer.
+- 🟢 `pyproject.toml:9-26` — every runtime dep is `>=` with NO upper cap. Breaking major
+  (pydantic v3, pandas v3) would install and break silently. No `uv.lock` review at commit time.
+- 🟢 `pyproject.toml:31-33` — `ib_insync>=0.9.86` is optional but effectively unmaintained
+  (last release 2023). `brokers/ib.py` depends on it. Long-term move to `ib-async` (community
+  fork) is likely required.
+- 🟢 `pyproject.toml` — `PyJWT` used in `ib_web.py::_mint_client_assertion` but NOT declared
+  in any extras. Lazy import + `BrokerError` on ImportError catches it, but users of
+  `OAuth2JWTAuth` get no install hint until first token exchange.
+- 🟢 `brokers/questrade.py:16` — `LOGIN_HOST` hardcoded — no override for QT's practice sandbox.
+  `questrade_env=practice` has no effect on this constant (the auth flow returns the api_server
+  anyway).
+- 🟢 `state/paper_fills.jsonl`, `paper_orders.jsonl`, `paper_equity.csv` — `session_id` added
+  post-hoc; older rows don't have it. No migration script; analytics joining by session_id must
+  tolerate NULL.
+- 🟢 `execution/router.py:229-247` — router journals order intent BEFORE the kill-switch check;
+  intent is written even for HALTED, then written again as rejected. Harmless duplication but
+  grows journal on halted state.
+- 🟢 `intel/graph.py:397-406` — `append_edges` catches all exceptions and logs; a full-disk
+  condition silently drops graph write with nothing surfacing to the operator.
+- 🟢 `monitor/alerter.py:71` — hardcodes SMTP port 465; no `AlertConfig.smtp_port` field.
+  Users on 587/STARTTLS can't configure.
+- 🟢 `brokers/paper.py:52` — `starting_equity=100_000.0` hardcoded across CLI callers; not
+  read from `trading.yaml`.
+- 🟢 `monitor/live_loop.py:38-40` — `_INTERPRET_BIAS_FLOOR = 0.25` and confidence factor map
+  hardcoded; not configurable.
+
+### Top-5 recommended fixes (agent's ranking)
+
+1. **Wire intel/overlay/allocator/persistence hooks into `trading live` and `autonomous_run`**
+   — single highest-severity gap. One-diff copy from the `signal` command's wiring block
+   (cli.py ~189+).
+2. **Fix `MarketData` cache** — normalize `end` to a day/hour boundary before hashing, OR drop
+   `end` from the cache key and store a `[start_ts, last_bar_ts]` metadata sidecar with
+   incremental append.
+3. **Fix interval-name mismatch across brokers** — either standardize on Kraken/IB's
+   `"ThirtyMinutes"` and rewrite `_QT_INTERVAL_MAP`, or add broker-side translation. Silent
+   fallback-to-daily for 30m requests across three brokers is a live-path landmine.
+4. **Fix conviction-clip / weight-bias contradiction** — either `PositionSizer` accepts
+   unclipped conviction (remove `_clip01` from `_vol_scale` and ATR path), or the LiveMonitor
+   docstring admits that `weight_bias > 1` is discarded.
+5. **Wire `KillSwitch.evaluate` into `PaperBroker._journal_equity`** — the drawdown is already
+   computed there; call `KillSwitch.evaluate` with those values on every write. Auto-halt in
+   the README architecture becomes real, not manual-only.
 
 ---
 
@@ -631,5 +991,175 @@ would surface the same "which held names are correlated redundancies" question t
 sleeve just answered.
 
 ---
-_Also on the board (lower priority): wire microprice/OFI as features into the research strategies;
-promote the paper A-S maker toward gated live quoting on Kraken._
+
+## 11. TradeCard — six-axis gap closure  🟠 SKELETON LANDED, INTEGRATION PENDING
+
+**Status (2026-09-06).** An approval-card layer landed uncommitted on the current branch:
+`ApprovalRouter` wraps the existing `Router` and blocks each accepted intent on a card-signed
+Ed25519 ACCEPT; a laptop shim (stdlib HTTP on `127.0.0.1:8787`) exposes the store; a fake-card
+Python simulator round-trips real signatures; an ESP32-S3 firmware skeleton (PCD8544 LCD,
+5-key D-pad, NVS-backed passbook) speaks the protocol; a `VSInvestmentEngine` narrates every
+intent into a `<=140` char thesis + persisted writeup; `--require-card` toggles the whole
+pipeline in `paper_ib.py` and `paper_kraken.py`. 29 tests pass. Nothing is committed.
+
+**Sub-objective 0: complete integration into the GitHub repo — DO THIS FIRST.**
+Everything else in this section presumes the code is landed on `main` behind a feature flag,
+not sitting as an uncommitted diff on `feat/multi-scoring-attention-map`. Concrete steps:
+
+1. **Branch off cleanly.** Create `feat/tradecard-approval` from the current branch's HEAD
+   (or from `main` if the multi-scoring work has already merged). Rebase down to a series of
+   coherent commits: (a) `approval.py` + tests; (b) `vs_engine.py` + tests; (c) shim +
+   simulator + shim tests; (d) firmware skeleton; (e) paper-script `--require-card` wiring.
+2. **Split `firmware/` from Python packaging.** Right now it sits at the repo root outside
+   `src/`; add `firmware/` to `.gitignore` for the Python wheel and note in `pyproject.toml`
+   that the wheel only ships Python. The ESP-IDF project is standalone.
+3. **Fix the cross-package import in `wire_card_approval`.** It currently reaches into
+   `scripts.approval_shim` via an injected `shim_starter`. Move the HTTP server into
+   `src/trading_live_claude/execution/approval_server.py` so the module dependency arrow
+   points the right way, and turn `scripts/approval_shim.py` into a thin CLI wrapper.
+4. **Docs**: extend `CLAUDE.md` with a "TradeCard" section (feature flag, security posture,
+   which scripts honor it, how to run the shim + simulator end-to-end without silicon).
+5. **CI**: add `tests/test_approval_shim.py` to the default run; keep it out of the
+   coverage-gate baseline if it flakes on socket-bind races on Windows CI.
+6. **Changelog / release notes** entry — user-facing description of `--require-card` and the
+   published brief link.
+7. **Open a PR** with the published-brief artifact URL in the description so reviewers can
+   see the shape without pulling the branch. Keep `execution_mode` and `AUTONOMOUS_ENABLED`
+   untouched; card approval is orthogonal to live/autonomous.
+
+Do NOT commit any of this until the user says so — the standing rule in
+`memory/no-commits-without-explicit-ask.md` still applies.
+
+### Sub-objective 1: hardware
+
+- No schematic, no BOM, no PCB. `firmware/tradecard/main/main.c` documents a pinout but
+  there is no board that wires it up.
+- No secure element. Private Ed25519 key sits in NVS flash — trivially readable over UART
+  with `esptool.py read_flash`. Migration target: ATECC608A (I²C) or the ESP32-S3 DS
+  peripheral so the sk never leaves silicon.
+- No power path. LiPo cell + charging IC (MCP73831 class) + fuel gauge (MAX17048) + boost
+  converter not selected. Card cannot run untethered.
+- No enclosure. Credit-card form factor is aspirational — the ESP32-S3-DevKitC-1 is roughly
+  10× the volume. Realistic target for v0.3: business-card-thick 3D-printed shell with an
+  ESP32-S3-MINI-1 module and an FPC-attached PCD8544.
+- No display sourcing decision. Nokia 5110 modules on the aftermarket are aging; SSD1306
+  128×64 OLED and Waveshare 2.9" e-paper haven't been evaluated as alternates.
+- No physical five-key input array. Dome-switch vs tactile vs capacitive not chosen.
+- No RF-certification path (FCC / IC / CE) for the Wi-Fi radio.
+- No antenna decision (PCB antenna on ESP32-S3-WROOM-1 vs external chip antenna with a
+  U.FL pigtail).
+
+### Sub-objective 2: firmware
+
+- `lcd_puts` is a UART mirror. Real 5×7 font + framebuffer painter (u8g2 or Adafruit-GFX
+  port) not linked. Nothing appears on the physical LCD yet.
+- No NTP sync. `handle_prompt` uses a hardcoded 60-second TTL rather than parsing
+  `expires_at` against a synced clock. First real-world prompt with the wrong TTL will
+  expire early or run past its actual deadline.
+- No TLS. `esp_http_client` uses plain HTTP; the mbedTLS bundle is configured in
+  `sdkconfig.defaults` but the client never asks for it. Card ↔ shim is in the clear.
+- No deep sleep. Wi-Fi stays on between polls; battery budget for a card-form-factor cell
+  measures in minutes, not hours.
+- No CENTER-button detail view. `GET /intel/{ref}` shipped on the shim side; the firmware
+  does not call it, so the thesis writeup can't be pulled up on the card.
+- Trust-on-first-use pairing. Anyone with physical access can flash a new key and
+  re-register; the shim has no way to distinguish a real ATECC608A-attested key from a
+  spoofed one.
+- No firmware OTA. Updates require USB re-flash.
+- No factory-reset gesture (e.g. hold CENTER 10s to wipe NVS keys) — a compromised card
+  cannot be rekeyed by the user.
+- No fault UI. Wi-Fi drop, shim unreachable, signature-rejected responses aren't surfaced
+  on the LCD.
+- Passbook has no filter/search — only linear scroll.
+- No long-press detection for mode switching (accept-vs-detail vs passbook-scroll gestures
+  will collide once the CENTER view lands).
+
+### Sub-objective 3: VS investment engine software
+
+- Deterministic-rules only. No LLM path for a richer prose narrator when the caller wants
+  one (opt-in via `thesis_fn` swap is easy; not built).
+- Thesis carries no confidence or attribution. "geo-risk 78" is a scalar; the writeup
+  doesn't cite which WorldMonitor edges / events fired to move it.
+- No historical-comparison clause. "Last week the same thesis on XIU.TO hit stop" would
+  meaningfully change the reader's calibration; the passbook has the data, the engine
+  doesn't use it.
+- No feedback loop. Accepted vs declined vs expired verdicts aren't fed back into future
+  thesis phrasing or priority (a decline pattern for a given clause could down-weight it
+  next time).
+- Broker → asset-class mapping is 1:1 in `ASSET_CLASS_HINT`. Reality: IB trades equities,
+  futures, options, bonds, FX. The single-slot mapping under-labels multi-asset intents.
+- No writeup pruning. `state/intel_writeups/` grows unbounded.
+- No multi-lingual output — a Canadian user might want FR/EN toggle.
+- Existing strategies still don't emit the `score`/`rank`/`r_multiple` columns the engine
+  is prepared to lift via `MarketContext.from_signal_row()`. Contract is documented in
+  `strategies/base.py`; adoption is per-strategy work.
+
+### Sub-objective 4: API / plugin endpoints
+
+- **Shim has no auth.** Anyone on the LAN can POST an intent (which prompts the card) or
+  POST a fresh `/card/register` (adding a signer). Minimum acceptable: shared bearer +
+  loopback-only; production: mTLS with a shim-issued client cert per card.
+- No `DELETE /card/{card_id}` — a compromised card cannot be revoked without editing
+  in-process state or restarting the shim.
+- No `GET /passbook` — the shim knows every verdict but doesn't expose them for a
+  companion app or web dashboard.
+- No SSE / WebSocket push. Card and any web client both long-poll.
+- No admin endpoint for listing active cards, pending intents, or writeup counts.
+- No rate limiting on any endpoint.
+- No CORS controls — a rogue web page loaded in the user's browser could POST to
+  `localhost:8787` if that origin is ever reachable.
+- No OpenAPI spec. Third-party integrations reverse-engineer from `approval_shim.py`.
+- No URL / Accept-header versioning. First protocol change breaks every deployed card.
+- Router still holds one broker at a time. Multi-broker routing (`intent.broker` picks
+  the destination brokerage inside a single Router) is not implemented — the card just
+  displays whatever `router.broker.name` is set to for this process.
+
+### Sub-objective 5: user interaction
+
+- No first-boot onboarding on the card. LCD shows nothing meaningful until the first
+  prompt arrives.
+- No queue-preview screen — user can't see "3 prompts pending" while browsing the passbook.
+- No secondary "why" screen. The CENTER button is unimplemented, so the reader cannot pull
+  up the full VS-engine thesis before deciding.
+- No haptic feedback. User must look at the card to know a prompt arrived.
+- No LED / bezel indicator for a pending prompt.
+- No per-user profile or PIN before signing — card is single-tenant.
+- No timeout-warning UI. TTL just runs down silently.
+- Passbook has no "jump to today" or symbol filter.
+- No language selection.
+- Font size fixed; no accessibility affordance for low-vision users.
+
+### Sub-objective 6: connectivity
+
+- Wi-Fi only. No BLE (which was in the original blueprint for phone-tethered operation)
+  and no cellular (NB-IoT). If home Wi-Fi drops, the card is inert.
+- No connection-status indicator on-device. A dead shim looks identical to "quiet market".
+- No offline queue. A signed response with no shim reachable is lost — user's ACCEPT tap
+  never lands.
+- No on-device network configuration. SSID/PSK are baked at build time via menuconfig; a
+  new Wi-Fi means a re-flash.
+- No mDNS / auto-discovery for the shim URL.
+- No captive-portal handling (hotel Wi-Fi).
+- No handoff. Moving the shim to a new machine means re-flashing the card.
+- No health telemetry from card → shim (battery, RSSI, last-seen), so the shim can't say
+  "your card is offline" in a UI or an alert.
+- Shim binds to loopback only. Documented options for exposing it beyond the same host
+  (Tailscale, Cloudflare Tunnel) exist as prose but no scripted path.
+
+### Sequencing (what unblocks what)
+
+1. **Sub-objective 0** — landing the code on `main` behind a flag — is a hard prerequisite
+   for everything else. Nothing else should be built on an uncommitted skeleton.
+2. **Firmware font + NTP** (sub-obj 2) turns the LCD from a UART mirror into a real card
+   surface — this is what makes hardware bring-up worth doing.
+3. **Shim auth + `/card/{id}` revoke** (sub-obj 4) is the smallest thing that lets a card
+   run outside a fully-trusted LAN.
+4. **Hardware SE integration** (sub-obj 1) is only worth it once the key handling in
+   firmware is written to feed off an I²C signer rather than an in-memory buffer.
+5. **Multi-broker routing + strategy MarketContext adoption** (sub-obj 3, 4) is a good
+   fit for the same PR since both hinge on the strategy signal-row contract.
+6. Everything under sub-obj 5 / 6 is polish that lands after the card is a real physical
+   object; UX for a virtual card is close to write-only.
+
+**Published brief for this build (link stays live across sessions):**
+<https://claude.ai/code/artifact/9567c2ac-b2bd-4797-adf5-2edbce2a4d90>

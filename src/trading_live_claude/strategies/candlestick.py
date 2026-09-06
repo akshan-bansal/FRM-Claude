@@ -60,8 +60,8 @@ def _make_candle_strategy(pattern: str) -> type[CandlestickStrategy]:
     class _PatternStrategy(CandlestickStrategy):
         name = f"candle_{pattern}"
 
-        def __init__(self) -> None:
-            super().__init__(pattern=pattern)
+        def __init__(self, exit_ma: int = 10, atr_window: int = 14) -> None:
+            super().__init__(pattern=pattern, exit_ma=exit_ma, atr_window=atr_window)
 
     _PatternStrategy.__name__ = "Candle_" + pattern.title().replace("_", "")
     _PatternStrategy.__qualname__ = _PatternStrategy.__name__

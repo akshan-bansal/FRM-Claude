@@ -60,8 +60,16 @@ class ConfirmOverlay(Strategy):
         base: Strategy,
         patterns: tuple[str, ...] = REVERSAL_CONFIRM,
         lookback: int = 3,
+        symbol: str | None = None,
     ) -> None:
-        super().__init__(base=base.name, patterns=patterns, lookback=lookback)
+        # Asset-aware pattern filtering: when a symbol is supplied, drop gap-dependent
+        # patterns for 24/7 markets (crypto, FX) where the pattern would practically never
+        # fire on continuous bars. Filtering only removes patterns — never adds — so the
+        # gate stays strictly a precision filter.
+        if symbol is not None:
+            from ..analysis.calibration import confirm_patterns_for
+            patterns = confirm_patterns_for(symbol, patterns)
+        super().__init__(base=base.name, patterns=patterns, lookback=lookback, symbol=symbol)
         if lookback < 1:
             raise ValueError("lookback must be >= 1")
         unknown = set(patterns) - set(CANDLESTICK_PATTERNS)
@@ -72,6 +80,7 @@ class ConfirmOverlay(Strategy):
         self.base = base
         self.patterns = tuple(patterns)
         self.lookback = lookback
+        self.symbol = symbol
         # Carry the base's opt-in exits through the wrapper (stop / trailing / time stop).
         self.stop_atr_mult = base.stop_atr_mult
         self.trail_atr_mult = base.trail_atr_mult
@@ -120,8 +129,8 @@ def _make_confirm_strategy(base_name: str, factory: Callable[[], Strategy]) -> t
         name = f"confirm_{base_name}"
         description = f"{base_name} entries gated by bullish candlestick reversal confirmation"
 
-        def __init__(self) -> None:
-            super().__init__(base=factory())
+        def __init__(self, symbol: str | None = None) -> None:
+            super().__init__(base=factory(), symbol=symbol)
 
     _ConfirmStrategy.__name__ = "Confirm" + base_name.title().replace("_", "")
     _ConfirmStrategy.__qualname__ = _ConfirmStrategy.__name__

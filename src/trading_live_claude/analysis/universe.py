@@ -512,6 +512,46 @@ CRYPTO_SLEEVE: dict[str, CryptoSleeveEntry] = {
     "XLM/USD": CryptoSleeveEntry("XLM/USD", "XLMUSD", "bollinger", 1.01, {}),
     "LINK/USD": CryptoSleeveEntry("LINK/USD", "LINKUSD", "atr_channel", 0.93, {"ema_window": 30, "k": 1.5}),
     "ETH/USD": CryptoSleeveEntry("ETH/USD", "ETHUSD", "macd", 0.62, {"fast": 16, "slow": 34}),
+    # ---- 2026-09-05 expansion: majors + DeFi governance + privacy coins ---------------
+    # All screen_score=0.0 (no sweep-derived score) — treat these as tier=screened until
+    # walk-forward evidence lands. Strategy assignments follow microstructure archetype
+    # rather than empirical tuning: majors get bollinger (standard MR baseline), DeFi
+    # governance gets rsi_meanrevert (governance tokens historically mean-revert around
+    # protocol-fee news), privacy coins get macd (mirrors XMR's existing assignment for
+    # a like-family baseline). Kraken pair codes verified against Kraken's live listing.
+    #
+    # High-liquidity majors — SOL / ADA / POL (Polygon rebranded MATIC → POL in 2024;
+    # Kraken uses the POL code on the wire).
+    # SOL + ADA left at screen_score=0.0 (observers) — they cluster tightly with BTC/ETH
+    # (avg |ρ| ~0.62 per 2026-09-05 correlation matrix) and add no diversification beyond
+    # what the L2/staking archetype POL already covers.
+    "SOL/USD":  CryptoSleeveEntry("SOL/USD",  "SOLUSD",  "bollinger", 0.0, {}),
+    "ADA/USD":  CryptoSleeveEntry("ADA/USD",  "ADAUSD",  "bollinger", 0.0, {}),
+    # POL — promoted 2026-09-05 as the L2/scaling-solution archetype anchor (previously
+    # unrepresented in the sleeve). Cluster-tier correlation (0.59) is expected; the baseline
+    # score reflects "cluster member, distinct sub-category" rather than "diversifier". Score
+    # 0.80 places it below XLM (1.01) so the allocator still trims it under BTC/ETH beta.
+    "POL/USD":  CryptoSleeveEntry("POL/USD",  "POLUSD",  "bollinger", 0.80, {}),
+    # DeFi governance — UNI (Uniswap), AAVE (lending protocol), MKR (MakerDAO). All three
+    # trade on protocol-fee and treasury news, which is exactly the kind of OSINT-adjacent
+    # motion the intel wing is meant to surface.
+    # UNI left at screen_score=0.0 (observer) — AAVE already covers the DeFi-governance
+    # archetype; UNI's incremental cluster correlation (0.57 vs AAVE's 0.60) doesn't justify
+    # sizing both.
+    "UNI/USD":  CryptoSleeveEntry("UNI/USD",  "UNIUSD",  "rsi_meanrevert", 0.0, {}),
+    # AAVE — promoted 2026-09-05 as the DeFi-governance archetype anchor. Same "cluster
+    # member, distinct sub-category" logic as POL; baseline 0.80.
+    "AAVE/USD": CryptoSleeveEntry("AAVE/USD", "AAVEUSD", "rsi_meanrevert", 0.80, {}),
+    # MKR (MakerDAO) intentionally omitted — Kraken /public/OHLC returns "EQuery:Invalid asset
+    # pair" for MKRUSD. Kraken uses a different pair code (or does not list MKR/USD directly on
+    # the US endpoint). Not worth chasing today; UNI + AAVE cover the DeFi-governance archetype.
+    # Privacy coin — ZEC (Zcash). Regulatory-sensitive alongside XMR; adding both spreads
+    # the privacy-coin regulatory exposure across two distinct communities and protocols.
+    # ZEC — promoted 2026-09-05 as a real diversifier (avg |ρ| 0.41 per correlation matrix,
+    # comparable to XMR's 0.39; privacy premium detaches from crypto beta). Baseline 1.50 —
+    # higher than pure-cluster promotions because it adds real breadth to the sleeve, and
+    # slightly under XMR (1.66) to reflect "similar tier, XMR remains the primary privacy leg".
+    "ZEC/USD":  CryptoSleeveEntry("ZEC/USD",  "ZECUSD",  "macd", 1.50, {"fast": 16, "slow": 34}),
 }
 
 
