@@ -247,9 +247,11 @@ def main() -> None:
             thesis_fn=_thesis,
         )
         router = _wiring.router
-        print(f"[ib-paper] --require-card ON — approval shim at {_wiring.shim_url}. "
-              f"Register a card via POST /card/register then long-poll /intents/pending.",
+        print(f"[ib-paper] --require-card ON — approval shim at {_wiring.shim_url}.",
               flush=True)
+        print(f"[ib-paper] card auth token: {_wiring.auth_token}", flush=True)
+        print("[ib-paper] Pair the card by passing the token as "
+              "Authorization: Bearer <token> on every request.", flush=True)
 
     market = MarketData(exec_broker, cache=CandleCache(settings.data_cache_dir))
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)

@@ -60,11 +60,14 @@ def pubkey_pem(key: Ed25519PrivateKey) -> bytes:
 # HTTP helpers                                                                #
 # --------------------------------------------------------------------------- #
 
+_AUTH_HEADERS: dict[str, str] = {}
+
+
 def _post(url: str, body: dict) -> tuple[int, dict]:
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **_AUTH_HEADERS},
         method="POST",
     )
     try:
@@ -75,8 +78,9 @@ def _post(url: str, body: dict) -> tuple[int, dict]:
 
 
 def _get(url: str) -> tuple[int, dict]:
+    req = urllib.request.Request(url, headers=_AUTH_HEADERS)
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read().decode("utf-8") or "{}")
@@ -197,7 +201,12 @@ def main() -> None:
         help="auto-respond to every prompt; omit for interactive tap-simulation",
     )
     ap.add_argument("--poll", type=float, default=1.0, help="poll interval seconds")
+    ap.add_argument("--auth-token", default=None,
+                    help="Bearer token to send with every request; must match the "
+                         "shim's --auth-token (paper scripts print this at startup).")
     args = ap.parse_args()
+    if args.auth_token:
+        _AUTH_HEADERS["Authorization"] = f"Bearer {args.auth_token}"
 
     key = load_or_create_key(args.key_file)
     print(f"card key: {args.key_file}")

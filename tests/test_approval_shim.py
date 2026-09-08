@@ -122,6 +122,96 @@ def test_publish_and_respond_flow(shim):
     assert resp["accepted"] is True
 
 
+def test_revoke_card(shim):
+    key = Ed25519PrivateKey.generate()
+    pem = key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    status, _ = _post(f"{shim['url']}/card/register",
+                      {"card_id": "cX", "pubkey_pem": pem.decode()})
+    assert status == 201
+    assert "cX" in shim["registry"].card_ids()
+
+    req = urllib.request.Request(f"{shim['url']}/card/cX", method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            body = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body = json.loads((e.read() or b"{}").decode())
+    assert body["revoked"] is True
+    assert "cX" not in shim["registry"].card_ids()
+
+
+@pytest.fixture
+def shim_auth(tmp_path, monkeypatch):
+    from trading_live_claude.intel import vs_engine
+    writeup_dir = tmp_path / "writeups"
+    writeup_dir.mkdir()
+    monkeypatch.setattr(vs_engine, "DEFAULT_WRITEUP_DIR", writeup_dir)
+    import trading_live_claude.execution.approval_server as srv_mod
+    monkeypatch.setattr(srv_mod, "DEFAULT_WRITEUP_DIR", writeup_dir)
+
+    registry = CardRegistry()
+    store = InMemoryApprovalStore(registry)
+    port = _find_free_port()
+    token = "s3cret-token-x"
+    from trading_live_claude.execution.approval_server import start_shim_thread
+    start_shim_thread(store, registry, "127.0.0.1", port, auth_token=token)
+    import time
+    for _ in range(50):
+        try:
+            _get(f"http://127.0.0.1:{port}/healthz")
+            break
+        except urllib.error.URLError:
+            time.sleep(0.02)
+    yield {"url": f"http://127.0.0.1:{port}", "token": token,
+           "store": store, "registry": registry, "writeup_dir": writeup_dir}
+
+
+def _post_auth(url, body, token):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": f"Bearer {token}"},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads((e.read() or b"{}").decode())
+
+
+def _get_auth(url, token):
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads((e.read() or b"{}").decode())
+
+
+def test_auth_healthz_public_even_when_required(shim_auth):
+    status, body = _get(f"{shim_auth['url']}/healthz")
+    assert status == 200
+    assert body["ok"] is True
+
+
+def test_auth_rejects_missing_bearer(shim_auth):
+    status, _ = _get(f"{shim_auth['url']}/intents/pending")
+    assert status == 401
+
+
+def test_auth_rejects_wrong_bearer(shim_auth):
+    status, _ = _get_auth(f"{shim_auth['url']}/intents/pending", "not-the-token")
+    assert status == 401
+
+
+def test_auth_accepts_correct_bearer(shim_auth):
+    status, body = _get_auth(f"{shim_auth['url']}/intents/pending", shim_auth["token"])
+    assert status == 200
+    assert body["prompts"] == []
+
+
 def test_publish_rejects_unknown_broker(shim):
     status, body = _post(f"{shim['url']}/intents", {
         "symbol": "X", "action": "Buy", "shares": 1, "entry": 1.0,

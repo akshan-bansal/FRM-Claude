@@ -30,7 +30,9 @@ directly.
 from __future__ import annotations
 
 import base64
+import hmac
 import json
+import secrets
 import sys
 import threading
 from datetime import UTC, datetime
@@ -53,9 +55,32 @@ def make_handler(
     registry: CardRegistry,
     *,
     writeup_dir: Path = DEFAULT_WRITEUP_DIR,
+    auth_token: str | None = None,
 ):
+    """Build the handler class.
+
+    ``auth_token`` — when set, every route EXCEPT ``GET /healthz`` requires
+    ``Authorization: Bearer <token>``. Constant-time comparison. Unset (None)
+    means the shim runs open, which is only safe on strict loopback.
+    """
+
+    _PUBLIC_PATHS = {"/healthz"}
+
     class Handler(BaseHTTPRequestHandler):
-        server_version = "TradeCardShim/0.2"
+        server_version = "TradeCardShim/0.3"
+
+        # -- auth ------------------------------------------------------- #
+
+        def _authorized(self) -> bool:
+            if auth_token is None:
+                return True
+            if self.path in _PUBLIC_PATHS:
+                return True
+            header = self.headers.get("Authorization", "")
+            if not header.startswith("Bearer "):
+                return False
+            presented = header[len("Bearer "):].strip()
+            return hmac.compare_digest(presented, auth_token)
 
         # -- helpers ----------------------------------------------------- #
 
@@ -85,6 +110,9 @@ def make_handler(
         # -- routing ----------------------------------------------------- #
 
         def do_GET(self) -> None:
+            if not self._authorized():
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "auth required"})
+                return
             if self.path.startswith("/intents/pending"):
                 prompts = [p.to_dict() for p in store.pending()]
                 self._send_json(HTTPStatus.OK, {"prompts": prompts})
@@ -129,6 +157,9 @@ def make_handler(
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "no route"})
 
         def do_POST(self) -> None:
+            if not self._authorized():
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "auth required"})
+                return
             try:
                 body = self._read_json()
             except json.JSONDecodeError:
@@ -198,6 +229,23 @@ def make_handler(
 
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "no route"})
 
+        def do_DELETE(self) -> None:
+            if not self._authorized():
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "auth required"})
+                return
+            if self.path.startswith("/card/"):
+                card_id = self.path.split("/", 2)[2].split("?")[0]
+                if not card_id:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "missing card_id"})
+                    return
+                revoked = registry.revoke(card_id)
+                self._send_json(
+                    HTTPStatus.OK if revoked else HTTPStatus.NOT_FOUND,
+                    {"card_id": card_id, "revoked": revoked},
+                )
+                return
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "no route"})
+
     return Handler
 
 
@@ -212,10 +260,13 @@ def run_shim(
     host: str = "127.0.0.1",
     port: int = 8787,
     writeup_dir: Path = DEFAULT_WRITEUP_DIR,
+    auth_token: str | None = None,
 ) -> None:
-    handler = make_handler(store, registry, writeup_dir=writeup_dir)
+    handler = make_handler(store, registry, writeup_dir=writeup_dir, auth_token=auth_token)
     httpd = ThreadingHTTPServer((host, port), handler)
-    sys.stderr.write(f"approval shim listening on http://{host}:{port}\n")
+    scheme = "http"
+    sys.stderr.write(f"approval shim listening on {scheme}://{host}:{port}"
+                     f"{' (auth required)' if auth_token else ' (OPEN — loopback only)'}\n")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -229,6 +280,7 @@ def start_shim_thread(
     host: str,
     port: int,
     writeup_dir: Path | None = None,
+    auth_token: str | None = None,
 ) -> threading.Thread:
     """Daemon-thread wrapper for :func:`run_shim`.
 
@@ -238,10 +290,17 @@ def start_shim_thread(
 
     def _serve() -> None:
         try:
-            run_shim(store, registry, host=host, port=port, writeup_dir=resolved)
+            run_shim(store, registry, host=host, port=port,
+                     writeup_dir=resolved, auth_token=auth_token)
         except Exception as e:  # pragma: no cover
             sys.stderr.write(f"[approval-shim] died: {e}\n")
 
     t = threading.Thread(target=_serve, name="approval-shim", daemon=True)
     t.start()
     return t
+
+
+def mint_auth_token() -> str:
+    """A URL-safe 32-byte token — 256 bits of entropy. Fine as a shared secret
+    between the paper script's shim thread and the card that pairs with it."""
+    return secrets.token_urlsafe(32)
