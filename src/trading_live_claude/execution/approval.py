@@ -29,7 +29,6 @@ from __future__ import annotations
 import secrets
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
@@ -478,25 +477,24 @@ def wire_card_approval(
     ttl_seconds: float = 90.0,
     start_shim: bool = True,
     thesis_fn: object | None = None,
-    shim_starter: "Callable[[InMemoryApprovalStore, CardRegistry, str, int], threading.Thread] | None" = None,
 ) -> CardWiring:
     """Build the card-approval layer around ``inner`` and (optionally) spin the shim.
 
-    ``shim_starter`` lets the caller inject the actual HTTP server (kept out
-    of this module so ``execution/`` stays free of transport dependencies).
-    The paper scripts pass ``scripts.approval_shim.start_shim_thread``. When
-    ``start_shim`` is False or ``shim_starter`` is None, the caller is
-    responsible for exposing ``store`` and ``registry`` over the network.
-
-    The shim thread returned is a daemon so it dies with the parent process.
+    When ``start_shim`` is True, an HTTP server (from
+    :mod:`.approval_server`) is launched in a daemon thread so callers get
+    the wire surface for free. Pass ``start_shim=False`` for tests or when
+    the store is being exposed some other way.
     """
     registry = CardRegistry()
     store = InMemoryApprovalStore(registry)
     router = ApprovalRouter(inner, store=store, ttl_seconds=ttl_seconds, thesis_fn=thesis_fn)
 
     shim_thread: threading.Thread | None = None
-    if start_shim and shim_starter is not None:
-        shim_thread = shim_starter(store, registry, shim_host, shim_port)
+    if start_shim:
+        # Local import so ``execution.approval`` stays importable in contexts
+        # (mypy runs, docs) where the HTTP layer isn't needed.
+        from .approval_server import start_shim_thread
+        shim_thread = start_shim_thread(store, registry, shim_host, shim_port)
 
     return CardWiring(
         router=router,
