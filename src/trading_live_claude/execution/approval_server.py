@@ -30,6 +30,7 @@ directly.
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import secrets
@@ -43,7 +44,54 @@ from pathlib import Path
 from ..brokers.models import OrderAction
 from ..intel.vs_engine import DEFAULT_WRITEUP_DIR
 from .approval import CardRegistry, InMemoryApprovalStore
+from .approval_schemas import PATHS, SCHEMAS
 from .router import OrderIntent
+
+# --------------------------------------------------------------------------- #
+# OpenAPI spec                                                                #
+# --------------------------------------------------------------------------- #
+
+SPEC_VERSION = "0.3.0"
+
+
+def _build_spec() -> dict:
+    return {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "TradeCard Approval Shim",
+            "version": SPEC_VERSION,
+            "description": (
+                "REST wire between the trading engine's ApprovalRouter and a "
+                "physical (or simulated) Ed25519 approval card. The card signs "
+                "the Prompt.canonical bytes; the shim verifies against a pubkey "
+                "registered under card_id. See NEXT_SESSION.md section 11 for "
+                "sequencing and remaining gaps."
+            ),
+            "contact": {"url": "https://github.com/akshan-bansal/FRM-Claude"},
+        },
+        "servers": [
+            {"url": "http://127.0.0.1:8787",
+             "description": "Default loopback shim"},
+            {"url": "https://tradecard.{host}",
+             "description": "Behind a Tailscale / Cloudflare tunnel — shape only",
+             "variables": {"host": {"default": "example.ts.net"}}},
+        ],
+        "security": [{"BearerAuth": []}],
+        "components": {
+            "securitySchemes": {
+                "BearerAuth": {"type": "http", "scheme": "bearer",
+                               "description": "Shared secret minted by the paper script "
+                                              "when --require-card is on, or supplied to "
+                                              "scripts/approval_shim.py via --auth-token."},
+            },
+            "schemas": SCHEMAS,
+        },
+        "paths": PATHS,
+    }
+
+
+_SPEC_JSON: bytes = json.dumps(_build_spec(), separators=(",", ":")).encode("utf-8")
+_SPEC_ETAG: str = '"' + hashlib.sha256(_SPEC_JSON).hexdigest()[:16] + '"'
 
 
 # --------------------------------------------------------------------------- #
@@ -64,7 +112,7 @@ def make_handler(
     means the shim runs open, which is only safe on strict loopback.
     """
 
-    _PUBLIC_PATHS = {"/healthz"}
+    _PUBLIC_PATHS = {"/healthz", "/openapi.json"}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "TradeCardShim/0.3"
@@ -127,6 +175,24 @@ def make_handler(
                 return
             if self.path == "/healthz":
                 self._send_json(HTTPStatus.OK, {"ok": True, "pending": len(store.pending())})
+                return
+            if self.path == "/openapi.json":
+                # Public. ETag'd; a client that already fetched can 304.
+                if self.headers.get("If-None-Match") == _SPEC_ETAG:
+                    self.send_response(HTTPStatus.NOT_MODIFIED)
+                    self.send_header("ETag", _SPEC_ETAG)
+                    self.end_headers()
+                    return
+                accept = self.headers.get("Accept", "")
+                ct = ("application/vnd.oai.openapi+json;version=3.1"
+                      if "vnd.oai.openapi" in accept else "application/json")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(len(_SPEC_JSON)))
+                self.send_header("Cache-Control", "public, max-age=300")
+                self.send_header("ETag", _SPEC_ETAG)
+                self.end_headers()
+                self.wfile.write(_SPEC_JSON)
                 return
             if self.path.startswith("/passbook"):
                 # /passbook?limit=N&offset=M  — newest-first resolved prompts.
