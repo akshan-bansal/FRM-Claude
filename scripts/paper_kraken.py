@@ -28,10 +28,12 @@ from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.kraken_ohlc import kraken_ohlc
 from trading_live_claude.data.market import MarketData
+from trading_live_claude.execution.approval import wire_card_approval
 from trading_live_claude.execution.router import Router
 from trading_live_claude.intel.interpret import interpret
 from trading_live_claude.intel.overlay import IntelSnapshot
 from trading_live_claude.intel.routing import OverlayProvider
+from trading_live_claude.intel.vs_engine import MarketContext, VSInvestmentEngine
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
 from trading_live_claude.portfolio.allocator import PortfolioAllocator
@@ -79,6 +81,13 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=300,
                     help="Poll interval, seconds. Kraken is 24/7 so this is real all the time.")
     ap.add_argument("--paper-equity", type=float, default=100_000.0)
+    ap.add_argument("--require-card", dest="require_card", action="store_true",
+                    help="Route every accepted intent through the ApprovalRouter — a physical "
+                         "TradeCard (or scripts/approval_card_sim.py) must ACCEPT before the "
+                         "order is dispatched. Boots the approval shim on --card-shim-port.")
+    ap.add_argument("--card-shim-port", type=int, default=8787)
+    ap.add_argument("--card-ttl", type=float, default=90.0,
+                    help="Seconds a card prompt stays live before it auto-EXPIRES.")
     ap.add_argument("--iterations", type=int, default=0,
                     help="0 = run forever; a positive N runs that many polls and stops.")
     args = ap.parse_args()
@@ -111,6 +120,22 @@ def main() -> None:
         max_open_positions=settings.max_open_positions,
         min_ticket_usd=settings.min_ticket_usd,
     )
+
+    if args.require_card:
+        _engine = VSInvestmentEngine()
+        def _thesis(intent, broker):
+            return _engine.explain(intent, broker=broker, market=MarketContext())
+        _wiring = wire_card_approval(
+            router,
+            shim_host="127.0.0.1",
+            shim_port=args.card_shim_port,
+            ttl_seconds=args.card_ttl,
+            thesis_fn=_thesis,
+        )
+        router = _wiring.router
+        print(f"[kraken-paper] --require-card ON — approval shim at {_wiring.shim_url}. "
+              f"Register a card via POST /card/register then long-poll /intents/pending.",
+              flush=True)
 
     market = MarketData(exec_broker, cache=CandleCache(settings.data_cache_dir))
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
