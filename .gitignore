@@ -58,3 +58,14 @@ desktop.ini
 # Notebooks
 .ipynb_checkpoints/
 data/fundamentals/*.csv
+
+# TradeCard firmware — ESP-IDF build outputs; the wheel only ships src/ Python.
+firmware/tradecard/build/
+firmware/tradecard/managed_components/
+firmware/tradecard/sdkconfig
+firmware/tradecard/sdkconfig.old
+firmware/tradecard/dependencies.lock
+
+# TradeCard runtime state
+state/card_sim/
+state/intel_writeups/
