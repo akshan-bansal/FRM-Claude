@@ -159,12 +159,14 @@ def main() -> None:
         _engine = VSInvestmentEngine()
         def _thesis(intent, broker):
             return _engine.explain(intent, broker=broker, market=MarketContext())
+        _card_db = Path(settings.state_dir) / "approval.db"
         _wiring = wire_card_approval(
             router,
             shim_host="127.0.0.1",
             shim_port=args.card_shim_port,
             ttl_seconds=args.card_ttl,
             thesis_fn=_thesis,
+            db_path=_card_db,
         )
         router = _wiring.router
         print(f"[kraken-paper] --require-card ON — approval shim at {_wiring.shim_url}.",

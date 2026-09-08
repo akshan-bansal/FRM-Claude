@@ -239,12 +239,14 @@ def main() -> None:
             # base-class contract update). For now the engine still renders a
             # useful thesis from the intent alone.
             return _engine.explain(intent, broker=broker, market=MarketContext())
+        _card_db = Path(settings.state_dir) / "approval.db"
         _wiring = wire_card_approval(
             router,
             shim_host="127.0.0.1",
             shim_port=args.card_shim_port,
             ttl_seconds=args.card_ttl,
             thesis_fn=_thesis,
+            db_path=_card_db,
         )
         router = _wiring.router
         print(f"[ib-paper] --require-card ON — approval shim at {_wiring.shim_url}.",

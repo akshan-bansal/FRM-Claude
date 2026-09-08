@@ -69,3 +69,6 @@ firmware/tradecard/dependencies.lock
 # TradeCard runtime state
 state/card_sim/
 state/intel_writeups/
+state/approval.db
+state/approval.db-wal
+state/approval.db-shm
