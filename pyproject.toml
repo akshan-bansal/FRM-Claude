@@ -50,6 +50,14 @@ l2 = [
 ml = [
     "scikit-learn>=1.9.0",
 ]
+# TradeCard approval shim, ASGI runtime. Install with `pip install .[shim]`
+# when running the shim as a standalone process or from paper_ib.py /
+# paper_kraken.py under --require-card. Not required for the trading
+# framework itself — the shim is opt-in per the zero-vendor-infra plan.
+shim = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
 
 [project.scripts]
 trading = "trading_live_claude.cli:app"
