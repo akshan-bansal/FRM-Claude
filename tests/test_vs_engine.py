@@ -67,6 +67,36 @@ def test_explain_returns_thesis_and_persists_writeup(tmp_path: Path):
     assert w.symbol == "XIC.TO"
     assert w.broker == "ib"
     assert "rank 3/42" in "; ".join(w.reason_clauses)
+    # Observation-flavored first clause names the symbol + strategy signal,
+    # not a directive to the reader.
+    assert w.reason_clauses[0].startswith("XIC.TO — momentum_breakout signal")
+    assert "(long side)" in w.reason_clauses[0]
+
+
+def test_thesis_reads_as_research_not_advice(tmp_path: Path):
+    """The thesis prose must not use imperative-mood order verbs.
+
+    Order side is still carried in the Prompt.action field and shown on the
+    card header — the customizer needs it to tap the right key — but the
+    thesis line itself is ex-ante backward-looking research, not ex-post
+    forward-looking advice. Regression guard on the framing.
+    """
+    engine = VSInvestmentEngine(writeup_dir=tmp_path)
+    market = MarketContext(strategy_rank=3, universe_size=42, r_multiple=1.6,
+                           trend_slope=0.35, rsi_14=58.0, atr_pct=0.012)
+    thesis, ref = engine.explain(_intent(), broker="ib", market=market)
+
+    banned_openings = ("BUY ", "SELL ", "Buy ", "Sell ")
+    assert not any(thesis.startswith(x) for x in banned_openings), thesis
+    # And no bare "<strategy> long <symbol> on <broker>" residue.
+    assert " long XIC.TO on ib" not in thesis
+    assert " short XIC.TO on ib" not in thesis
+    # Signal-fired observation is present.
+    assert "signal" in thesis
+    assert "XIC.TO" in thesis
+    # Writeup carries the observation clause too.
+    w = engine.load(ref)
+    assert any("signal" in c for c in w.reason_clauses)
 
 
 def test_overlay_risk_survives_truncation_over_notes(tmp_path: Path):

@@ -220,12 +220,22 @@ class VSInvestmentEngine:
     def _reason_clauses(
         intent: "OrderIntent", broker: str, m: MarketContext
     ) -> tuple[list[str], list[str]]:
-        """Return ``(core_clauses, note_clauses)``. Notes are droppable."""
+        """Return ``(core_clauses, note_clauses)``. Notes are droppable.
+
+        Framing is ex-ante backward-looking research, not ex-post forward-
+        looking advice: clauses describe an observation of the strategy's
+        state at this bar, not an instruction to the reader. The order side
+        (long / short) is included in parentheses because the customizer
+        needs it to tap the right key, but the sentence subject is the
+        signal that fired, never a directive. ``broker`` intentionally stays
+        out of the prose — it's already carried on the card header (`[IB]`),
+        in the ``Prompt.broker`` field, and inside the signed canonical bytes.
+        """
         parts: list[str] = []
 
-        # what and where
+        # what fired (observation-flavored)
         direction = "long" if intent.action.value.lower().startswith("b") else "short"
-        parts.append(f"{intent.strategy} {direction} {intent.symbol} on {broker}")
+        parts.append(f"{intent.symbol} — {intent.strategy} signal ({direction} side)")
 
         # strategy score / rank
         if m.strategy_rank is not None and m.universe_size:
@@ -233,22 +243,23 @@ class VSInvestmentEngine:
         elif m.strategy_score is not None:
             parts.append(f"score {m.strategy_score:+.2f}")
 
-        # risk/reward
+        # risk/reward — describes the pre-set stop/target geometry the
+        # strategy chose, not a recommendation of what to do.
         if m.r_multiple is not None:
             parts.append(f"R={m.r_multiple:.1f}")
         elif intent.target is not None and intent.entry != intent.stop:
             r = abs(intent.target - intent.entry) / abs(intent.entry - intent.stop)
             parts.append(f"R={r:.1f}")
 
-        # trend/vol tone
+        # trend/vol tone — signed slope reads as observation rather than
+        # the "up"/"down" arrow which nudges toward directional call.
         if m.trend_slope is not None:
-            arrow = "up" if m.trend_slope > 0 else "down"
-            parts.append(f"trend {arrow} {abs(m.trend_slope):.2f}%/d")
+            parts.append(f"trend {m.trend_slope:+.2f}%/d")
         if m.rsi_14 is not None:
             if m.rsi_14 < 30:
-                parts.append(f"RSI {m.rsi_14:.0f} oversold")
+                parts.append(f"RSI {m.rsi_14:.0f} (oversold zone)")
             elif m.rsi_14 > 70:
-                parts.append(f"RSI {m.rsi_14:.0f} overbought")
+                parts.append(f"RSI {m.rsi_14:.0f} (overbought zone)")
         if m.atr_pct is not None:
             parts.append(f"ATR {m.atr_pct * 100:.1f}%")
 
