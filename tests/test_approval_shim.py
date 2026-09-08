@@ -288,6 +288,97 @@ def test_passbook_requires_auth(shim_auth):
     assert body["entries"] == []
 
 
+# --------------------------------------------------------------------------- #
+# OpenAPI                                                                     #
+# --------------------------------------------------------------------------- #
+
+_VALID_METHODS = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+
+
+def _fetch_spec(url):
+    req = urllib.request.Request(f"{url}/openapi.json")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return r.status, r.headers, json.loads(r.read().decode())
+
+
+def test_openapi_is_public(shim_auth):
+    # No bearer at all.
+    status, headers, spec = _fetch_spec(shim_auth["url"])
+    assert status == 200
+    assert headers.get("ETag")
+    assert spec["openapi"].startswith("3.1")
+
+
+def test_openapi_shape_looks_like_openapi(shim):
+    status, _, spec = _fetch_spec(shim["url"])
+    assert status == 200
+    assert "info" in spec and "title" in spec["info"] and "version" in spec["info"]
+    assert "paths" in spec and spec["paths"]
+    assert "components" in spec and "schemas" in spec["components"]
+    assert "BearerAuth" in spec["components"]["securitySchemes"]
+    # Every path uses a valid HTTP method
+    for path, ops in spec["paths"].items():
+        assert path.startswith("/"), path
+        for method in ops:
+            assert method in _VALID_METHODS, (path, method)
+    # Every $ref points at a component that exists
+    ref_targets = _walk_refs(spec)
+    for ref in ref_targets:
+        assert ref.startswith("#/components/schemas/"), ref
+        name = ref.split("/")[-1]
+        assert name in spec["components"]["schemas"], name
+
+
+def _walk_refs(node, acc=None):
+    if acc is None:
+        acc = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "$ref" and isinstance(v, str):
+                acc.append(v)
+            else:
+                _walk_refs(v, acc)
+    elif isinstance(node, list):
+        for v in node:
+            _walk_refs(v, acc)
+    return acc
+
+
+def test_openapi_covers_every_live_route(shim):
+    # Drift guard: every route the shim actually serves must appear in the spec.
+    _, _, spec = _fetch_spec(shim["url"])
+
+    live_routes = {
+        ("GET",    "/healthz"),
+        ("GET",    "/openapi.json"),
+        ("POST",   "/card/register"),
+        ("DELETE", "/card/{card_id}"),
+        ("POST",   "/intents"),
+        ("GET",    "/intents/pending"),
+        ("GET",    "/intents/{intent_id}"),
+        ("POST",   "/intents/{intent_id}/response"),
+        ("GET",    "/intel/{ref}"),
+        ("GET",    "/passbook"),
+    }
+    spec_routes = {(m.upper(), p) for p, ops in spec["paths"].items() for m in ops}
+    missing = live_routes - spec_routes
+    assert not missing, f"spec missing routes: {missing}"
+
+
+def test_openapi_etag_304(shim):
+    _, headers, _ = _fetch_spec(shim["url"])
+    etag = headers.get("ETag")
+    assert etag
+    req = urllib.request.Request(f"{shim['url']}/openapi.json",
+                                 headers={"If-None-Match": etag})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    assert status == 304
+
+
 def test_passbook_captures_expired(shim):
     # Publish an intent that will expire before a response comes.
     intent_body = {
