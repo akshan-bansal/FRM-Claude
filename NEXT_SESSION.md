@@ -1215,15 +1215,37 @@ _(Original spec + correlation cluster table pruned 2026-09-08 — recover from g
 
 ---
 
-## 11. TradeCard — six-axis gap closure  🟠 SKELETON LANDED, INTEGRATION PENDING
+## 11. TradeCard — six-axis gap closure  🟢 INTEGRATED, GAP CLOSURE IN PROGRESS
 
-**Status (2026-09-06).** An approval-card layer landed uncommitted on the current branch:
-`ApprovalRouter` wraps the existing `Router` and blocks each accepted intent on a card-signed
-Ed25519 ACCEPT; a laptop shim (stdlib HTTP on `127.0.0.1:8787`) exposes the store; a fake-card
-Python simulator round-trips real signatures; an ESP32-S3 firmware skeleton (PCD8544 LCD,
-5-key D-pad, NVS-backed passbook) speaks the protocol; a `VSInvestmentEngine` narrates every
-intent into a `<=140` char thesis + persisted writeup; `--require-card` toggles the whole
-pipeline in `paper_ib.py` and `paper_kraken.py`. 29 tests pass. Nothing is committed.
+**Status (2026-09-08).** Landed on `feat/tradecard-approval` at
+<https://github.com/akshan-bansal/FRM-Claude/pull/new/feat/tradecard-approval>
+as 8 coherent commits: ApprovalRouter, VS engine, shim + fake-card sim,
+ESP32-S3 firmware skeleton, `--require-card` in paper scripts, CLAUDE.md
+wiring, then three sub-obj 4 closures — bearer auth + `DELETE /card/{id}`,
+`GET /passbook`, `GET /openapi.json`. **43 tests pass.**
+
+### Sub-obj 4 queue (next commits on the same branch)
+
+- **URL versioning to `/v1/…`** — freeze the wire before firmware pins its paths.
+  Every route the shim serves today gets remounted at `/v1/{route}`; the
+  bare paths (e.g. `/intents/pending`) return `301 Moved Permanently` to
+  `/v1/…` for one release, then drop. `info.version` in the OpenAPI spec
+  goes to `1.0.0`. Card simulator + firmware README + the paper scripts'
+  “register a card via POST /card/register” lines all get bumped. Add a
+  CI check that fails when a live route lacks a `/v1/` prefix.
+- **Multi-broker routing inside a single Router** — today's `Router` holds
+  one `Broker` instance and the card just displays whatever
+  `router.broker.name` is set to. Turn `intent.broker` into a real routing
+  key: `Router(brokers: dict[str, Broker], default: str)`, dispatch inside
+  `submit()` selects by `intent.broker` (falls back to `default`), and
+  every existing risk gate keeps running unchanged. `wire_card_approval`
+  passes the dispatched broker name into the prompt so the WYSIWYS
+  canonical remains the true destination. Follow-ups this enables:
+  IB-plus-Kraken on one paper process, per-broker daily budgets, and the
+  Canadian-user story where equities go to IB and crypto to Kraken.
+
+Both build cleanly on what's already merged; nothing here changes
+`Router._gate` or the autonomous-daemon gate list.
 
 **Sub-objective 0: complete integration into the GitHub repo — DO THIS FIRST.**
 Everything else in this section presumes the code is landed on `main` behind a feature flag,
