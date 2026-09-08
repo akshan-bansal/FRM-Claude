@@ -61,14 +61,14 @@ idf.py build flash monitor
 
 ## Protocol contract (must match `src/trading_live_claude/execution/approval.py`)
 
-- Register: `POST /card/register` with `{card_id, pubkey_pem}` — Ed25519 SPKI PEM.
-- Poll: `GET /intents/pending` → `{prompts: [Prompt]}`.
+- Register: `POST /v1/card/register` with `{card_id, pubkey_pem}` — Ed25519 SPKI PEM.
+- Poll: `GET /v1/intents/pending` → `{prompts: [Prompt]}`.
 - Prompt fields the card should display: `broker`, `action`, `symbol`,
   `shares`, `notional_usd`, `thesis` (and `intel_ref` for a full writeup
   the phone bridge can fetch). The `expires_at` field drives the countdown.
 - Sign: exactly the `canonical` string field of the prompt, as bytes.
   Canonical order is `broker|action|symbol|shares|entry|notional|account|intent_id|nonce`.
-- Respond: `POST /intents/{id}/response` with
+- Respond: `POST /v1/intents/{id}/response` with
   `{decision: "ACCEPT"|"DECLINE", card_id, signature: base64(ed25519_sig)}`.
 
 The shim rejects unknown cards, bad signatures, expired intents, and replays.
@@ -107,7 +107,7 @@ Use `scripts/approval_card_sim.py` — it speaks the same protocol, now with
 broker + thesis rendering. Post an intent with a broker choice:
 
 ```
-curl -X POST http://127.0.0.1:8787/intents \
+curl -X POST http://127.0.0.1:8787/v1/intents \
   -H 'Content-Type: application/json' \
   -d '{"symbol":"XIC.TO","action":"Buy","shares":12,"entry":31.05,
        "stop":30.40,"target":32.10,"strategy":"vs_engine_v3",

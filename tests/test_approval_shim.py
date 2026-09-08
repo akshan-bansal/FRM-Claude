@@ -73,20 +73,20 @@ def test_intel_endpoint_returns_writeup(shim):
     ref = "vs_test_abc"
     payload = {"intel_ref": ref, "thesis": "unit test", "warnings": []}
     (shim["writeup_dir"] / f"{ref}.json").write_text(json.dumps(payload))
-    status, body = _get(f"{shim['url']}/intel/{ref}")
+    status, body = _get(f"{shim['url']}/v1/intel/{ref}")
     assert status == 200
     assert body["thesis"] == "unit test"
 
 
 def test_intel_endpoint_404_for_unknown(shim):
-    status, _ = _get(f"{shim['url']}/intel/vs_nope")
+    status, _ = _get(f"{shim['url']}/v1/intel/vs_nope")
     assert status == 404
 
 
 @pytest.mark.parametrize("bad", ["..", "../etc", "a/b", "a\\b", ""])
 def test_intel_endpoint_rejects_path_traversal(shim, bad):
     import urllib.parse
-    url = f"{shim['url']}/intel/{urllib.parse.quote(bad, safe='')}"
+    url = f"{shim['url']}/v1/intel/{urllib.parse.quote(bad, safe='')}"
     status, _ = _get(url)
     assert status in (400, 404)
 
@@ -97,7 +97,7 @@ def test_publish_and_respond_flow(shim):
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    status, _ = _post(f"{shim['url']}/card/register",
+    status, _ = _post(f"{shim['url']}/v1/card/register",
                       {"card_id": "c1", "pubkey_pem": pem.decode()})
     assert status == 201
 
@@ -107,14 +107,14 @@ def test_publish_and_respond_flow(shim):
         "risk_dollars": 7.80, "account_number": "paper-001",
         "broker": "ib", "ttl_seconds": 5,
     }
-    status, prompt = _post(f"{shim['url']}/intents", intent_body)
+    status, prompt = _post(f"{shim['url']}/v1/intents", intent_body)
     assert status == 201
     assert prompt["broker"] == "ib"
     assert "canonical" in prompt
 
     sig = key.sign(prompt["canonical"].encode())
     status, resp = _post(
-        f"{shim['url']}/intents/{prompt['intent_id']}/response",
+        f"{shim['url']}/v1/intents/{prompt['intent_id']}/response",
         {"decision": "ACCEPT", "card_id": "c1",
          "signature": base64.b64encode(sig).decode()},
     )
@@ -128,12 +128,12 @@ def test_revoke_card(shim):
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    status, _ = _post(f"{shim['url']}/card/register",
+    status, _ = _post(f"{shim['url']}/v1/card/register",
                       {"card_id": "cX", "pubkey_pem": pem.decode()})
     assert status == 201
     assert "cX" in shim["registry"].card_ids()
 
-    req = urllib.request.Request(f"{shim['url']}/card/cX", method="DELETE")
+    req = urllib.request.Request(f"{shim['url']}/v1/card/cX", method="DELETE")
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             body = json.loads(r.read().decode())
@@ -197,17 +197,17 @@ def test_auth_healthz_public_even_when_required(shim_auth):
 
 
 def test_auth_rejects_missing_bearer(shim_auth):
-    status, _ = _get(f"{shim_auth['url']}/intents/pending")
+    status, _ = _get(f"{shim_auth['url']}/v1/intents/pending")
     assert status == 401
 
 
 def test_auth_rejects_wrong_bearer(shim_auth):
-    status, _ = _get_auth(f"{shim_auth['url']}/intents/pending", "not-the-token")
+    status, _ = _get_auth(f"{shim_auth['url']}/v1/intents/pending", "not-the-token")
     assert status == 401
 
 
 def test_auth_accepts_correct_bearer(shim_auth):
-    status, body = _get_auth(f"{shim_auth['url']}/intents/pending", shim_auth["token"])
+    status, body = _get_auth(f"{shim_auth['url']}/v1/intents/pending", shim_auth["token"])
     assert status == 200
     assert body["prompts"] == []
 
@@ -223,10 +223,10 @@ def _publish_and_respond(shim, key, card_id, decision):
         "risk_dollars": 0.5, "account_number": "p1",
         "broker": "ib", "ttl_seconds": 5,
     }
-    _, prompt = _post(f"{shim['url']}/intents", intent_body)
+    _, prompt = _post(f"{shim['url']}/v1/intents", intent_body)
     sig = key.sign(prompt["canonical"].encode())
     _post(
-        f"{shim['url']}/intents/{prompt['intent_id']}/response",
+        f"{shim['url']}/v1/intents/{prompt['intent_id']}/response",
         {"decision": decision, "card_id": card_id,
          "signature": base64.b64encode(sig).decode()},
     )
@@ -239,13 +239,13 @@ def test_passbook_returns_resolved_prompts_newest_first(shim):
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    _post(f"{shim['url']}/card/register",
+    _post(f"{shim['url']}/v1/card/register",
           {"card_id": "cp", "pubkey_pem": pem.decode()})
 
     id_a = _publish_and_respond(shim, key, "cp", "ACCEPT")
     id_b = _publish_and_respond(shim, key, "cp", "DECLINE")
 
-    status, body = _get(f"{shim['url']}/passbook")
+    status, body = _get(f"{shim['url']}/v1/passbook")
     assert status == 200
     ids = [e["intent_id"] for e in body["entries"]]
     verdicts = [e["verdict"] for e in body["entries"]]
@@ -262,28 +262,28 @@ def test_passbook_pagination(shim):
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    _post(f"{shim['url']}/card/register",
+    _post(f"{shim['url']}/v1/card/register",
           {"card_id": "cp", "pubkey_pem": pem.decode()})
     ids = [_publish_and_respond(shim, key, "cp", "ACCEPT") for _ in range(5)]
 
-    status, body = _get(f"{shim['url']}/passbook?limit=2&offset=0")
+    status, body = _get(f"{shim['url']}/v1/passbook?limit=2&offset=0")
     assert status == 200
     assert len(body["entries"]) == 2
     assert [e["intent_id"] for e in body["entries"]] == [ids[4], ids[3]]
 
-    status, body = _get(f"{shim['url']}/passbook?limit=2&offset=2")
+    status, body = _get(f"{shim['url']}/v1/passbook?limit=2&offset=2")
     assert [e["intent_id"] for e in body["entries"]] == [ids[2], ids[1]]
 
 
 def test_passbook_rejects_bad_params(shim):
-    status, _ = _get(f"{shim['url']}/passbook?limit=abc")
+    status, _ = _get(f"{shim['url']}/v1/passbook?limit=abc")
     assert status == 400
 
 
 def test_passbook_requires_auth(shim_auth):
-    status, _ = _get(f"{shim_auth['url']}/passbook")
+    status, _ = _get(f"{shim_auth['url']}/v1/passbook")
     assert status == 401
-    status, body = _get_auth(f"{shim_auth['url']}/passbook", shim_auth["token"])
+    status, body = _get_auth(f"{shim_auth['url']}/v1/passbook", shim_auth["token"])
     assert status == 200
     assert body["entries"] == []
 
@@ -346,23 +346,54 @@ def _walk_refs(node, acc=None):
 
 def test_openapi_covers_every_live_route(shim):
     # Drift guard: every route the shim actually serves must appear in the spec.
+    # /healthz and /openapi.json stay unversioned (bootstrap surfaces); every
+    # other route lives under /v1/….
     _, _, spec = _fetch_spec(shim["url"])
 
     live_routes = {
         ("GET",    "/healthz"),
         ("GET",    "/openapi.json"),
-        ("POST",   "/card/register"),
-        ("DELETE", "/card/{card_id}"),
-        ("POST",   "/intents"),
-        ("GET",    "/intents/pending"),
-        ("GET",    "/intents/{intent_id}"),
-        ("POST",   "/intents/{intent_id}/response"),
-        ("GET",    "/intel/{ref}"),
-        ("GET",    "/passbook"),
+        ("POST",   "/v1/card/register"),
+        ("DELETE", "/v1/card/{card_id}"),
+        ("POST",   "/v1/intents"),
+        ("GET",    "/v1/intents/pending"),
+        ("GET",    "/v1/intents/{intent_id}"),
+        ("POST",   "/v1/intents/{intent_id}/response"),
+        ("GET",    "/v1/intel/{ref}"),
+        ("GET",    "/v1/passbook"),
     }
     spec_routes = {(m.upper(), p) for p, ops in spec["paths"].items() for m in ops}
     missing = live_routes - spec_routes
     assert not missing, f"spec missing routes: {missing}"
+
+    # Every non-public route the spec advertises MUST carry the /v1/ prefix.
+    unversioned_leaks = [
+        p for p in spec["paths"]
+        if p not in {"/healthz", "/openapi.json"} and not p.startswith("/v1/")
+    ]
+    assert not unversioned_leaks, f"unversioned routes leaked: {unversioned_leaks}"
+
+
+def test_legacy_unversioned_path_still_works(shim):
+    """Deprecation window — legacy callers get an answer, not a 404. When the
+    window closes and legacy paths are removed, delete this test."""
+    key = Ed25519PrivateKey.generate()
+    pem = key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    status, _ = _post(f"{shim['url']}/card/register",
+                      {"card_id": "legacy1", "pubkey_pem": pem.decode()})
+    assert status == 201
+    # And the versioned path still resolves against the same in-process store.
+    status, _ = _post(f"{shim['url']}/v1/card/register",
+                      {"card_id": "legacy1", "pubkey_pem": pem.decode()})
+    assert status == 201
+
+
+def test_openapi_version_is_10(shim):
+    _, _, spec = _fetch_spec(shim["url"])
+    assert spec["info"]["version"].startswith("1.")
 
 
 def test_openapi_etag_304(shim):
@@ -387,12 +418,12 @@ def test_passbook_captures_expired(shim):
         "risk_dollars": 0.5, "account_number": "p1",
         "broker": "ib", "ttl_seconds": 0.05,
     }
-    _post(f"{shim['url']}/intents", intent_body)
+    _post(f"{shim['url']}/v1/intents", intent_body)
     import time
     time.sleep(0.2)
     # A pending() call sweeps expired; passbook() then returns the record.
-    _get(f"{shim['url']}/intents/pending")
-    status, body = _get(f"{shim['url']}/passbook")
+    _get(f"{shim['url']}/v1/intents/pending")
+    status, body = _get(f"{shim['url']}/v1/passbook")
     assert status == 200
     assert body["entries"]
     assert body["entries"][0]["verdict"] == "EXPIRED"
@@ -400,7 +431,7 @@ def test_passbook_captures_expired(shim):
 
 
 def test_publish_rejects_unknown_broker(shim):
-    status, body = _post(f"{shim['url']}/intents", {
+    status, body = _post(f"{shim['url']}/v1/intents", {
         "symbol": "X", "action": "Buy", "shares": 1, "entry": 1.0,
         "stop": 0.9, "target": 1.1, "strategy": "t", "risk_dollars": 0.1,
         "account_number": "a", "broker": "robinhood",

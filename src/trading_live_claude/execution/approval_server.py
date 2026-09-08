@@ -51,7 +51,7 @@ from .router import OrderIntent
 # OpenAPI spec                                                                #
 # --------------------------------------------------------------------------- #
 
-SPEC_VERSION = "0.3.0"
+SPEC_VERSION = "1.0.0"
 
 
 def _build_spec() -> dict:
@@ -112,10 +112,38 @@ def make_handler(
     means the shim runs open, which is only safe on strict loopback.
     """
 
+    # These stay unversioned so a fresh client can bootstrap (fetch the spec,
+    # probe liveness) before knowing which API version to hit. Everything else
+    # lives under /v1/…; the OpenAPI paths in approval_schemas.py already
+    # carry the prefix.
     _PUBLIC_PATHS = {"/healthz", "/openapi.json"}
+    _VERSIONED_PREFIX = "/v1"
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "TradeCardShim/0.3"
+        server_version = "TradeCardShim/1.0"
+
+        # -- URL versioning --------------------------------------------- #
+
+        def _normalize_path(self) -> None:
+            """Strip the ``/v1`` prefix and log a deprecation warning for
+            legacy (unversioned) callers.
+
+            Legacy paths continue to work during the deprecation window so
+            firmware and third-party clients aren't broken the day the spec
+            bumps to 1.0.0. When the window closes, delete the else branch
+            below and the same handler dispatches only ``/v1/…`` traffic.
+            """
+            if self.path in _PUBLIC_PATHS or self.path.startswith("/openapi.json"):
+                return
+            if self.path.startswith(_VERSIONED_PREFIX + "/"):
+                self.path = self.path[len(_VERSIONED_PREFIX):]
+                return
+            # Legacy shape — support it, but complain on the way through.
+            sys.stderr.write(
+                f"[approval-shim] DEPRECATED path {self.path} — clients should "
+                f"use {_VERSIONED_PREFIX}{self.path} (SPEC_VERSION {SPEC_VERSION}); "
+                f"legacy paths will be removed in a future release.\n"
+            )
 
         # -- auth ------------------------------------------------------- #
 
@@ -158,6 +186,7 @@ def make_handler(
         # -- routing ----------------------------------------------------- #
 
         def do_GET(self) -> None:
+            self._normalize_path()
             if not self._authorized():
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "auth required"})
                 return
@@ -240,6 +269,7 @@ def make_handler(
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "no route"})
 
         def do_POST(self) -> None:
+            self._normalize_path()
             if not self._authorized():
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "auth required"})
                 return
@@ -313,6 +343,7 @@ def make_handler(
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "no route"})
 
         def do_DELETE(self) -> None:
+            self._normalize_path()
             if not self._authorized():
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "auth required"})
                 return
