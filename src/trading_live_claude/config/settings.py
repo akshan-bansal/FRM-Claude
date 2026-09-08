@@ -92,9 +92,33 @@ class Settings(BaseSettings):
     risk_model: str = Field(default="cvar", pattern="^(atr|var|cvar)$")
     heat_aggregation: str = Field(default="corr", pattern="^(sum|corr)$")
     daily_loss_limit_pct: float = Field(default=0.03, ge=0.001, le=0.2)
-    max_drawdown_kill_switch: float = Field(default=0.10, ge=0.01, le=0.5)
+    # Kill-switch tightened 2026-09-08 from 0.10 → 0.03. Empirical rationale:
+    # 8% halted only after $8k paper loss on $100k; 3% catches runaway concentration
+    # early (typical single-position adverse move ~1-2% is within noise, 3% signals
+    # thesis breakdown or leverage-cap breach). Override in trading.yaml if wanted.
+    max_drawdown_kill_switch: float = Field(default=0.03, ge=0.01, le=0.5)
     max_open_positions: int = Field(default=5, ge=1, le=50)
     min_ticket_usd: float = Field(default=100.0, ge=0.0)
+
+    # Portfolio-level gross leverage cap (2026-09-08). Prevents the sleeve as a whole
+    # from exceeding available cash — orthogonal to the per-position vol-target
+    # leverage cap in PositionSizer, which is per-name only. Surfaced when a single QT
+    # paper session took 100% of equity on one VDY position while cash went to -$10k.
+    # 1.0 = no gross leverage (paper default); raise to 1.5-2.0 for margin accounts.
+    max_gross_leverage: float = Field(default=1.0, ge=0.1, le=5.0)
+
+    # Per-symbol notional cap as fraction of equity (2026-09-08). Prevents any single
+    # name from dominating the book even when the allocator's boost × vol-target ×
+    # leverage-cap chain would allow it. 0.50 = no single position may exceed half of
+    # equity. Weighted variant (by inverse relative vol) deferred to a follow-up.
+    max_position_notional_pct: float = Field(default=0.50, ge=0.01, le=1.0)
+
+    # Router-level intra-day forced-exit trigger (2026-09-08). Independent of the
+    # strategy's own exit bar. When a position's unrealized loss exceeds N × ATR_at_entry,
+    # Router.check_forced_exits emits a close intent on the next monitor poll. Runs on
+    # 5-min poll cadence — closes the gap where daily-bar strategies can't see mid-day
+    # drawdowns. Set to 0.0 to disable; typical range 2-4 (higher = more room for noise).
+    force_exit_atr_mult: float = Field(default=3.0, ge=0.0, le=10.0)
 
     default_strategy: str = "ema_crossover"
     default_symbols: str = "AAPL,MSFT,SHOP.TO,XIC.TO"
@@ -154,6 +178,9 @@ _TRADING_KNOB_FIELDS: tuple[str, ...] = (
     "max_drawdown_kill_switch",
     "max_open_positions",
     "min_ticket_usd",
+    "max_gross_leverage",
+    "max_position_notional_pct",
+    "force_exit_atr_mult",
     "default_strategy",
     "default_symbols",
     "timezone",

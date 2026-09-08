@@ -551,7 +551,7 @@ independence but removes the mis-routing hazard. ~40 lines + tests.
 + migration — ~4-6 hr, only if cross-venue trades get proposed). Gap 1 alone would have
 prevented both this week's mid-session failures; do it first, atlas can wait.
 
-## Risk-architecture follow-ups — 2026-09-08  🔴 QUEUED (surfaced from live paper session)
+## Risk-architecture follow-ups — 2026-09-08  🟢 4 OF 5 LANDED (item 4 data-blocked)
 
 Prompted by a QT paper session where VDY.TO at ts_momentum × 2.33× allocator boost hit the
 vol-target max_leverage=1.0 cap and took 100% of paper equity ($100,044 notional on
@@ -559,14 +559,14 @@ $99,995 equity). Loss reached −$416 (~0.42%) with no gate firing — well belo
 kill-switch and 3.0% daily-loss limit, and no strategy-level stop configured on
 ts_momentum. Four separate follow-ups:
 
-### 1. Tighten max-drawdown kill-switch: 8.0% → 3.0%
+### 1. Tighten max-drawdown kill-switch: 8.0% → 3.0%  ✅ LANDED 2026-09-08
 `config/trading.yaml::max_drawdown_kill_switch = 0.03`. The current 8.0% threshold is
 loose for a paper-validation context — by the time it trips the account has already lost
 $8k. 3.0% gives the same margin against real-world overnight-gap noise (~2σ on a broad
 equity book) but halts before catastrophic runaway. Router already reads this from
 settings so no code change; single config edit + relaunch.
 
-### 2. Dynamically-weighted max_position_notional_pct gate per symbol
+### 2. Dynamically-weighted max_position_notional_pct gate per symbol  ✅ LANDED 2026-09-08 (fixed 0.50 default; vol-weighted variant deferred)
 Add a router gate that caps single-symbol notional as a percent of equity, weighted by
 the position's own risk contribution (not just size). Shape:
 
@@ -582,7 +582,7 @@ the position's own risk contribution (not just size). Shape:
   new gate is per-name inside a sleeve, catches the "one boosted name saturates the
   leverage cap and takes 100% of equity" failure mode the sleeve-level cap misses.
 
-### 3. Move exit checks to intra-day bar cadence
+### 3. Move exit checks to intra-day bar cadence  ✅ CHEAP PATH LANDED 2026-09-08 (Router.check_forced_exits); real path (intra-day bar strategy hook) deferred
 ts_momentum (and other daily-bar strategies) currently check `generate_signals` on the
 daily close only, so a −0.4% intra-day drawdown is invisible until the next EOD bar.
 Two paths to fix:
@@ -598,7 +598,7 @@ Two paths to fix:
 Recommend starting with the cheap path (router-level unrealized-loss exit) since it
 protects every strategy uniformly and doesn't require per-strategy retrofits.
 
-### 4. Configure strategy-level risk-stops on the exit-less strategies
+### 4. Configure strategy-level risk-stops on the exit-less strategies  🟡 DATA-BLOCKED (needs WF)
 `strategies.base.Strategy` supports opt-in `stop_atr_mult` / `trail_atr_mult` /
 `time_stop_bars` but every strategy in the sleeve except `bollinger` (time_stop_bars=15)
 and `candlestick` (stop_atr_mult=3.0) leaves them at `None`. Concrete assignments to add
@@ -617,7 +617,7 @@ Each assignment must clear a walk-forward run before landing — an added stop t
 the OOS score is a bad trade for peace of mind. Bounded work: rerun tune per strategy
 family, keep the assignment only if sortino_over_dd improves.
 
-### 5. Portfolio cash-balance / gross-leverage gate on the router
+### 5. Portfolio cash-balance / gross-leverage gate on the router  ✅ LANDED 2026-09-08
 Surfaced from the same VDY-concentration session: 3 fills totaled $110,109 notional
 against $99,995 starting equity — paper broker allowed cash to go **negative (−$10,124)**
 because the sizer's `max_leverage=1.0` is per-position (vol-scale-ceiling), not
@@ -830,9 +830,11 @@ solutions; call out and prioritize. Full agent report lives in the session trans
    canonical; Questrade translates on its own side).
 4. ✅ **Conviction-clip / weight-bias contradiction** — LANDED commit `638f8d3` (raised to
    [0, 3.0] matching `weight_bias` cap in live_loop).
-5. **Wire `KillSwitch.evaluate` into `PaperBroker._journal_equity`** — 🔴 STILL OPEN. Now
-   subsumed into the "Risk-architecture follow-ups" section above (item 1: tighten kill-switch
-   to 3.0% AND wire the evaluate call).
+5. ✅ **Wire `KillSwitch.evaluate` into `PaperBroker._journal_equity`** — LANDED 2026-09-08.
+   PaperBroker._journal_equity now calls evaluate() with current equity + peak + day-open,
+   trips the file sentinel on breach; day-open equity resets on UTC date change. Combined
+   with the tightened 3.0% max_drawdown_kill_switch default, auto-halt in the README
+   architecture is now real.
 
 ---
 

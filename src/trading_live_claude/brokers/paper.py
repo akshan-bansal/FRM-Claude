@@ -79,6 +79,15 @@ class PaperBroker(Broker):
         self._realized_pnl = 0.0
         # Peak equity tracked for the drawdown series feeding the max-drawdown kill-switch invariant.
         self._peak_equity = starting_equity
+        # Kill-switch auto-halt wire-up (2026-09-08). Reuses the same file sentinel as the
+        # Router's KillSwitch, so tripping here immediately blocks Router.submit() on the
+        # next intent. Lazily constructed to avoid a hard config dependency; caller can
+        # override via ``kill_switch_thresholds=(max_dd, daily_loss)`` if the paper session
+        # needs different limits than the Router. Day-open equity is tracked per UTC date
+        # so the daily-loss branch of KillSwitch.evaluate has a stable baseline.
+        self._kill_switch = None                              # populated on first _journal_equity
+        self._day_open_equity: float = starting_equity
+        self._day_open_utc_date: str | None = None
 
     # ----- read-only data passes through feed -----------------------------
 
@@ -294,8 +303,18 @@ class PaperBroker(Broker):
         )
         self._peak_equity = max(self._peak_equity, equity)
         drawdown_pct = 0.0 if self._peak_equity <= 0 else (self._peak_equity - equity) / self._peak_equity
+
+        # Daily loss baseline — reset day_open_equity on UTC date change. Both the initial
+        # boot (day_open_utc_date is None) and every subsequent date rollover snapshot the
+        # equity BEFORE the new day's losses accrue.
+        now = datetime.now(UTC)
+        today = now.strftime("%Y-%m-%d")
+        if self._day_open_utc_date != today:
+            self._day_open_utc_date = today
+            self._day_open_equity = equity
+
         row = {
-            "ts": datetime.now(UTC).isoformat(),
+            "ts": now.isoformat(),
             "session_id": self.session_id,
             "equity": round(equity, 4),
             "cash": round(self._cash, 4),
@@ -313,6 +332,29 @@ class PaperBroker(Broker):
             if write_header:
                 w.writeheader()
             w.writerow(row)
+
+        # Auto-halt (2026-09-08 — closes audit-gap Top-5 #5). Call KillSwitch.evaluate() with
+        # the freshly-computed equity + peak + day_open. Trips the file sentinel if any
+        # threshold is breached; the Router's next submit() will see kill-switch tripped and
+        # reject. Lazy construction pattern: read thresholds from settings on first invocation
+        # so we don't pin the settings object at PaperBroker construction time.
+        try:
+            if self._kill_switch is None:
+                from ..config import get_settings
+                from ..risk.kill_switch import KillSwitch
+                _s = get_settings()
+                self._kill_switch = KillSwitch(
+                    d,
+                    max_drawdown_pct=_s.max_drawdown_kill_switch,
+                    daily_loss_limit_pct=_s.daily_loss_limit_pct,
+                )
+            self._kill_switch.evaluate(
+                equity=equity,
+                peak_equity=self._peak_equity,
+                day_open_equity=self._day_open_equity,
+            )
+        except Exception:                                # noqa: BLE001 — never let telemetry crash a paper session
+            pass
 
     @property
     def fills(self) -> list[Fill]:

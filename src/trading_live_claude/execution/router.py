@@ -81,6 +81,9 @@ class Router:
         max_open_positions: int = 5,
         min_ticket_usd: float = 100.0,
         daily_budget: DailyBudget | None = None,
+        max_gross_leverage: float = 1.0,
+        max_position_notional_pct: float = 0.50,
+        force_exit_atr_mult: float = 3.0,
         _confirmed: bool = False,
     ) -> None:
         if mode in {"live", "autonomous"} and not _confirmed:
@@ -96,6 +99,12 @@ class Router:
         self.max_open_positions = max_open_positions
         self.min_ticket_usd = min_ticket_usd
         self.daily_budget = daily_budget
+        # Landed 2026-09-08 to catch two failure modes seen on live paper sessions:
+        # (a) a single boosted position taking 100% of equity, and (b) portfolio gross
+        # notional exceeding cash. See docstrings on the gates + Router.check_forced_exits.
+        self.max_gross_leverage = max_gross_leverage
+        self.max_position_notional_pct = max_position_notional_pct
+        self.force_exit_atr_mult = force_exit_atr_mult
 
     # ----- alternate constructors --------------------------------------------
 
@@ -110,6 +119,9 @@ class Router:
         heat: PortfolioHeat,
         max_open_positions: int = 5,
         min_ticket_usd: float = 100.0,
+        max_gross_leverage: float = 1.0,
+        max_position_notional_pct: float = 0.50,
+        force_exit_atr_mult: float = 3.0,
     ) -> "Router":
         if confirmation.strip() != LIVE_CONFIRM_PHRASE:
             raise LiveModeNotConfirmed(
@@ -123,6 +135,9 @@ class Router:
             heat=heat,
             max_open_positions=max_open_positions,
             min_ticket_usd=min_ticket_usd,
+            max_gross_leverage=max_gross_leverage,
+            max_position_notional_pct=max_position_notional_pct,
+            force_exit_atr_mult=force_exit_atr_mult,
             _confirmed=True,
         )
 
@@ -137,6 +152,9 @@ class Router:
         daily_budget: DailyBudget,
         max_open_positions: int = 5,
         min_ticket_usd: float = 100.0,
+        max_gross_leverage: float = 1.0,
+        max_position_notional_pct: float = 0.50,
+        force_exit_atr_mult: float = 3.0,
     ) -> "Router":
         """Build an autonomous-mode router.
 
@@ -160,6 +178,9 @@ class Router:
             max_open_positions=max_open_positions,
             min_ticket_usd=min_ticket_usd,
             daily_budget=daily_budget,
+            max_gross_leverage=max_gross_leverage,
+            max_position_notional_pct=max_position_notional_pct,
+            force_exit_atr_mult=force_exit_atr_mult,
             _confirmed=True,
         )
 
@@ -172,6 +193,7 @@ class Router:
         equity: float,
         existing_risk: float,
         open_positions: int,
+        current_open_notional: float = 0.0,
     ) -> GateDecision:
         reasons: list[str] = []
 
@@ -214,7 +236,97 @@ class Router:
             if not ok:
                 reasons.append(reason)
 
+        # 9. per-symbol notional cap (2026-09-08). Prevents any single name from
+        # dominating the book — catches the failure mode where allocator boost ×
+        # vol-target sizing hits the per-position leverage ceiling and takes the whole
+        # sleeve. Only checks entries (exits should always be allowed to close a
+        # position regardless of its size).
+        if intent.action == OrderAction.BUY and equity > 0:
+            symbol_pct = notional / equity
+            if symbol_pct > self.max_position_notional_pct:
+                reasons.append(
+                    f"single-name notional {symbol_pct:.1%} > cap {self.max_position_notional_pct:.1%}"
+                )
+
+        # 10. portfolio gross-leverage cap (2026-09-08). Prevents the sleeve as a whole
+        # from exceeding available cash. Independent of the vol-target per-position
+        # leverage cap, which is per-name only and doesn't see other open positions.
+        # Only checks entries; exits reduce leverage.
+        if intent.action == OrderAction.BUY and equity > 0:
+            gross_leverage = (current_open_notional + notional) / equity
+            if gross_leverage > self.max_gross_leverage:
+                reasons.append(
+                    f"portfolio gross leverage {gross_leverage:.2f}x > cap "
+                    f"{self.max_gross_leverage:.2f}x  (open ${current_open_notional:,.0f} + "
+                    f"intent ${notional:,.0f} vs equity ${equity:,.0f})"
+                )
+
         return GateDecision(accepted=not reasons, rejected_reasons=reasons)
+
+    def check_forced_exits(
+        self,
+        positions: list[dict],
+        current_prices: dict[str, float],
+        atr_at_entry: dict[str, float],
+    ) -> list[dict]:
+        """Router-level intra-day exit gate (2026-09-08).
+
+        Runs on the monitor's poll cadence, independent of the strategy's bar cadence.
+        Detects positions whose unrealized loss since entry exceeds
+        ``force_exit_atr_mult × ATR_at_entry`` and returns close-intent dicts for the
+        monitor to submit. Closes the gap where a daily-bar strategy (ts_momentum,
+        rsi_meanrevert) can't see a mid-day drawdown until the next daily close.
+
+        Inputs are dicts to keep the router broker-agnostic — the monitor already
+        maintains its own position + ATR map and knows how to convert an intent dict
+        into an OrderIntent for its broker.
+
+        * ``positions`` — list of dicts with keys: symbol, entry_price, quantity, side
+          ('long' | 'short'). Only 'long' currently supported; short-close semantics TBD.
+        * ``current_prices`` — {symbol: latest mid quote}. Missing symbol = skip
+          (fail-open so a quote hiccup can't spuriously force-close a position).
+        * ``atr_at_entry`` — {symbol: ATR value at entry bar}. Missing = skip.
+
+        Returns a list of exit-intent dicts. Empty when the mult is 0 (feature disabled)
+        or when no position breaches. Never raises — a per-position exception is logged
+        and the position is skipped, matching the fail-open discipline of the other
+        intel-adjacent gates.
+        """
+        if self.force_exit_atr_mult <= 0.0:
+            return []
+        exits: list[dict] = []
+        for pos in positions:
+            try:
+                sym = pos.get("symbol")
+                if not sym:
+                    continue
+                side = pos.get("side", "long")
+                if side != "long":
+                    continue  # short semantics deferred
+                entry = float(pos.get("entry_price", 0.0))
+                qty = float(pos.get("quantity", 0.0))
+                if entry <= 0 or qty <= 0:
+                    continue
+                price = current_prices.get(sym)
+                atr = atr_at_entry.get(sym)
+                if price is None or atr is None or atr <= 0:
+                    continue
+                loss_per_share = entry - float(price)
+                if loss_per_share <= 0:
+                    continue  # position is at or above entry — not a loss
+                if loss_per_share > self.force_exit_atr_mult * atr:
+                    exits.append({
+                        "symbol": sym,
+                        "action": "SELL",
+                        "shares": qty,
+                        "reason": (
+                            f"forced-exit: loss ${loss_per_share:.2f}/sh > "
+                            f"{self.force_exit_atr_mult:.1f}x ATR ${atr:.2f} since entry ${entry:.2f}"
+                        ),
+                    })
+            except Exception as e:  # pragma: no cover — belt-and-suspenders
+                log.warning("router.forced_exit.eval_failed", symbol=pos.get("symbol"), error=str(e))
+        return exits
 
     # ----- main entrypoint ----------------------------------------------------
 
@@ -225,9 +337,11 @@ class Router:
         equity: float,
         existing_risk: float,
         open_positions: int,
+        current_open_notional: float = 0.0,
     ) -> Order | None:
         decision = self._gate(
-            intent, equity=equity, existing_risk=existing_risk, open_positions=open_positions
+            intent, equity=equity, existing_risk=existing_risk, open_positions=open_positions,
+            current_open_notional=current_open_notional,
         )
 
         self.journal.order_intent(
@@ -294,17 +408,27 @@ class Router:
         broker: Broker,
         state_dir: Path,
         cap_pct: float = 0.05,
-        max_drawdown_pct: float = 0.10,
+        max_drawdown_pct: float = 0.03,
         daily_loss_limit_pct: float = 0.03,
         max_open_positions: int = 5,
         min_ticket_usd: float = 100.0,
         live_confirmation: str | None = None,
         daily_max_trades: int = 10,
         daily_max_notional_usd: float = 10_000.0,
+        max_gross_leverage: float = 1.0,
+        max_position_notional_pct: float = 0.50,
+        force_exit_atr_mult: float = 3.0,
     ) -> "Router":
         journal = OrderJournal(state_dir)
         ks = KillSwitch(state_dir, max_drawdown_pct=max_drawdown_pct, daily_loss_limit_pct=daily_loss_limit_pct)
         heat = PortfolioHeat(cap_pct=cap_pct)
+        gate_kwargs = dict(
+            max_open_positions=max_open_positions,
+            min_ticket_usd=min_ticket_usd,
+            max_gross_leverage=max_gross_leverage,
+            max_position_notional_pct=max_position_notional_pct,
+            force_exit_atr_mult=force_exit_atr_mult,
+        )
         if mode == "live":
             if not live_confirmation:
                 raise LiveModeNotConfirmed("Pass live_confirmation when mode='live'.")
@@ -314,8 +438,7 @@ class Router:
                 journal=journal,
                 kill_switch=ks,
                 heat=heat,
-                max_open_positions=max_open_positions,
-                min_ticket_usd=min_ticket_usd,
+                **gate_kwargs,
             )
         if mode == "autonomous":
             budget = DailyBudget(
@@ -329,8 +452,7 @@ class Router:
                 kill_switch=ks,
                 heat=heat,
                 daily_budget=budget,
-                max_open_positions=max_open_positions,
-                min_ticket_usd=min_ticket_usd,
+                **gate_kwargs,
             )
         return cls(
             mode=mode,
@@ -338,6 +460,5 @@ class Router:
             journal=journal,
             kill_switch=ks,
             heat=heat,
-            max_open_positions=max_open_positions,
-            min_ticket_usd=min_ticket_usd,
+            **gate_kwargs,
         )
