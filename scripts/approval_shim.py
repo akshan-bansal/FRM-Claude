@@ -27,10 +27,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="TradeCard approval shim")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8787)
+    ap.add_argument("--auth-token", default=None,
+                    help="Require this bearer token on every non-/healthz request. "
+                         "Omit to run OPEN (only safe on strict loopback).")
     args = ap.parse_args()
     registry = CardRegistry()
     store = InMemoryApprovalStore(registry)
-    run_shim(store, registry, host=args.host, port=args.port)
+    run_shim(store, registry, host=args.host, port=args.port,
+             auth_token=args.auth_token)
 
 
 if __name__ == "__main__":

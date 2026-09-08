@@ -161,6 +161,18 @@ class CardRegistry:
             self._keys[card_id] = key
         log.info("approval.card_registered", card_id=card_id)
 
+    def revoke(self, card_id: str) -> bool:
+        """Remove a card's pubkey. Returns True if it was registered."""
+        with self._lock:
+            existed = self._keys.pop(card_id, None) is not None
+        if existed:
+            log.info("approval.card_revoked", card_id=card_id)
+        return existed
+
+    def card_ids(self) -> list[str]:
+        with self._lock:
+            return sorted(self._keys.keys())
+
     def verify(self, card_id: str, canonical: bytes, signature: bytes) -> bool:
         with self._lock:
             key = self._keys.get(card_id)
@@ -467,6 +479,7 @@ class CardWiring:
     registry: "CardRegistry"
     shim_thread: "threading.Thread | None"
     shim_url: str
+    auth_token: str | None = None
 
 
 def wire_card_approval(
@@ -477,6 +490,7 @@ def wire_card_approval(
     ttl_seconds: float = 90.0,
     start_shim: bool = True,
     thesis_fn: object | None = None,
+    auth_token: str | None = "auto",
 ) -> CardWiring:
     """Build the card-approval layer around ``inner`` and (optionally) spin the shim.
 
@@ -484,17 +498,32 @@ def wire_card_approval(
     :mod:`.approval_server`) is launched in a daemon thread so callers get
     the wire surface for free. Pass ``start_shim=False`` for tests or when
     the store is being exposed some other way.
+
+    ``auth_token``:
+      * ``"auto"`` (default) — a fresh token is minted; callers should surface
+        it so the card / simulator can be paired with it.
+      * ``None`` — the shim runs open. Only safe on strict loopback.
+      * any string — that literal token is used as-is.
     """
     registry = CardRegistry()
     store = InMemoryApprovalStore(registry)
     router = ApprovalRouter(inner, store=store, ttl_seconds=ttl_seconds, thesis_fn=thesis_fn)
+
+    resolved_token: str | None
+    if auth_token == "auto":
+        from .approval_server import mint_auth_token
+        resolved_token = mint_auth_token()
+    else:
+        resolved_token = auth_token
 
     shim_thread: threading.Thread | None = None
     if start_shim:
         # Local import so ``execution.approval`` stays importable in contexts
         # (mypy runs, docs) where the HTTP layer isn't needed.
         from .approval_server import start_shim_thread
-        shim_thread = start_shim_thread(store, registry, shim_host, shim_port)
+        shim_thread = start_shim_thread(
+            store, registry, shim_host, shim_port, auth_token=resolved_token,
+        )
 
     return CardWiring(
         router=router,
@@ -502,4 +531,5 @@ def wire_card_approval(
         registry=registry,
         shim_thread=shim_thread,
         shim_url=f"http://{shim_host}:{shim_port}",
+        auth_token=resolved_token,
     )

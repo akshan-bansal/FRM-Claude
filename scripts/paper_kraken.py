@@ -167,9 +167,11 @@ def main() -> None:
             thesis_fn=_thesis,
         )
         router = _wiring.router
-        print(f"[kraken-paper] --require-card ON — approval shim at {_wiring.shim_url}. "
-              f"Register a card via POST /card/register then long-poll /intents/pending.",
+        print(f"[kraken-paper] --require-card ON — approval shim at {_wiring.shim_url}.",
               flush=True)
+        print(f"[kraken-paper] card auth token: {_wiring.auth_token}", flush=True)
+        print("[kraken-paper] Pair the card by passing the token as "
+              "Authorization: Bearer <token> on every request.", flush=True)
 
     market = MarketData(exec_broker, cache=CandleCache(settings.data_cache_dir))
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
