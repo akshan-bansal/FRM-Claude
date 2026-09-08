@@ -102,6 +102,46 @@ This repo supports a fully-autonomous Claude-driven trading loop. **Read these r
 3. Daily-budget exhausted → router rejects with reason "daily trade cap reached" / "daily notional cap". Healthy; daemon should idle until midnight UTC.
 4. Pidfile present but process dead → `status` reports `stale`. `start` clears stale pidfile and proceeds.
 
+## TradeCard — physical Ed25519 approval card (opt-in)
+
+An optional third gate sits between the Router's risk checks and broker dispatch: a
+physical approval card the user taps ACCEPT / DECLINE on. It's disabled by default and
+opt-in per-run via `--require-card` on `paper_ib.py` / `paper_kraken.py`.
+
+- **Never weakens existing gates.** `ApprovalRouter` runs `Router._gate` FIRST, and only
+  publishes a prompt to the card if the router would have accepted the intent anyway.
+  A card ACCEPT is a *human* gate, on top of the automated ones, not instead of them.
+- **Autonomous mode cannot be wrapped.** `AUTONOMOUS_ENABLED=true` + card approval are
+  mutually exclusive; the wrapper raises at construction. Pick one loop.
+- **WYSIWYS canonical bytes.** The card signs a `|`-joined string that includes the
+  broker (`ib` / `kraken` / `questrade`), action, symbol, shares, entry, notional,
+  account, intent id, and nonce. A MITM cannot silently swap the broker or resize the
+  intent — the signature won't verify.
+- **Thesis from the VS engine.** `intel/vs_engine.py` composes a `<=140` char thesis
+  (overlay risk clauses have priority over user-supplied notes during truncation) and
+  persists a full writeup to `state/intel_writeups/{intel_ref}.json`.
+
+Layout:
+
+- `src/trading_live_claude/execution/approval.py` — router wrapper, store, registry,
+  `wire_card_approval()` helper.
+- `src/trading_live_claude/execution/approval_server.py` — stdlib HTTP surface (kept out
+  of `execution.approval` so the module dependency arrow points inward).
+- `scripts/approval_shim.py` — thin CLI wrapper for running the shim as a standalone
+  process rather than a daemon thread beside the paper loop.
+- `scripts/approval_card_sim.py` — laptop-side fake card that speaks the wire protocol
+  end-to-end (register / poll / sign / respond). Real firmware in `firmware/tradecard/`
+  is a separate ESP-IDF project; the Python wheel does not ship it.
+
+To exercise without silicon:
+```
+python scripts/approval_shim.py --port 8787
+python scripts/approval_card_sim.py --auto accept
+python -m trading_live_claude.cli signal --paper --require-card ...
+```
+
+Gap-closure objectives live in `NEXT_SESSION.md` section 11.
+
 ## Skills available in this repo
 
 `.claude/skills/`:

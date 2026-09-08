@@ -231,26 +231,23 @@ def main() -> None:
         min_ticket_usd=settings.min_ticket_usd,
     )
 
-    card_wiring = None
     if args.require_card:
-        from scripts.approval_shim import start_shim_thread  # local import to keep unused paths cold
-        engine = VSInvestmentEngine()
+        _engine = VSInvestmentEngine()
         def _thesis(intent, broker):
-            # Signal-row fields the daemon doesn't currently pass through
-            # get lifted client-side once strategies emit them (see the
-            # Strategy base-class contract update). For now the engine still
-            # renders a useful thesis from the intent alone.
-            return engine.explain(intent, broker=broker, market=MarketContext())
-        card_wiring = wire_card_approval(
+            # Signal-row fields the daemon doesn't currently pass through get
+            # lifted client-side once strategies emit them (see the Strategy
+            # base-class contract update). For now the engine still renders a
+            # useful thesis from the intent alone.
+            return _engine.explain(intent, broker=broker, market=MarketContext())
+        _wiring = wire_card_approval(
             router,
             shim_host="127.0.0.1",
             shim_port=args.card_shim_port,
             ttl_seconds=args.card_ttl,
             thesis_fn=_thesis,
-            shim_starter=start_shim_thread,
         )
-        router = card_wiring.router  # type: ignore[assignment]
-        print(f"[ib-paper] --require-card ON — approval shim at {card_wiring.shim_url}. "
+        router = _wiring.router
+        print(f"[ib-paper] --require-card ON — approval shim at {_wiring.shim_url}. "
               f"Register a card via POST /card/register then long-poll /intents/pending.",
               flush=True)
 

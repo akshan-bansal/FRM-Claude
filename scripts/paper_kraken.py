@@ -93,6 +93,13 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=300,
                     help="Poll interval, seconds. Kraken is 24/7 so this is real all the time.")
     ap.add_argument("--paper-equity", type=float, default=100_000.0)
+    ap.add_argument("--require-card", dest="require_card", action="store_true",
+                    help="Route every accepted intent through the ApprovalRouter — a physical "
+                         "TradeCard (or scripts/approval_card_sim.py) must ACCEPT before the "
+                         "order is dispatched. Boots the approval shim on --card-shim-port.")
+    ap.add_argument("--card-shim-port", type=int, default=8787)
+    ap.add_argument("--card-ttl", type=float, default=90.0,
+                    help="Seconds a card prompt stays live before it auto-EXPIRES.")
     ap.add_argument("--iterations", type=int, default=0,
                     help="0 = run forever; a positive N runs that many polls and stops.")
     ap.add_argument("--require-card", dest="require_card", action="store_true",
@@ -149,7 +156,6 @@ def main() -> None:
     )
 
     if args.require_card:
-        from scripts.approval_shim import start_shim_thread
         _engine = VSInvestmentEngine()
         def _thesis(intent, broker):
             return _engine.explain(intent, broker=broker, market=MarketContext())
@@ -159,9 +165,8 @@ def main() -> None:
             shim_port=args.card_shim_port,
             ttl_seconds=args.card_ttl,
             thesis_fn=_thesis,
-            shim_starter=start_shim_thread,
         )
-        router = _wiring.router  # type: ignore[assignment]
+        router = _wiring.router
         print(f"[kraken-paper] --require-card ON — approval shim at {_wiring.shim_url}. "
               f"Register a card via POST /card/register then long-poll /intents/pending.",
               flush=True)
