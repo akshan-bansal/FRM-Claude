@@ -29,6 +29,7 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
@@ -142,6 +143,41 @@ class _PendingEntry:
     consumed: bool = False
 
 
+@dataclass(frozen=True)
+class PassbookEntry:
+    """A resolved prompt — mirrors what the on-device passbook stores, but
+    server-side and with more detail (thesis, notional, signer's card_id)."""
+
+    intent_id: str
+    resolved_at: datetime
+    verdict: Verdict
+    broker: str
+    symbol: str
+    action: str
+    shares: int
+    notional_usd: float
+    strategy: str
+    thesis: str
+    intel_ref: str
+    card_id: str | None       # who signed the ACCEPT / DECLINE; None for EXPIRED
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "intent_id": self.intent_id,
+            "resolved_at": self.resolved_at.isoformat(),
+            "verdict": self.verdict,
+            "broker": self.broker,
+            "symbol": self.symbol,
+            "action": self.action,
+            "shares": self.shares,
+            "notional_usd": self.notional_usd,
+            "strategy": self.strategy,
+            "thesis": self.thesis,
+            "intel_ref": self.intel_ref,
+            "card_id": self.card_id,
+        }
+
+
 # --------------------------------------------------------------------------- #
 # signature verification                                                      #
 # --------------------------------------------------------------------------- #
@@ -212,15 +248,22 @@ class ApprovalStore(Protocol):
         card_id: str,
         signature: bytes,
     ) -> bool: ...
+    def passbook(self, *, limit: int = 50, offset: int = 0) -> list[PassbookEntry]: ...
 
 
 class InMemoryApprovalStore:
-    """Thread-safe, single-process store. Fine for a laptop shim + one card."""
+    """Thread-safe, single-process store. Fine for a laptop shim + one card.
 
-    def __init__(self, registry: CardRegistry) -> None:
+    Keeps a bounded FIFO ``passbook`` of resolved prompts (ACCEPT / DECLINE
+    / EXPIRED) capped at ``passbook_max`` entries. Exposed by the shim as
+    ``GET /passbook`` for a companion dashboard or an off-card history view.
+    """
+
+    def __init__(self, registry: CardRegistry, *, passbook_max: int = 500) -> None:
         self._registry = registry
         self._entries: dict[str, _PendingEntry] = {}
         self._lock = threading.Lock()
+        self._passbook: deque[PassbookEntry] = deque(maxlen=passbook_max)
 
     # -- helpers ---------------------------------------------------------- #
 
@@ -233,7 +276,29 @@ class InMemoryApprovalStore:
         for entry in list(self._entries.values()):
             if entry.verdict is None and entry.prompt.expires_at <= now:
                 entry.verdict = "EXPIRED"
+                self._passbook.append(self._entry_to_passbook(entry, card_id=None, at=now))
                 entry.event.set()
+
+    @staticmethod
+    def _entry_to_passbook(
+        entry: "_PendingEntry", *, card_id: str | None, at: datetime,
+    ) -> PassbookEntry:
+        p = entry.prompt
+        assert entry.verdict is not None
+        return PassbookEntry(
+            intent_id=p.intent_id,
+            resolved_at=at,
+            verdict=entry.verdict,
+            broker=p.broker,
+            symbol=p.symbol,
+            action=p.action,
+            shares=p.shares,
+            notional_usd=p.notional_usd,
+            strategy=p.strategy,
+            thesis=p.thesis,
+            intel_ref=p.intel_ref,
+            card_id=card_id,
+        )
 
     # -- ApprovalStore ---------------------------------------------------- #
 
@@ -349,9 +414,24 @@ class InMemoryApprovalStore:
         with self._lock:
             entry.consumed = True
             entry.verdict = decision
+            self._passbook.append(
+                self._entry_to_passbook(entry, card_id=card_id, at=datetime.now(UTC))
+            )
             entry.event.set()
         log.info("approval.response", intent_id=intent_id, decision=decision, card_id=card_id)
         return True
+
+    def passbook(self, *, limit: int = 50, offset: int = 0) -> list[PassbookEntry]:
+        """Newest-first view of resolved prompts. ``limit`` capped at 500."""
+        if limit <= 0:
+            return []
+        limit = min(limit, 500)
+        offset = max(offset, 0)
+        with self._lock:
+            snapshot = list(self._passbook)
+        # Newest-first
+        snapshot.reverse()
+        return snapshot[offset : offset + limit]
 
 
 # --------------------------------------------------------------------------- #

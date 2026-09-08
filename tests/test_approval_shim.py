@@ -212,6 +212,102 @@ def test_auth_accepts_correct_bearer(shim_auth):
     assert body["prompts"] == []
 
 
+# --------------------------------------------------------------------------- #
+# passbook                                                                    #
+# --------------------------------------------------------------------------- #
+
+def _publish_and_respond(shim, key, card_id, decision):
+    intent_body = {
+        "symbol": "AAA", "action": "Buy", "shares": 1, "entry": 10.0,
+        "stop": 9.0, "target": 11.0, "strategy": "t",
+        "risk_dollars": 0.5, "account_number": "p1",
+        "broker": "ib", "ttl_seconds": 5,
+    }
+    _, prompt = _post(f"{shim['url']}/intents", intent_body)
+    sig = key.sign(prompt["canonical"].encode())
+    _post(
+        f"{shim['url']}/intents/{prompt['intent_id']}/response",
+        {"decision": decision, "card_id": card_id,
+         "signature": base64.b64encode(sig).decode()},
+    )
+    return prompt["intent_id"]
+
+
+def test_passbook_returns_resolved_prompts_newest_first(shim):
+    key = Ed25519PrivateKey.generate()
+    pem = key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    _post(f"{shim['url']}/card/register",
+          {"card_id": "cp", "pubkey_pem": pem.decode()})
+
+    id_a = _publish_and_respond(shim, key, "cp", "ACCEPT")
+    id_b = _publish_and_respond(shim, key, "cp", "DECLINE")
+
+    status, body = _get(f"{shim['url']}/passbook")
+    assert status == 200
+    ids = [e["intent_id"] for e in body["entries"]]
+    verdicts = [e["verdict"] for e in body["entries"]]
+    assert ids == [id_b, id_a]                 # newest first
+    assert verdicts == ["DECLINE", "ACCEPT"]
+    # signer card_id round-trips
+    for e in body["entries"]:
+        assert e["card_id"] == "cp"
+
+
+def test_passbook_pagination(shim):
+    key = Ed25519PrivateKey.generate()
+    pem = key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    _post(f"{shim['url']}/card/register",
+          {"card_id": "cp", "pubkey_pem": pem.decode()})
+    ids = [_publish_and_respond(shim, key, "cp", "ACCEPT") for _ in range(5)]
+
+    status, body = _get(f"{shim['url']}/passbook?limit=2&offset=0")
+    assert status == 200
+    assert len(body["entries"]) == 2
+    assert [e["intent_id"] for e in body["entries"]] == [ids[4], ids[3]]
+
+    status, body = _get(f"{shim['url']}/passbook?limit=2&offset=2")
+    assert [e["intent_id"] for e in body["entries"]] == [ids[2], ids[1]]
+
+
+def test_passbook_rejects_bad_params(shim):
+    status, _ = _get(f"{shim['url']}/passbook?limit=abc")
+    assert status == 400
+
+
+def test_passbook_requires_auth(shim_auth):
+    status, _ = _get(f"{shim_auth['url']}/passbook")
+    assert status == 401
+    status, body = _get_auth(f"{shim_auth['url']}/passbook", shim_auth["token"])
+    assert status == 200
+    assert body["entries"] == []
+
+
+def test_passbook_captures_expired(shim):
+    # Publish an intent that will expire before a response comes.
+    intent_body = {
+        "symbol": "AAA", "action": "Buy", "shares": 1, "entry": 10.0,
+        "stop": 9.0, "target": 11.0, "strategy": "t",
+        "risk_dollars": 0.5, "account_number": "p1",
+        "broker": "ib", "ttl_seconds": 0.05,
+    }
+    _post(f"{shim['url']}/intents", intent_body)
+    import time
+    time.sleep(0.2)
+    # A pending() call sweeps expired; passbook() then returns the record.
+    _get(f"{shim['url']}/intents/pending")
+    status, body = _get(f"{shim['url']}/passbook")
+    assert status == 200
+    assert body["entries"]
+    assert body["entries"][0]["verdict"] == "EXPIRED"
+    assert body["entries"][0]["card_id"] is None
+
+
 def test_publish_rejects_unknown_broker(shim):
     status, body = _post(f"{shim['url']}/intents", {
         "symbol": "X", "action": "Buy", "shares": 1, "entry": 1.0,
