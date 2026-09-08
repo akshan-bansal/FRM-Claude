@@ -1,50 +1,76 @@
 # Next-session backlog
 
-**Status (2026-09-02): ACTIVELY RUNNING.** Four parallel processes tick against paper venues +
-intel graph; all commits on `feat/multi-scoring-attention-map`. Standing constraints unchanged:
-new research clears the **walk-forward gate** before being tagged validated; live orders stay
-behind the **human go-live confirmation**; use `httpx` (not `requests`); `ruff` + `mypy --strict`
-+ `pytest` must stay green.
+**Status (2026-09-08): DATA-ACCRUAL PHASE.** Live paper venues (QT + Kraken) continue to fill
+journals on demand; graph journal poll running at 30-min cadence for intel corpus depth. All
+commits on `feat/multi-scoring-attention-map`. Standing constraints unchanged: new research
+clears the **walk-forward gate** before being tagged validated; live orders stay behind the
+**human go-live confirmation**; use `httpx` (not `requests`); `ruff` + `mypy --strict` +
+`pytest` must stay green. **Standing operational rule: DATA-FIRST — accrue before tuning,
+promoting, or wiring new gates** (see section below for the concrete corollaries).
 
-## Live processes (as of 2026-09-02)
+## Live processes (as of 2026-09-08)
 
-1. **QT paper monitor** — `signal --paper --intel-overlay --level` over 14 names. Wired:
-   OSINT overlay class scalar × interpret-thesis entry filter × correlation-aware allocator
-   bias × strategy-vol gate × per-poll MTM. Rich Telegram alerts.
-2. **Kraken paper monitor** — `paper_kraken.py` over 7 sleeve pairs. Now equivalently wired:
-   OSINT overlay (crypto class scalar) × interpret filter × allocator bias × per-poll MTM. Also
-   contributes to `state/intel_graph.jsonl` on every poll now (previously silent on intel).
-3. **Graph journal poller** — `graph_journal.py --iterations 96 --sleep 900 --wash-min-hours 72`.
-   Persistence + wash + thesis alerts to Telegram; temporal gate every 72h.
-4. **Dashboard refresh** — `dashboard.py --refresh 300`. Rewrites `reports/dashboard.html`
-   every 5 min with 9 sections (health, scalars, theses, persistence, sessions, equity curves,
-   allocator bias, WF pool with backfilled win rates, graph profile).
+Human-in-the-loop; sessions started + stopped as needed rather than persistent. Current shape:
 
-## Journals (current depth)
+1. **Kraken paper** — `paper_kraken.py` over the 13-pair CRYPTO_SLEEVE (10 tradeable + 3
+   observers post SOL/ADA/POL/UNI/AAVE/ZEC expansion + ZEC/POL/AAVE promotion 2026-09-05).
+   Full wiring: OSINT crypto scalar × interpret filter × correlation-aware allocator bias ×
+   per-poll MTM × Telegram alerts × fills→graph via `traded` predicate.
+2. **QT paper** — `signal --paper --intel-overlay --level` over 15 equities (ARX.TO removed
+   2026-09-08 for silent 404 on candles; RSI.TO + RIG.TO added — RIG.TO also 404s, drop
+   next session). Same wiring shape as Kraken paper.
+3. **Graph journal poller** — `graph_journal.py --iterations 48 --sleep 1800 --held-scope`
+   (30-min cadence, 24h coverage per session). Persistence + wash + thesis alerts;
+   held-scope filter restricts to WF-validated equities + CRYPTO_SLEEVE.
+4. **Dashboard refresh** — `dashboard.py --refresh 300`. Static HTML at
+   `reports/dashboard.html` with 9 sections; unchanged.
 
-- `state/intel_graph.jsonl` — 3000+ edges (grew from 571 across today's polling). Per-event
-  decomposition working: event / poll / source / region / market / domain nodes.
-- `state/paper_equity.csv` — 27+ rows across 8+ tracked session_ids, refreshed per poll (MTM).
-- `state/paper_fills.jsonl` / `paper_orders.jsonl` — dozens of fills across restarts.
-- `state/intel_overlay.jsonl` — flat overlay per poll.
+## Journals (current depth as of 2026-09-08)
+
+- `state/intel_graph.jsonl` — **7,404 edges** spanning 2026-09-01 → 2026-09-08 (7 days
+  post-wash on 2026-09-08 morning; the wash pruned ~10.6% of redundant edges).
+- `state/intel_overlay.jsonl` — **163 snapshots** spanning 2026-08-29 → 2026-09-08 (10 days).
+- `state/paper_fills.jsonl` — **87 fills** across 34 distinct sessions (all-time).
+- `state/paper_orders.jsonl` — 86 orders (83 accepted / 3 rejected).
+- `state/paper_equity.csv` — 375 MTM rows across all sessions.
 - Real QT + Kraken accounts untouched (paper-only path throughout).
 
-## Recent shipments (post-2026-09-01)
+## Recent shipments
 
-- Resweep survivors PROMOTED: `ENB.TO`, `XIU.TO`, `VDY.TO`, `SLF.TO` all in `WALK_FORWARD_
-  VALIDATED` at tier=robust (commit `c3a0d18`). Pool now 25 robust + 7 watch.
-- `CGL.TO` + `DBA` reclassified equity → commodity (metadata fix, same commit).
-- `WF_PROTOCOLS` per-class registry (equity/commodity/crypto/future/fx) — `sweep_universe.py`
-  reads window sizing from it (commit `75e3e6a`).
-- OOS win rates BACKFILLED on 27 of 32 validated names (commit `d4a7022`). Skipped 5 with <5
-  trades in current window (VFV.TO, ZEB.TO, ZWB.TO, QQQ, DBC).
-- Notification formatter with WF evidence + sizing chain + win rate rendering (commit `78576aa`).
-- Telegram plain-text mode (was returning 400 on Markdown-parsed rich alerts).
-- Cross-path wiring item 9 tiers 1 (interpret → LiveMonitor), plus allocator bias, plus MTM.
-- Kraken paper now gets OSINT overlay + interpret filter (gap #1 closed, commit `f9acdcc`).
-- QT paper now gets correlation-aware allocator bias (gap #2 closed, same commit).
-- Static HTML dashboard (`scripts/dashboard.py`, commit `ef28ef1`) — 9 sections, plotly.
-- Live MTM on PaperBroker (commit `fce41a3`) — equity CSV now reflects mid-market per poll.
+**2026-09-05 — commit `638f8d3`:**
+- Asset-class calibration layer (`analysis/calibration.py`) — CalibrationProfile per
+  OverlayClass + `calibrate_for(strategy, symbol)` translation. tune.py wires it; strategies
+  unchanged. Widens crypto Bollinger n_std, tightens FX; scales windows to half-life.
+- ConfirmOverlay(symbol=…) filters gap-dependent candlestick patterns for 24/7 markets.
+- MarketData cache-boundary fix — `end` floored to interval so cache actually hits (was
+  regenerating key every call). Interval lexicon standardized on IB/Kraken words; Questrade
+  translates `ThirtyMinutes → HalfHour` on its own side.
+- PositionSizer conviction ceiling raised [0,1] → [0,3.0] to match `weight_bias` cap in
+  live_loop; allocator boosts above 1.0 no longer silently discarded.
+- CRYPTO_SLEEVE expanded 7 → 13 pairs (added SOL/ADA/POL/UNI/AAVE/ZEC; POL/AAVE/ZEC promoted
+  with baseline scores on 2026-09-05 pm; MKR dropped as Kraken doesn't list the pair).
+- `graph_journal.py --pools {equity,crypto}` filter added.
+
+**2026-09-04 — commits (see prior sessions):**
+- Resweep survivors PROMOTED: ENB.TO, XIU.TO, VDY.TO, SLF.TO to tier=robust (commit `c3a0d18`).
+  Pool now 25 robust + 7 watch. CGL.TO + DBA reclassified equity → commodity.
+- WF_PROTOCOLS per-class registry (commit `75e3e6a`).
+- OOS win rates BACKFILLED on 27 of 32 validated names (commit `d4a7022`).
+- Notification formatter with WF evidence + sizing chain + win rate (commit `78576aa`).
+- Telegram plain-text mode (was 400 on Markdown-parsed rich alerts).
+- IB-paper feedback-loop gaps 1-6 closed (venue tag, fills→graph, overlay classes for
+  fixed_income + precious_metals, futures front-month picker, session tickle warnings,
+  persistence gate).
+- Cross-path wiring Tiers 1-3 done (OSINT + interpret + allocator into sizing chain;
+  fills → graph `traded` predicate; PersistenceGate on domain-elevated entries).
+- KrakenBroker adapter live (commit `dff46ff`), IBWebBroker live (commit `a6d008f`).
+- Deeper crypto history pipeline + walk-forward crypto script built (commit `cee64b3` +
+  shallow-fallback close 2026-09-04); today's 2026-09-08 run validated the WF protocol
+  across all 13 sleeve pairs.
+- FX pair-trading rejected as untradeable in framework (explicit user decision).
+- FX single-name sleeve tried + dropped 2026-09-05 (0 fills / 14 polls empirical).
+- Kraken paper OSINT + interpret + allocator bias wiring; QT allocator bias — commit `f9acdcc`.
+- Static HTML dashboard (commit `ef28ef1`); Live MTM on PaperBroker (commit `fce41a3`).
 - Rename `thicken_graph.py` → `graph_journal.py` (commit `3dc11fe`).
 
 ## Runbook — resume from cold
@@ -58,9 +84,12 @@ python scripts/warm_cache.py --held --seed equity --years 5
 
 # 3. Paper monitors (relaunch)
 python -m trading_live_claude.cli signal --strategy bollinger \
-    --symbols "EQB.TO,QQQ,XIC.TO,ZEB.TO,CGL.TO,VALE,ARX.TO,DBC,SRU.UN.TO,CRT.UN.TO,ENB.TO,XIU.TO,VDY.TO,SLF.TO" \
-    --strategy-map "EQB.TO=ts_momentum,QQQ=ts_momentum,XIC.TO=rsi_meanrevert,ZEB.TO=atr_channel,CGL.TO=atr_channel,VALE=bollinger,ARX.TO=rsi_meanrevert,DBC=bollinger,SRU.UN.TO=rsi_meanrevert,CRT.UN.TO=rsi_meanrevert,ENB.TO=bollinger,XIU.TO=bollinger,VDY.TO=ts_momentum,SLF.TO=bollinger" \
+    --symbols "EQB.TO,QQQ,XIC.TO,ZEB.TO,CGL.TO,VALE,DBC,SRU.UN.TO,CRT.UN.TO,ENB.TO,XIU.TO,VDY.TO,SLF.TO,RSI.TO,RIG.TO" \
+    --strategy-map "EQB.TO=ts_momentum,QQQ=ts_momentum,XIC.TO=rsi_meanrevert,ZEB.TO=atr_channel,CGL.TO=atr_channel,VALE=bollinger,DBC=bollinger,SRU.UN.TO=rsi_meanrevert,CRT.UN.TO=rsi_meanrevert,ENB.TO=bollinger,XIU.TO=bollinger,VDY.TO=ts_momentum,SLF.TO=bollinger,RSI.TO=bollinger,RIG.TO=bollinger" \
     --interval 300 --paper --paper-equity 100000 --level --intel-overlay
+# Note: ARX.TO removed 2026-09-08 — Questrade returned HTTP 404 "Symbol not found" on
+# every candle fetch (id=6291), even though symbols/search resolves. Likely a data-
+# availability quirk on ARC Resources. RSI.TO (Rogers Sugar) and RIG.TO added same day.
 python scripts/paper_kraken.py --interval 300 --paper-equity 100000
 
 # 4. Graph journal + dashboard
@@ -70,11 +99,13 @@ python scripts/dashboard.py --refresh 300
 
 ## What's queued and unfixed
 
-**IB-paper introduction (2026-09-03) opened four new gaps of its own.** Fixes #3 and #5 landed
-in-session; #1, #2, #4, #6 are here.
+Note: IB-paper feedback-loop gaps 1-6 all closed 2026-09-03 → 2026-09-04. Cross-path wiring
+Tiers 1-3 closed. Remaining Cross-path work (Tiers 4-5) blocks on data accrual — see the
+data-first sequencing section above.
 
-- **Cross-path tiers 4 + 5** — Realized P&L → thesis calibration; prediction evaluation. Need
-  weeks of accrued data before they can be built honestly.
+- **Cross-path Tiers 4 + 5** — Realized P&L → thesis calibration; prediction evaluation.
+  Both need weeks of accrued paper fills + thesis history. 7 days accrued / ~30 days
+  minimum for a diagnostic-scale run. **Data-blocked, do not build now.**
 - **`enrich_with_agents`** — built + tested + never called. Held pending Anthropic Console key.
 - **IB OAuth 1.0a for CP Gateway auth-skip — queued 2026-09-04.** User confirmed OAuth1 flavor
   (the Third-Party API path — RSA-SHA256 signed requests + Diffie-Hellman key exchange for a
@@ -121,6 +152,75 @@ in-session; #1, #2, #4, #6 are here.
     resolve to mult=1.0. Same discipline as PersistenceGate.
   * Revisit earliest at ~2026-Dec (accumulator reaches ~90 days at 30-obs equivalent for
     fewer cells).
+
+- **Microstructure accumulator — 2026-09-08 build spec, ready to start.** Enables the
+  three-stage liquidity chain (accumulator → deeper heatmaps → `LiquidityGate` wiring)
+  by starting the durable data-collection layer. All three downstream items block on
+  the accumulator existing; today they run on one-shot 30-90d snapshots.
+
+  **Script:** `scripts/microstructure_accumulator.py` — a slim per-hour cron/scheduled
+  task that appends one row per (symbol, timestamp) to
+  `state/microstructure_hourly.parquet`. Not a paper monitor, not a graph writer — a
+  narrow single-purpose data-collection loop.
+
+  **Storage schema** — one parquet file, appended row-by-row, one row per (symbol, ts):
+  ```
+  ts:            datetime64[ns, UTC]      # hour boundary (floor of collection time)
+  symbol:        string                   # routed form ("BTC/USD", "SPY", "XIC.TO")
+  broker:        string                   # "kraken" | "questrade" | "ib_web"
+  hour_volume:   uint64                   # trades in the hour
+  hour_open:     float                    # first trade / OHLC open
+  hour_high:     float
+  hour_low:
+  hour_close:    float
+  bid:           float | null             # if available at collection time
+  ask:           float | null
+  spread_bps:    float | null             # (ask - bid) / mid * 10000
+  bid_size:      uint32 | null
+  ask_size:      uint32 | null
+  ```
+
+  **Sources per broker:**
+  * Kraken: `/public/OHLC` at `interval=60` for the sleeve pairs (no auth). One call
+    per pair per hour. Sleeve size 13 → 13 calls/hr.
+  * Questrade: `markets/candles` at `interval=OneHour` for the equity 14-pool + one
+    `markets/quotes` for bid/ask/sizes. Auth already handled via refresh token flow.
+  * IB Web: `/iserver/marketdata/history` at `bar=1h period=1d` for STK proxies
+    (bonds/metals/commodity ETFs). Needs CP Gateway auth alive.
+
+  **Cadence:** hourly cron (Windows scheduled task or manual keep-alive), fires at
+  :05 of each hour so it captures the just-closed prior hour. Deduplication via
+  (symbol, ts) unique constraint; re-runs are idempotent.
+
+  **Failure modes** (each recorded in a companion `microstructure_accumulator.log`):
+  * Broker down → skip that broker's symbols this hour, retry next.
+  * Symbol resolution error (like ARX.TO / RIG.TO) → log once per symbol per day,
+    write empty row so gaps in coverage are visible without polluting the parquet.
+  * CP Gateway auth expired → warn once, downgrade to Kraken + QT only that hour.
+  * Never raises to the shell — the accumulator must survive its own failures.
+
+  **Integration:** `scripts/liquidity_heatmap.py` grows an `--accumulator` flag that
+  reads from the parquet instead of doing fresh fetches. `LiquidityGate` (queued in
+  the wire-up section above) reads from the same parquet — same data source, one
+  refresh path.
+
+  **Rollup:** every night a companion `_rollup.py` computes per-symbol
+  `(hour, weekday) → mean/median/std volume` matrices from the accumulator, writes
+  `state/microstructure_rollup.parquet`. Consumers (heatmap, gate) query the rollup,
+  not the raw log — faster and lets the raw log stay append-only.
+
+  **Estimate:** ~3 hr build (accumulator + rollup + tests + scheduled-task doc).
+  Zero data-window blocker; starts collecting on first run.
+
+  **Revisit thresholds** for consumers:
+  * Heatmap regeneration: comfortable at ~20 obs/cell → ~90 days rolling
+  * LiquidityGate wire-up: ~30 obs/cell → ~140 days rolling
+  * Both self-service once accumulator runs.
+
+  **Standing user rule:** the accumulator will need a scheduled task to run hourly
+  without a live claude session. Per the `no-unattended-automation-without-consent`
+  standing rule, ASK BEFORE registering the scheduled task; do not create it as part
+  of the build.
 
 - **Liquidity heat map — rolling accumulation not yet wired.** 2026-09-05 preliminary run
   produced heatmaps on the sparse windows available (crypto ~30d hourly via Kraken cap;
@@ -282,6 +382,65 @@ inert without `ANTHROPIC_API_KEY` in `.env` and no caller runs it. See item 6.
 
 ---
 
+## Data-first sequencing — 2026-09-08 standing rule
+
+Explicit ordering for the currencies + equities sleeves: **accrue data before you tune,
+promote, or wire new gates**. Applies to every calibration, promotion, or microstructure-
+based rule proposed today or later. Concrete corollaries:
+
+* Walk-forward runs (like today's 13-pair crypto WF) serve as PROTOCOL VALIDATION —
+  confirming the pipeline scores across the sleeve — NOT as tier-promotion triggers.
+  Do not promote a pair to `tier=robust` on a single WF pass; require deep-history
+  evidence + multi-fold OOS stability.
+* Do not calibrate signal-statistics (Bollinger n_std, ZScore entry_z, RSI oversold)
+  until deep-history is available across the sleeve — thresholds tuned on shallow
+  720-bar windows over-fit to the current regime.
+* Do not wire microstructure-based gates (LiquidityGate, liquidity-heat trims) until
+  the accumulator has ≥90 days of density.
+* No new autonomy or scheduled tasks in the interim beyond what's already running;
+  keep the loop human-in-the-loop while the data corpus deepens.
+
+## Crypto WF protocol — 2026-09-08 validated, promotion held  🟢 PIPELINE OK
+
+Today's `scripts/walk_forward_crypto.py` run scored all 13 currencies-sleeve pairs
+cleanly (2 deep / 11 shallow) — pipeline works, tier fields NOT updated per the
+data-first rule above. Purpose was protocol validation; outputs recorded to
+`reports/walk_forward_crypto.csv` for later cross-reference once deep history lands.
+
+**Diagnostic-only takeaways** (not action items):
+* 11 of 13 pairs currently on shallow (~720 bar) Kraken /public/OHLC — WF gives them
+  ~3.9 folds and 0-3 OOS trades most sleeves. Insufficient sample for tiering.
+* Deep-history-backed pairs (PAXG, BTC) had enough sample to produce meaningful OOS
+  numbers but tier assignment held pending broader corroboration.
+* Zero-trade rows (SOL/POL/ADA/ZEC/XMR) indicate strategy thresholds probably
+  mistuned for those pairs' vol distributions — DO NOT hone thresholds now; wait for
+  deep data to confirm the pattern.
+
+## Deep-history fetch (currencies sleeve) — 2026-09-08  🟡 QUEUED
+
+Prerequisite for the crypto WF protocol to produce actionable tier decisions. Current
+state: only PAXG + BTC have deep parquets under `data/cache/`. Other 11 pairs run on
+shallow 720-bar Kraken fetches.
+
+**Priority order** (deepen the diversifiers + cluster cores first, then the rest):
+1. **ETH/USD** — cluster core, missing from deep cache. `python scripts/fetch_crypto_history.py --pair ETHUSD --since 2020 --max-pages 15000`
+2. **XMR/USD** — partial diversifier (avg |ρ| 0.39). Same command form, --pair XMRUSD.
+3. **ZEC/USD** — genuine diversifier per correlation study (avg |ρ| 0.41). --pair ZECUSD.
+4. **LINK/USD** — cluster; the atr_channel strategy shows some signal on shallow. --pair LINKUSD.
+5. Remaining cluster: **XRP, XLM, SOL, ADA, POL, UNI, AAVE, MKR** — batch after 1-4.
+
+Each fetch is multi-hour (Kraken /public/Trades pagination at ~1 req/s, ~1000
+trades/page). Total wall time for all 13 pairs likely 12-24 hours if run sequentially.
+Parallelization risky (Kraken rate limits per API key, not per pair).
+
+Prior 2026-09-04 orchestrator (`scripts/targeted_orchestrator.py`) can be adapted;
+the CRYPTO_SLEEVE-driven loop already iterates over `sleeve.values()`.
+
+**Blocker for auto-run:** wall-time + Kraken rate discipline. Recommend a scheduled
+overnight run (~03:00 local start) rather than a foreground session. Per the standing
+`no-unattended-automation-without-consent` rule, ASK before registering the scheduled
+task.
+
 ## OSINT × commodity-proxy correlation study — DESIGNED, PARKED  🟡 WAITING ON DATA DEPTH
 
 Designed 2026-09-05, parked same-session on window mismatch. The regression spec is ready
@@ -327,6 +486,166 @@ NOT run the regression itself with the shallow corpus dressed as findings.
 study on the intel graph — calibration signal-statistics honing (section above), thesis-
 calibration recurrent-learning loop (item 9 tier 4), prediction evaluation (item 9 tier 5).
 All four studies wait on the same underlying corpus.
+
+## Symbol-mapping architecture — 2026-09-08  🟡 QUEUED
+
+Surfaced from a mid-session audit of how the same asset is represented across brokerages.
+Each broker adapter normalizes independently (Questrade `_symbol_id()`, Kraken
+`to_kraken_pair()`, IB Web `_resolve_stk_conid()`, IB socket `Stock(sym, "SMART", "USD")`)
+and the internal codebase uses `analysis.asset_spec.spec_for(symbol)` as canonical
+identity — functional for single-broker-per-sleeve, but three gaps have real cost.
+
+### Gap 1: Pre-flight symbol validation (small, high-value)
+Both landmines from this week's paper sessions surfaced only at runtime — ARX.TO 404'ing
+on Questrade candles across 5+ polls, MKR/USD raising `EQuery:Invalid asset pair` mid-
+poll and killing the whole Kraken session via structlog cascade. There is no `validate_
+sleeve(broker) -> list[SymbolValidation]` helper that walks every sleeve entry at startup,
+attempts a minimal fetch (symbol/search + one bar of candles), and returns per-symbol
+status BEFORE the monitor's first poll. ~30 lines to build; would have caught both this
+week's failures pre-launch instead of mid-run. Wire into `scripts/paper_kraken.py` and
+`cli.py signal` startup banners; refuse to start the loop if any HARD failure (candle
+404, invalid pair). WARN on soft failures (e.g., short cached history).
+
+### Gap 2: Cross-broker symbol atlas
+No shared table maps the same canonical asset across brokerages. If a Kraken-spot vs
+IB-futures basis trade is proposed (or any Kraken spot vs IBIT ETF cross-venue), each
+broker needs its own sleeve entry and nothing relates them. `CryptoSleeveEntry` today
+carries `.symbol` (routed) + `.pair` (Kraken REST), which is a two-form pattern for
+one broker; extending to N brokers grows quadratically without a first-class atlas.
+
+Proposed module `analysis/symbol_atlas.py`:
+
+```
+@dataclass(frozen=True, kw_only=True)
+class BrokerSymbol:
+    canonical_id: str            # "BTC-USD-SPOT" — venue-agnostic identity
+    broker: Literal["questrade","kraken","ib_web","ib_socket"]
+    wire_form: str               # what the broker's API expects on the wire
+    sec_type: str = "STK"        # STK / FUT / CASH / CRYPTO
+    meta: dict = field(default_factory=dict)
+
+_ATLAS: dict[str, list[BrokerSymbol]] = { ... }
+
+def resolve(canonical_id: str, broker: str) -> BrokerSymbol | None
+def validate_atlas(broker: Broker) -> list[SymbolValidation]
+```
+
+Migration path: sleeve entries stop carrying dual-form fields; they carry a
+`canonical_id` and the atlas resolves per-broker. Backwards-compatible via a shim on
+`CryptoSleeveEntry`. Would also absorb the current `_BOND_REGISTRY` / `_METALS_REGISTRY`
+/ `_FUTURES_REGISTRY` scaffolding in `analysis/asset_spec.py` — those are effectively
+per-class atlases already, just single-broker.
+
+### Gap 3: IB socket path silent mis-routing
+`brokers/ib.py:354` hardcodes `Stock(order.symbol, "SMART", "USD")` for equities.
+Canadian ETFs (`XIC.TO`, `VDY.TO`) submitted via socket would be silently mis-routed
+(SMART routes US-listed venues only; USD currency wrong for TSX). IB Web adapter fixed
+this via `set_sec_type()` override + `.TO` suffix strip; socket path never got parity.
+
+Fix (short): port `_resolve_stk_conid()`'s exchange + currency inference into a helper
+called by `brokers/ib.py::place_order`. Preserves the socket adapter's operational
+independence but removes the mis-routing hazard. ~40 lines + tests.
+
+### Sequencing
+1 (validation preflight — ~30 min) → 3 (IB socket exchange fix — ~1 hr) → 2 (full atlas
++ migration — ~4-6 hr, only if cross-venue trades get proposed). Gap 1 alone would have
+prevented both this week's mid-session failures; do it first, atlas can wait.
+
+## Risk-architecture follow-ups — 2026-09-08  🔴 QUEUED (surfaced from live paper session)
+
+Prompted by a QT paper session where VDY.TO at ts_momentum × 2.33× allocator boost hit the
+vol-target max_leverage=1.0 cap and took 100% of paper equity ($100,044 notional on
+$99,995 equity). Loss reached −$416 (~0.42%) with no gate firing — well below the 8.0%
+kill-switch and 3.0% daily-loss limit, and no strategy-level stop configured on
+ts_momentum. Four separate follow-ups:
+
+### 1. Tighten max-drawdown kill-switch: 8.0% → 3.0%
+`config/trading.yaml::max_drawdown_kill_switch = 0.03`. The current 8.0% threshold is
+loose for a paper-validation context — by the time it trips the account has already lost
+$8k. 3.0% gives the same margin against real-world overnight-gap noise (~2σ on a broad
+equity book) but halts before catastrophic runaway. Router already reads this from
+settings so no code change; single config edit + relaunch.
+
+### 2. Dynamically-weighted max_position_notional_pct gate per symbol
+Add a router gate that caps single-symbol notional as a percent of equity, weighted by
+the position's own risk contribution (not just size). Shape:
+
+* Per-symbol cap defaults to `1 / max_open_positions` × 1.5 (~50% for the current
+  max_open_positions=3), acting as a hard ceiling.
+* Weighted by (annual_vol_i / mean_annual_vol_sleeve) so a low-vol name (VDY, PAXG)
+  can hold a larger absolute notional than a high-vol name (VALE, SOL) — the point is
+  equal risk contribution, not equal weight.
+* Runs as a Router gate alongside heat_cap / max_open_positions / daily_loss_limit.
+  Rejects the intent (or trims the size to the cap) when a fill would push notional
+  above the weighted ceiling.
+* Cross-checks against `PortfolioAllocator.max_weight` (0.30 sleeve-level cap) — the
+  new gate is per-name inside a sleeve, catches the "one boosted name saturates the
+  leverage cap and takes 100% of equity" failure mode the sleeve-level cap misses.
+
+### 3. Move exit checks to intra-day bar cadence
+ts_momentum (and other daily-bar strategies) currently check `generate_signals` on the
+daily close only, so a −0.4% intra-day drawdown is invisible until the next EOD bar.
+Two paths to fix:
+
+* **Cheap:** router adds a "loss-based exit" gate — if any open position's unrealized
+  loss exceeds N × ATR since entry, force-close on the next intent. Runs on the
+  monitor's poll cadence (5-min), independent of the strategy's bar.
+* **Real:** strategies opt into an intra-day recheck flag; the monitor calls a slim
+  `should_exit_intraday(bar, position) -> bool` on every poll, backed by a 1h or 30m
+  bar instead of daily. Bigger change; needs the interval-standardization work (already
+  landed 2026-09-05) plus a broker-side intra-day fetch pipeline.
+
+Recommend starting with the cheap path (router-level unrealized-loss exit) since it
+protects every strategy uniformly and doesn't require per-strategy retrofits.
+
+### 4. Configure strategy-level risk-stops on the exit-less strategies
+`strategies.base.Strategy` supports opt-in `stop_atr_mult` / `trail_atr_mult` /
+`time_stop_bars` but every strategy in the sleeve except `bollinger` (time_stop_bars=15)
+and `candlestick` (stop_atr_mult=3.0) leaves them at `None`. Concrete assignments to add
+after walk-forward evidence supports them:
+
+* `ts_momentum` — add `trail_atr_mult=4.0` (Chandelier trailing stop, standard for
+  momentum). Chosen over a fixed stop because momentum needs room for pullbacks; ATR
+  scales that room by the name's own volatility.
+* `rsi_meanrevert` / `bb_rsi_combo` / `zscore_ou` — add `time_stop_bars=20`. A dip
+  that hasn't reverted in 20 bars is a stale thesis; force-close and free the capital.
+* `atr_channel` / `macd` / `ema_crossover` — add `stop_atr_mult=3.0`. Trend-following
+  wants a hard floor; the trailing-stop version (`trail_atr_mult`) is only appropriate
+  once WF evidence confirms the strategy captures durable trends.
+
+Each assignment must clear a walk-forward run before landing — an added stop that hurts
+the OOS score is a bad trade for peace of mind. Bounded work: rerun tune per strategy
+family, keep the assignment only if sortino_over_dd improves.
+
+### 5. Portfolio cash-balance / gross-leverage gate on the router
+Surfaced from the same VDY-concentration session: 3 fills totaled $110,109 notional
+against $99,995 starting equity — paper broker allowed cash to go **negative (−$10,124)**
+because the sizer's `max_leverage=1.0` is per-position (vol-scale-ceiling), not
+per-portfolio. Portfolio gross leverage on that session was 1.10× with zero real
+guardrail; a real account would either reject or margin-borrow. Distinct from the
+per-name notional cap in item 2 above — that one prevents any single name from
+dominating; this one prevents the sleeve as a whole from exceeding available cash.
+
+Router gate shape:
+
+* `max_gross_leverage` config (default 1.0 for paper — accepts no leverage; higher for
+  margin accounts once live).
+* Pre-fill check: `(sum_open_notional + intent.notional) / equity` must not exceed the
+  cap. If breach, either trim the intent size to the remaining headroom OR reject
+  outright — config flag `on_leverage_breach = 'trim' | 'reject'`.
+* Runs BEFORE the vol-target sizer's leverage-cap-of-1.0 fires, so a name never gets
+  sized past what the sleeve can fund. Ordering matters: this gate sees intents in
+  submission order, so first-fill wins the remaining headroom.
+* Cross-check: `PaperBroker._journal_equity` already computes cash + positions_value
+  per row — reuses the same accounting, no double-tracking.
+
+Estimate: ~1.5 hr including test coverage. Would have prevented the −$10k cash breach
+outright.
+
+**Dependency ordering:** 1 (config edit — 5 min) → 3-cheap (router unrealized-loss exit
+— ~1 hr) → 5 (portfolio leverage gate — ~1.5 hr, catches the more common failure than 2)
+→ 2 (per-name notional gate — ~2 hr) → 4 (WF-validated strategy stops — ~4 hr per
+strategy family, needs cache warm). None require the intel corpus to deepen.
 
 ## Asset-class calibration — signal-statistics follow-up  🟡 QUEUED
 
@@ -502,23 +821,18 @@ solutions; call out and prioritize. Full agent report lives in the session trans
 - 🟢 `monitor/live_loop.py:38-40` — `_INTERPRET_BIAS_FLOOR = 0.25` and confidence factor map
   hardcoded; not configurable.
 
-### Top-5 recommended fixes (agent's ranking)
+### Top-5 recommended fixes (agent's ranking) — status as of 2026-09-08
 
 1. **Wire intel/overlay/allocator/persistence hooks into `trading live` and `autonomous_run`**
-   — single highest-severity gap. One-diff copy from the `signal` command's wiring block
-   (cli.py ~189+).
-2. **Fix `MarketData` cache** — normalize `end` to a day/hour boundary before hashing, OR drop
-   `end` from the cache key and store a `[start_ts, last_bar_ts]` metadata sidecar with
-   incremental append.
-3. **Fix interval-name mismatch across brokers** — either standardize on Kraken/IB's
-   `"ThirtyMinutes"` and rewrite `_QT_INTERVAL_MAP`, or add broker-side translation. Silent
-   fallback-to-daily for 30m requests across three brokers is a live-path landmine.
-4. **Fix conviction-clip / weight-bias contradiction** — either `PositionSizer` accepts
-   unclipped conviction (remove `_clip01` from `_vol_scale` and ATR path), or the LiveMonitor
-   docstring admits that `weight_bias > 1` is discarded.
-5. **Wire `KillSwitch.evaluate` into `PaperBroker._journal_equity`** — the drawdown is already
-   computed there; call `KillSwitch.evaluate` with those values on every write. Auto-halt in
-   the README architecture becomes real, not manual-only.
+   🔴 STILL OPEN. Single-diff copy from `signal --paper` wiring block (cli.py ~189+).
+2. ✅ **`MarketData` cache fix** — LANDED commit `638f8d3` (floor `end` to interval boundary).
+3. ✅ **Interval-name mismatch across brokers** — LANDED commit `638f8d3` (IB/Kraken lexicon
+   canonical; Questrade translates on its own side).
+4. ✅ **Conviction-clip / weight-bias contradiction** — LANDED commit `638f8d3` (raised to
+   [0, 3.0] matching `weight_bias` cap in live_loop).
+5. **Wire `KillSwitch.evaluate` into `PaperBroker._journal_equity`** — 🔴 STILL OPEN. Now
+   subsumed into the "Risk-architecture follow-ups" section above (item 1: tighten kill-switch
+   to 3.0% AND wire the evaluate call).
 
 ---
 
@@ -603,98 +917,17 @@ decision is made. Not urgent — paper path is complete.
 ## 4. Richer interpret.py catalog — three new thesis motifs  ✅ BUILT (commit 1278d69)
 Dollar strength divergence (primary + mirror), Disaster / insurance underpricing, Commodity
 carry-inversion proxy (moderate-cap, awaits real futures-curve feed). New `insurance` and
-`emerging_markets` theme keys, 7 focused tests. Follow-up: ingest a live futures-curve feed so
-the carry-inversion thesis fires on the real signal rather than the stress+flow proxy.
-
-Original spec kept below for context.
-
-
-`intel/interpret.py` currently fires five thesis rules (complacency divergence, energy concentration,
-conflict escalation, sentiment stretch, quiet-tape null). The gap is that all five read *within*
-their own domain — none of them cross-check against the FX layer, the disaster domain, or the
-futures curve, which is where the next tranche of divergences actually lives. Add three motifs, each
-with its threshold set, evidence extraction, action framing, and themes, and each guarded by the
-`min_baseline_events` + `max_acceleration` clip already in `intel/events.py`. Same contract as the
-existing five: hypotheses only, `action` framed as posture/research, never an entry signal.
-
-- **Dollar strength divergence.** Fires when DXY is strong-and-rising (e.g. `market.dxy_chg` above
-  a positive band) *while* a commodity or EM proxy is *also* rising — the divergence, because a
-  stronger USD usually pressures USD-denominated commodities and EM assets. Also fires the mirror
-  case: DXY weakening with commodities not rallying, which points at demand rather than currency.
-  Inputs: `market.dxy`, `market.dxy_chg`, `market.crypto`, VALE / commodity ETFs from the pool.
-  Themes: `dollar`, `materials`, `safe_haven`. Confidence upgrades when the divergence has been
-  standing for multiple polls (use `intel/history.py::persistence`), not just this snapshot.
-
-- **Disaster / insurance underpricing.** Fires when `natural_disasters_active` is elevated *and*
-  the disaster domain's event acceleration is above baseline *while* the insurance-sector implied
-  vol proxy (or, absent that, the broad market VIX) is not. Same complacency shape as the existing
-  complacency-divergence thesis but on a different pair of independent inputs — disasters and
-  reinsurance are one of the cleanest "physical world vs. market pricing" contrasts. New theme key
-  `insurance` (reinsurers, catastrophe-exposed utilities) and reuse `materials` for the
-  reconstruction-materials angle. `defense_geopolitical` does *not* apply here; keep the mapping
-  narrow so implicated_symbols() stays useful for research seeding.
-
-- **Commodity carry inversion.** Fires on a shift in the near-vs-deferred futures curve — the
-  cleanest signal that supply stress has moved from headline to physical pricing. We do not have a
-  live futures-curve feed in this project yet, so the first cut proxies it: `USO` (front-month oil
-  ETF) vs. a longer-dated oil ETF's price ratio, tracked against `energy_stress` and
-  `event_acceleration["energy"]`. Fires when the ratio has flipped direction (contango ↔
-  backwardation proxy) with the energy domain running hot. Longer-term the honest fix is a real
-  futures-curve fetcher (own dependency, own gitignored cache); flag that as a follow-up rather
-  than blocking on it. Themes: `energy`, `materials`.
-
-For each: add the rule to `interpret()` in strongest-evidence-first order (probably: dollar between
-existing (1) and (2), disaster between (3) and (4), carry inversion at the end before the null),
-add its exemplar tickers to `THEME_EXEMPLARS` (introduce the `insurance` key), and add one focused
-test per rule covering fire / no-fire / evidence-shape. Update `test_intel_interpret.py`'s existing
-theses-count assertions accordingly.
+`emerging_markets` theme keys, 7 focused tests. **Follow-up:** ingest a live futures-curve
+feed so the carry-inversion thesis fires on the real signal rather than the stress+flow proxy.
+_(Original spec pruned 2026-09-08 — recover from commit `1278d69` if needed.)_
 
 ## 5. Paper-trading journal upgrade  ✅ BUILT (commit 2173d35)
 `PaperBroker` now emits `state/paper_orders.jsonl`, `state/paper_equity.csv`, and stamps a
 per-instance `session_id` on every row across all three journals. Realized/unrealized P&L, peak
 equity, and drawdown_pct feed the max-drawdown kill-switch invariant. 7 focused tests.
-Follow-up (queued): tick-aware fill prices instead of full-precision floats — do this when
+**Follow-up (queued):** tick-aware fill prices instead of full-precision floats — do this when
 tick-aware sizing enters the router.
-
-Original spec kept below for context.
-
-### (superseded spec)
-
-`signal --paper` (committed 05e9b29) now routes intents through `PaperBroker`, and the first two
-runs on 2026-08-31 produced four fills into `state/paper_fills.jsonl`. The wiring works and the
-real account stays untouched, but the journal is too thin for the "one full week of paper trading
-first" check that `CLAUDE.md` and the `live-trade-confirm` skill both require. Three gaps to close,
-each small on its own:
-
-- **`state/paper_orders.jsonl`.** PaperBroker currently records executed fills only, so a poll where
-  the strategy fired but the broker declined to fill (insufficient equity, size == 0, stale quote)
-  is silently invisible. Emit one row per intent that reaches PaperBroker, mirroring the shape of
-  the router's `state/orders.jsonl` (mode, strategy, symbol, action, shares, entry, ts,
-  accepted, rejected_reasons) so a run's intent-to-fill funnel is reconstructable.
-
-- **`state/paper_equity.csv`.** Nothing snapshots equity — there is no P&L curve, no drawdown
-  series, and nothing the go-live checklist can point at. Append one row per fill (and optionally
-  a periodic mark-to-market snapshot on a fixed interval, gated by whether the market is open) with
-  columns `ts, session_id, equity, cash, positions_value, realized_pnl, unrealized_pnl,
-  peak_equity, drawdown_pct`. `peak_equity` and `drawdown_pct` are what feed the max-drawdown
-  kill-switch invariant and are worth carrying in the row rather than recomputing on read.
-
-- **`session_id` in every row.** Run 2 today stacked positions onto Run 1's in the same journal
-  (204 sh EQB.TO + 86 sh QQQ combined across the two runs) because both started fresh at $100k
-  with no session marker. Generate a session id at PaperBroker construction (uuid4 hex is fine)
-  and thread it through every row written by that instance — `paper_fills.jsonl`,
-  `paper_orders.jsonl`, `paper_equity.csv`. Enables per-session P&L, per-session drawdown, and
-  the ability to reason about the paper record without accidentally averaging over overlapping
-  runs.
-
-Follow-up (separate, later): fill prices are currently full-precision floats (e.g. 715.5425925 on
-QQQ) rather than snapped to the real tick size. Fine for P&L math, unrealistic for slippage
-accounting. Address when tick-aware sizing enters the router; not urgent for the go-live check.
-
-None of this touches the router or the risk gates; it is purely broker-side journaling. Once these
-three land, one continuous paper session run through market hours for a week is enough to satisfy
-the go-live pre-check, and `live-trade-confirm` can grow a real assertion against the equity CSV
-(peak, drawdown, trade count) rather than the existence-check it can do today.
+_(Original spec pruned 2026-09-08 — recover from commit `2173d35` if needed.)_
 
 ## 6. GraphRAG / multi-agent overlay on the intel wing  🟡 SHIPPED + HELD
 
@@ -736,83 +969,16 @@ history and there is a specific hypothesis worth the LLM round-trip to sharpen.
   first-seen recency. These are the features `intel/history.py` cannot express on the flat frame.
 - SQLite backend once the JSONL grows past a few MB — the query surface stays the same.
 
-Original speculative spec kept below.
+_(Original speculative spec — MiroFish/OASIS/GraphRAG design notes — pruned 2026-09-08. Full
+text recoverable from git history if the agent-layer path is revisited.)_
 
-### (original speculative spec)
-
-Larger and more speculative than items 4–5, kept here so the mapping doesn't get lost. Prompted by
-reading [MiroFish](https://github.com/666ghj/MiroFish) — a multi-agent prediction engine layered on
-[OASIS](https://github.com/camel-ai/oasis), CAMEL-AI's up-to-1M-agent social simulator. MiroFish's
-three added layers (GraphRAG for grounding, Zep for long-term memory, a "Report Agent" that
-synthesizes emergent behavior) map with unusual cleanness onto the intel wing's current gaps:
-
-- **GraphRAG over the OSINT feed → aging the journal.** Replace flat `state/intel_overlay.jsonl`
-  with a queryable entity/edge journal — nodes for events, actors, regions, commodities, sources;
-  edges annotated with the snapshot timestamp and the source that asserted them. Persistence and
-  corroboration then become graph queries ("this actor→region edge has been thickening across polls",
-  "in-degree from independent source nodes") rather than per-field counters. This is the direct
-  fix for the sparse-baseline / single-wire-inflates-a-feed artifacts that motivated the
-  `min_baseline_events` and `max_acceleration` clips in `intel/events.py`.
-
-- **OASIS-style specialist agents grounded in that graph → what interpret.py's rules should be.**
-  Domain readers (energy, macro, geopolitics, disaster) each pull their slice from independent
-  source sets and cast structured claims back into the same graph. Second-order chains a
-  Suez-closure → European gas → EU fertilizer producers → North-American ag substitution — become
-  derivable from the graph rather than needing to be enumerated by hand. Agents read the graph, not
-  the raw payload.
-
-- **Report Agent → what `intel/interpret.py` aspires to become.** Hand-picked thresholds
-  (`VIX < 18`, `fg ≥ 60`, `energy_accel ≥ 2`) replaced by an agent that reports which motifs
-  actually surfaced this poll, ideally with an adversary agent that tries to falsify each thesis
-  against the same graph so only survivors fire. Same contract as today: hypotheses only, `action`
-  framed as posture/research, never an entry signal.
-
-**Concrete first step** — do NOT adopt MiroFish wholesale on the live path. The cheap, high-value
-step is the layer MiroFish itself pivots on: replace `state/intel_overlay.jsonl` with an
-append-only edge log (event, source, actor, region, timestamp) and rewrite `intel/history.py`'s
-`change` / `relative position` / `persistence` queries on top of it. That gives ~80% of the
-interpretive lift, keeps the live loop deterministic, and leaves OASIS-style simulation and agent
-debate as an off-cadence enrichment layer whose outputs the live loop just reads. Backend choice
-for the edge log: SQLite with a graph-shaped schema is enough to start; a real graph store (Neo4j,
-as the offline fork uses) is a later question.
-
-**Honest caveats before this goes past the sketch stage.**
-- MiroFish is young (Dec 2025 release, hit GitHub trending March 2026, ~17k stars in a few months,
-  undergrad-authored). Adoption is unproven; expect API breakage.
-- Zep Cloud is a paid dependency. The English fork
-  [MiroFish-Offline](https://github.com/nikmcfly/MiroFish-Offline) replaces Zep with Neo4j + Ollama;
-  that's the branch to look at first for anything close to the live path.
-- Does NOT solve the point-in-time-history problem. LLM-derived features are still forward-only
-  until the graph journal accrues history. This is a quality upgrade to the live edge, not a way
-  to backtest OSINT.
-- Live-edge budget. A million-agent sim per poll does not fit in the poll cadence — the writer
-  runs live, the simulation/debate layer runs off-cadence and caches theses.
-- Confabulation risk. An LLM-invented edge in the corroboration graph is worse than no edge —
-  it silently inflates the confidence axis. Hard rule: every edge is source-attributed, and an
-  agent that cannot cite refuses.
-- Adversarial inputs. Public news is half attackers. Reader agents run with strict output
-  schemas, not free-form.
-- The non-negotiables still apply. Nothing here sizes a trade. Every thesis remains a hypothesis
-  and any name traded on it still clears walk-forward.
-
-## 7. Crypto WF workaround — run against Kraken's shallow OHLC (no deep-history fetch required)
-
-The crypto protocol landed this session (commit `c3a0d18`, `WF_PROTOCOLS["crypto"]`) is sized
-for exactly this: `train=365 / test=91 / step=91`. Kraken's `/public/OHLC` caps at ~720 daily
-bars, and `(720 − 365) ÷ 91 ≈ 3.9` folds — the honest minimum for a WFE calculation. Thinner
-than the 12-fold equity WF but real out-of-sample scoring with real cost accounting.
-
-**Concrete build (small, ~30 lines):**
-- Extend `scripts/walk_forward_crypto.py` to fall back to `data/kraken_ohlc.py::kraken_ohlc`
-  (shallow, one call) when the deep-history parquet does NOT exist. The `walk_forward` helper
-  already reads the crypto protocol via the wiring in commit `75e3e6a`.
-- Drop `MIN_BARS` from 900 to ~500 for the crypto sleeve only so 720-bar shallow data qualifies.
-- Report label: pairs cleared on shallow WF are "screened+" — better than pure in-sample,
-  thinner than deep-history WF. Not `robust` until the deep-history fetch clears them.
-
-This unlocks a promotion path for the seven `CRYPTO_SLEEVE` pairs today, without waiting for the
-multi-hour `scripts/fetch_crypto_history.py` run in item 2. Doesn't replace item 2 — deep-history
-WF still supersedes shallow WF once the fetch has run.
+## 7. Crypto WF — shallow fallback  ✅ CODE + PIPELINE + PROTOCOL VALIDATED (2026-09-08)
+`scripts/walk_forward_crypto.py` shallow-fallback closed 2026-09-04 (uses
+`kraken_ohlc(pair, interval=1440)` when deep-history parquet absent; tier=`screened+`
+for shallow-derived rows, never `robust`). Protocol validated 2026-09-08 across all 13
+CRYPTO_SLEEVE pairs (2 deep / 11 shallow). Tier promotions DEFERRED per data-first rule
+— see the "Deep-history fetch (currencies sleeve)" queued item above. Report at
+`reports/walk_forward_crypto.csv`.
 
 ## 8. Pair-trading strategy oriented to FX pairs
 
@@ -841,154 +1007,34 @@ equity pairs (`RY.TO/BNS.TO` etc). To use it on FX:
   universe widens beyond Kraken's fiat list.
 - Register FX-specific parameter grids (shorter mean-reversion half-lives than equity pairs).
 
-## 9. Cross-path wiring — intel ↔ trading ↔ alerter as one recurrent-learning loop  🟡 TIER 1 DONE
+## 9. Cross-path wiring — intel ↔ trading ↔ alerter  🟡 TIERS 1-3 DONE
 
-Status as of 2026-09-02:
-- ✅ OSINT scalar → sizing (both QT + Kraken)
-- ✅ Interpret → entry-filter conviction bias (both QT + Kraken)
-- ✅ Allocator → conviction bias (both QT + Kraken)
-- ✅ Alerter as notification bridge (all events → Telegram)
-- ⏳ Fills → intel graph event nodes (tier 2 — small)
-- ⏳ Graph persistence → entry gate (tier 3 — needs paper validation)
-- ⏳ Realized P&L → thesis calibration (tier 4 — needs weeks of data)
-- ⏳ Prediction evaluation (tier 5 — needs weeks of data)
+Status as of 2026-09-08:
+- ✅ **Tier 1:** OSINT scalar + interpret filter + allocator bias + Alerter (both QT + Kraken)
+- ✅ **Tier 2:** Fills → intel graph via `traded` predicate + `fill_edge()` helper
+- ✅ **Tier 3:** Graph persistence → entry gate via `PersistenceGate` (11 focused tests)
+- ⏳ **Tier 4:** Realized P&L → thesis calibration — **DATA-BLOCKED**, needs weeks of paper
+  fills matched against active theses. 7 days accrued / ~30 days minimum. Revisit ~2026-Oct.
+- ⏳ **Tier 5:** Prediction evaluation — **DATA-BLOCKED**, needs 21-day forward-return windows
+  post-thesis fire. Current thesis history 10 days = zero 21-day windows. Revisit ~2026-Nov+.
 
-Original spec kept below.
+_(Original spec pruned 2026-09-08 — the "missing wires" narrative was subsumed by the tier
+list above. Recover from git history if needed.)_
 
-### (original spec)
-
-The pieces are all in place, they just don't talk to each other end-to-end yet. This item names
-the interconnections so future work stays cross-functional / parallel / additive rather than
-each track ending at its own journal file.
-
-**Current state (already wired):**
-- `OverlayProvider` — polls WorldMonitor, computes per-class scalars, journals to both
-  `state/intel_overlay.jsonl` (flat) and `state/intel_graph.jsonl` (edges via
-  `snapshot_to_edges` + per-event via `worldmonitor._write_event_edges`).
-- Live trading path (`signal --intel-overlay`) uses `OverlayProvider` for size scaling.
-- `intel/interpret.py::interpret()` reads snapshots into named theses (rule layer).
-- `scripts/graph_journal.py` now fires persistence-hit + wash-event alerts to Telegram + email
-  + stdout via the trading-path `Alerter` (commit this session).
-
-**Missing wires (the actual cross-functional work):**
-
-- **Interpret → LiveMonitor.** `interpret()` produces named theses per poll but nothing on the
-  trading path reads them. Hook: LiveMonitor consumes the latest thesis list via a callable
-  passed at construction (parallel to how `overlay_for` is wired), and uses the themes ↔
-  exemplars mapping to bias which symbols get monitored, or to gate new entries in themes with
-  ADVERSE claims. Small change, big meaning — turns rule-based reasoning into an entry filter
-  (never an entry signal on its own — hypotheses only).
-
-- **Graph persistence → entry gate.** `edge_persistence(edges, predicate="elevated_in",
-  object=("domain", X))` already exists. Wire it into the risk gate: an entry in a symbol
-  whose overlay class implicates domain X only fires if X's persistence is ≥ N. That's how
-  "the same 6× event acceleration seen once is noise, the same reading across five polls is a
-  regime" moves from a docstring into an enforceable check.
-
-- **Fills → intel graph.** Every fill is a real point-in-time observation about the market's
-  own state. Write fill rows into the graph as `event` nodes with a `filled_at` predicate.
-  Then persistence queries can see "we've been entering this name for three polls" — same
-  machinery, unified vocabulary.
-
-- **Realized P&L → thesis calibration (recurrent-learning loop).** After N days, correlate
-  which theses were live around each fill and how those fills subsequently performed. Store
-  the correlations in `state/intel_thesis_pnl.jsonl` (a new journal). Feed the resulting
-  hit-rate back into interpret.py's thresholds — the hand-picked constants (VIX<18, fg≥60)
-  become adjusted-against-realized-outcomes over time. This is the "recurrent" part.
-
-- **Prediction evaluation.** Each thesis fired at time T carries an implicated-ticker set. At
-  T+N (N=5, 21 daily bars), measure whether those tickers moved as inferred. Journal the
-  results. Publish as `reports/thesis_prediction.md` alongside the existing paper_report.md
-  cadence. Turns interpret.py from "posture only" into a self-scored predictor — same
-  hypothesis discipline (still not entry signals), plus a measurable track record.
-
-- **Alerter as the notification bridge.** Every cross-path event should land in the same
-  channel: overlay-halt, thesis fire, persistence hit (now wired), fill, drawdown threshold
-  crossing, wash summary (now wired), degraded-feed warning. One channel, tagged by kind, so
-  a phone reader sees the whole system's health at once.
-
-**Sequencing that keeps the build additive and safe:**
-1. Interpret → LiveMonitor read (advisory only, no gate change) — smallest change
-2. Fill → graph write (data plumbing, safe by construction)
-3. Graph persistence → entry gate (introduces a new gate, needs a paper session to validate)
-4. Realized-P&L → thesis calibration (needs weeks of accrued data first)
-5. Prediction evaluation (needs weeks of accrued data first)
-
-Each step is testable in isolation and adds one hook to a boundary already established. None
-require rewriting a hot-path module. All are gate-preserving — a broken cross-path never causes
-a trade to fire without the risk gates that already exist.
-
-## 10. Correlation-aware allocator on the crypto sleeve  ✅ BUILT (commit 365452a + f9acdcc)
+## 10. Correlation-aware allocator on the crypto + equity sleeves  ✅ BUILT (commits 365452a + f9acdcc)
 
 Landed on both venues:
-- Crypto: `paper_kraken.py` computes bias from 720-day daily OHLC + screen_score, biases per-pair
-  conviction via `LiveMonitor.weight_bias_for`. Current bias: BTC/PAXG capped at 2.10x, ETH cut
-  to 0.17x.
-- Equity: `cli.py signal` computes bias from the WF-validated OOS scores + 252-bar return
-  histories from the local cache. Symbols not in `WALK_FORWARD_VALIDATED` default to neutral 1.0.
+- **Crypto:** `paper_kraken.py` computes bias from 720-day daily OHLC + screen_score, biases
+  per-pair conviction via `LiveMonitor.weight_bias_for`. Current 2026-09-08 bias distribution:
+  BTC/PAXG at 3.90× cap, ZEC 0.58× (real diversifier tier), cluster names 0.24-0.51×.
+- **Equity:** `cli.py signal` computes bias from WF-validated OOS scores + 252-bar return
+  histories from local cache. Symbols not in `WALK_FORWARD_VALIDATED` default to neutral 1.0×
+  (as seen with RSI.TO / RIG.TO in the 2026-09-08 pool).
 
-Follow-up: recompute the correlation matrix on cadence (weekly?) and write snapshots to
-`state/{crypto,equity}_corr.jsonl` for auditability.
-
-Original spec kept below for context.
-
-### (original spec)
-
-The 7-pair `CRYPTO_SLEEVE` runs equal-weight today. A 720-day daily correlation matrix computed
-2026-09-02 shows the sleeve is thinly diversified — 5 of 7 pairs cluster on one crypto-beta
-factor and equal-weighting is effectively levered long that factor with a small gold hedge:
-
-```
-Correlation clusters (Pearson, daily returns, Sep 2024 – Sep 2026):
-  BTC · ETH         0.83   ← effectively one bet
-  ETH · LINK        0.80
-  BTC · LINK        0.73
-  XRP · LINK        0.71
-  XRP · XLM         0.70
-
-Avg |ρ| with rest of sleeve:
-  PAXG/USD  0.17  ← only genuine diversifier (tokenized gold)
-  XMR/USD   0.32  ← partial (privacy coin)
-  XLM/USD   0.44
-  XRP/USD   0.55
-  LINK/USD  0.55
-  BTC/USD   0.56
-  ETH/USD   0.56
-```
-
-**Concrete build (small — reuses existing code):**
-- `portfolio/allocator.py::correlation_aware` already implements exactly the shape we need:
-  positive-score edge budgeting, inverse-vol scaling, correlation-crowding factor (row-sum of
-  positive correlations), per-name + per-sleeve caps, regime scalar. The equity path already
-  uses it via `portfolio/pipeline.py`. Same allocator, applied to the crypto sleeve.
-- `scripts/paper_kraken.py` currently instantiates `LiveMonitor` with per-symbol strategies and
-  equal-weight sizing via `PositionSizer`. Wire the allocator upstream: compute allocator weights
-  from the 7 pairs' return histories + their `screen_score`, then pass a size cap per symbol to
-  the sizer (or replace with an allocator-derived shares target).
-- Handle the shallow-history constraint: Kraken OHLC caps at ~720 daily bars — more than enough
-  for a stable covariance matrix (need ~60 bars minimum, 720 is comfortable).
-- Add `KrakenFeed.correlation_matrix()` or reuse `pandas.DataFrame.corr()` on the aligned close
-  frame the correlation-check computed today.
-
-**Expected effect** on sizing (illustrative — depends on the score budget and vol at run time):
-- PAXG target weight ↑ meaningfully (low avg ρ, deserves the diversifier premium)
-- XMR ↑ modestly
-- BTC / ETH / LINK ↓ collectively (they split ~one name's worth of weight, not three names')
-- XRP / XLM cluster ↓ similarly
-
-**Guardrails:**
-- Keep the sleeve paper-only per the existing `tier="screened"` posture; a correlation-aware
-  paper sleeve is a research improvement, not a promotion.
-- Enforce the same allocator per-name floor as equity so no pair gets zeroed out entirely — the
-  sleeve still monitors all 7 for signal, size just biases toward the diversifier.
-- Recompute the correlation matrix on some cadence (weekly? daily-of-the-week?) — crypto
-  correlations shift, and a stale covariance is worse than none. Use the same graph-journal
-  pattern of writing correlation snapshots to `state/crypto_corr.jsonl` for auditability.
-
-Same pattern applies to the equity paper session — the sleeve currently sizes each of 14 names
-independently. Equity correlations aren't as tight as crypto, but a resweep-then-allocator pass
-would surface the same "which held names are correlated redundancies" question the crypto
-sleeve just answered.
+**Follow-up:** recompute correlation matrix on cadence (weekly?) and write snapshots to
+`state/{crypto,equity}_corr.jsonl` for auditability. One-off correlation study for the 13-pair
+sleeve landed as `reports/crypto_corr_2026-09-05.{csv,png}` — not yet on cron.
+_(Original spec + correlation cluster table pruned 2026-09-08 — recover from git history.)_
 
 ---
 
