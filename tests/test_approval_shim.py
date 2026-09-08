@@ -11,11 +11,11 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from scripts.approval_shim import start_shim_thread
 from trading_live_claude.execution.approval import (
     CardRegistry,
     InMemoryApprovalStore,
 )
+from trading_live_claude.execution.approval_server import start_shim_thread
 
 
 def _find_free_port() -> int:
@@ -47,20 +47,17 @@ def _get(url):
 
 @pytest.fixture
 def shim(tmp_path, monkeypatch):
-    # Point the writeup dir to a temp location before starting the shim.
     from trading_live_claude.intel import vs_engine
     writeup_dir = tmp_path / "writeups"
     writeup_dir.mkdir()
     monkeypatch.setattr(vs_engine, "DEFAULT_WRITEUP_DIR", writeup_dir)
-    # Also patch the imported alias inside scripts.approval_shim itself.
-    import scripts.approval_shim as shim_mod
-    monkeypatch.setattr(shim_mod, "DEFAULT_WRITEUP_DIR", writeup_dir)
+    import trading_live_claude.execution.approval_server as srv_mod
+    monkeypatch.setattr(srv_mod, "DEFAULT_WRITEUP_DIR", writeup_dir)
 
     registry = CardRegistry()
     store = InMemoryApprovalStore(registry)
     port = _find_free_port()
-    t = start_shim_thread(store, registry, "127.0.0.1", port)
-    # A tiny wait so serve_forever is really up before the test hits it.
+    start_shim_thread(store, registry, "127.0.0.1", port)
     import time
     for _ in range(50):
         try:
@@ -82,7 +79,7 @@ def test_intel_endpoint_returns_writeup(shim):
 
 
 def test_intel_endpoint_404_for_unknown(shim):
-    status, body = _get(f"{shim['url']}/intel/vs_nope")
+    status, _ = _get(f"{shim['url']}/intel/vs_nope")
     assert status == 404
 
 
@@ -91,7 +88,7 @@ def test_intel_endpoint_rejects_path_traversal(shim, bad):
     import urllib.parse
     url = f"{shim['url']}/intel/{urllib.parse.quote(bad, safe='')}"
     status, _ = _get(url)
-    assert status in (400, 404)   # 400 for our own reject, 404 if url routing rejects first
+    assert status in (400, 404)
 
 
 def test_publish_and_respond_flow(shim):
