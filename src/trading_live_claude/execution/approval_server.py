@@ -128,6 +128,23 @@ def make_handler(
             if self.path == "/healthz":
                 self._send_json(HTTPStatus.OK, {"ok": True, "pending": len(store.pending())})
                 return
+            if self.path.startswith("/passbook"):
+                # /passbook?limit=N&offset=M  — newest-first resolved prompts.
+                import urllib.parse
+                q = urllib.parse.urlparse(self.path).query
+                params = urllib.parse.parse_qs(q)
+                try:
+                    limit = int(params.get("limit", ["50"])[0])
+                    offset = int(params.get("offset", ["0"])[0])
+                except ValueError:
+                    self._send_json(HTTPStatus.BAD_REQUEST,
+                                    {"error": "limit and offset must be integers"})
+                    return
+                entries = [e.to_dict() for e in store.passbook(limit=limit, offset=offset)]
+                self._send_json(HTTPStatus.OK, {"entries": entries,
+                                                "limit": min(max(limit, 0), 500),
+                                                "offset": max(offset, 0)})
+                return
             if self.path.startswith("/intel/"):
                 # /intel/{ref} — VS-engine writeup lookup for the card's CENTER-button
                 # detail view. Path-traversal defense: only accept the ref segment as
