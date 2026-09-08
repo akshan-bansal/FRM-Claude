@@ -996,10 +996,37 @@ sleeve just answered.
 
 **Status (2026-09-08).** Landed on `feat/tradecard-approval` at
 <https://github.com/akshan-bansal/FRM-Claude/pull/new/feat/tradecard-approval>
-as 8 coherent commits: ApprovalRouter, VS engine, shim + fake-card sim,
-ESP32-S3 firmware skeleton, `--require-card` in paper scripts, CLAUDE.md
-wiring, then three sub-obj 4 closures — bearer auth + `DELETE /card/{id}`,
-`GET /passbook`, `GET /openapi.json`. **43 tests pass.**
+as 10 coherent commits (through the thesis-prose framing patch).
+**44 tests pass.**
+
+### Architectural decision — zero vendor infrastructure
+
+Approved 2026-09-08 after weighing security auditors, backend cost, and
+user updateability against each other. The full rationale is in the
+memory file `tradecard-zero-vendor-infra-architecture.md`; the summary:
+
+- **The vendor operates no recurring services.** Firmware ships via
+  **GitHub Releases** (signed with sigstore/cosign in CI); PWA / docs /
+  OpenAPI ship via **GitHub Pages**; push notifications ride a
+  **user-chosen relay** (ntfy.sh topic or native APNs/FCM through a
+  PWA-registered VAPID key on the user's own shim). No user accounts,
+  no telemetry, no push tokens stored server-side.
+- **The shim is single-owner-per-box.** Multi-tenant / per-owner bearer
+  tokens are a coordinator concept and are dropped from the near-term
+  plan. Each box is one tenant.
+- **Recurring vendor cost stays $0/month** whether there are 10 users
+  or 10,000 — the card is a one-time purchase and the software is
+  open-source; nothing recurs.
+- **Supply-chain concentration on GitHub** is mitigated by sigstore
+  signatures + a public transparency log, matching the pattern npm /
+  PyPI / Docker already ship.
+- **Non-technical customers** get a bundled RPi-class box pre-flashed
+  with the shim (manufacturing allies produce the hardware). The vendor
+  still doesn't operate services — the box runs the same open-source
+  shim, offline-capable.
+
+The revised first-week migration plan (below) reflects this: no
+`owners` table, no coordinator client, no vendor push service.
 
 ### Sub-obj 4 queue (next commits on the same branch)
 
@@ -1023,6 +1050,37 @@ wiring, then three sub-obj 4 closures — bearer auth + `DELETE /card/{id}`,
 
 Both build cleanly on what's already merged; nothing here changes
 `Router._gate` or the autonomous-daemon gate list.
+
+### Shim runtime migration — first-week plan (revised for zero-vendor-infra)
+
+Runs on `feat/tradecard-approval` in order:
+
+1. **URL versioning to `/v1/…`** (as above).
+2. **SQLite persistence for the store** — replace the in-memory
+   `dict` + `deque` behind the existing `ApprovalStore` Protocol.
+   Prompts survive restart, `passbook_max` becomes a `LIMIT`, indexes
+   on `resolved_at` and `intent_id`. Single schema, single owner.
+3. **~~Owners + per-owner bearer tokens~~** — DROPPED. The
+   zero-vendor-infra decision makes the shim single-owner-per-box; a
+   bearer token still exists but scopes to the box, not to a user
+   record. Reconsider only if a household wants shared-box multi-card
+   with per-card scopes — not a v1 concern.
+4. **FastAPI port** — same endpoints, same OpenAPI spec (auto-generated
+   from pydantic models lifted from `approval_schemas.py`), TLS via
+   `uvicorn --ssl-keyfile`, native SSE / WebSocket for the push channel.
+5. **Packaging** — `pip install trading-live-claude[shim]`, a Docker
+   image on Docker Hub, systemd unit under `deploy/`.
+6. **New: sigstore-signed release workflow** — GitHub Actions job that
+   builds firmware images + wheels on tag, signs with cosign, publishes
+   the signatures to the transparency log, attaches to the GitHub
+   Release. The card's OTA path verifies these signatures on download.
+7. **New: PWA scaffold** — static Svelte or preact build published to
+   GitHub Pages under `/app`, discovers the LAN shim via mDNS or a
+   user-typed URL, uses the OpenAPI spec to codegen the client.
+
+Not on the near-term list: coordinator service, cloud-hosted anything,
+plugin sandbox, Postgres, phone-as-shim. Those come only when there are
+real users forcing the decisions.
 
 **Sub-objective 0: complete integration into the GitHub repo — DO THIS FIRST.**
 Everything else in this section presumes the code is landed on `main` behind a feature flag,
