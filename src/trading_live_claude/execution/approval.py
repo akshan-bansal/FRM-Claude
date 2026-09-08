@@ -32,7 +32,11 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from .approval_sqlite import SqliteApprovalStore, SqliteCardRegistry
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -571,6 +575,7 @@ def wire_card_approval(
     start_shim: bool = True,
     thesis_fn: object | None = None,
     auth_token: str | None = "auto",
+    db_path: "Path | None" = None,
 ) -> CardWiring:
     """Build the card-approval layer around ``inner`` and (optionally) spin the shim.
 
@@ -584,9 +589,22 @@ def wire_card_approval(
         it so the card / simulator can be paired with it.
       * ``None`` — the shim runs open. Only safe on strict loopback.
       * any string — that literal token is used as-is.
+
+    ``db_path`` — when set, the store and registry are SQLite-backed and
+    prompts + pubkeys survive a restart. When ``None`` (default), the
+    in-memory implementations are used — fine for tests and for a paper
+    loop that treats every session as fresh.
     """
-    registry = CardRegistry()
-    store = InMemoryApprovalStore(registry)
+    registry: "CardRegistry | SqliteCardRegistry"
+    store: "InMemoryApprovalStore | SqliteApprovalStore"
+    if db_path is not None:
+        # Local import so the sqlite module isn't loaded when not asked for.
+        from .approval_sqlite import SqliteApprovalStore, SqliteCardRegistry
+        registry = SqliteCardRegistry(db_path)
+        store = SqliteApprovalStore(registry, db_path)
+    else:
+        registry = CardRegistry()
+        store = InMemoryApprovalStore(registry)
     router = ApprovalRouter(inner, store=store, ttl_seconds=ttl_seconds, thesis_fn=thesis_fn)
 
     resolved_token: str | None
