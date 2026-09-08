@@ -9,6 +9,17 @@ Implementers override ``generate_signals(df)`` to add at least the columns:
   * optional ``size_hint`` -> float in [0, 1], conviction weight
   * optional ``atr``       -> float; used by the position sizer
 
+Additional columns read by :class:`trading_live_claude.intel.vs_engine.MarketContext`
+when the card-approval path is active. These are strictly optional — omit any
+you do not compute:
+  * optional ``score``        -> float; composite signal score in the strategy's own units
+  * optional ``rank``         -> int; rank in a cross-sectional universe (1 = best)
+  * optional ``r_multiple``   -> float; target/risk ratio at the time of entry
+  * optional ``atr_pct``      -> float; ATR as fraction of price (0.012 = 1.2%)
+  * optional ``trend_slope``  -> float; e.g. 20d EMA slope in %/day
+  * optional ``rsi_14``       -> float
+  * optional ``days_since_signal`` -> int; 0 = fresh, >0 = staler
+
 Strategies must NOT execute orders. They produce a DataFrame; the router does
 the executing. This is the same contract used in backtest, paper, and live.
 """
