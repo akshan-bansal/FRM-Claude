@@ -15,7 +15,7 @@
  * Loop:
  *   1. Bring up Wi-Fi from NVS-stored SSID/PSK.
  *   2. Load Ed25519 keypair from NVS; on first boot, generate + register.
- *   3. Long-poll GET /intents/pending every POLL_INTERVAL_MS.
+ *   3. Long-poll GET /v1/intents/pending every POLL_INTERVAL_MS.
  *   4. On a new prompt: enter MODE_PROMPT, render (broker, action, symbol,
  *      shares, $notional, thesis), wait up to TTL for RIGHT/LEFT/CENTER.
  *   5. Sign the prompt's `canonical` bytes with Ed25519 (libsodium).
@@ -345,7 +345,7 @@ static void register_if_needed(void) {
     cJSON_AddStringToObject(root, "card_id", CARD_ID);
     cJSON_AddStringToObject(root, "pubkey_pem", pem);
     char *body = cJSON_PrintUnformatted(root);
-    char url[256]; snprintf(url, sizeof(url), "%s/card/register", SHIM_URL_BASE);
+    char url[256]; snprintf(url, sizeof(url), "%s/v1/card/register", SHIM_URL_BASE);
     char rxbuf[512] = {0}; rx_t rx = { .buf = rxbuf, .cap = sizeof(rxbuf) };
     int status = http_post_json(url, body, &rx);
     ESP_LOGI(TAG, "register: %d %s", status, rxbuf);
@@ -456,7 +456,7 @@ static void sign_and_respond(const char *intent_id, const char *canonical,
     cJSON_AddStringToObject(root, "signature", sig_b64);
     char *body = cJSON_PrintUnformatted(root);
     char url[320];
-    snprintf(url, sizeof(url), "%s/intents/%s/response", SHIM_URL_BASE, intent_id);
+    snprintf(url, sizeof(url), "%s/v1/intents/%s/response", SHIM_URL_BASE, intent_id);
     char rxbuf[256] = {0}; rx_t rx = { .buf = rxbuf, .cap = sizeof(rxbuf) };
     int status = http_post_json(url, body, &rx);
     ESP_LOGI(TAG, "respond %s: %d %s", intent_id, status, rxbuf);
@@ -509,7 +509,7 @@ static void poll_loop(void) {
     char seen[SEEN_SIZE][64] = {0};
     int seen_ix = 0;
     uint16_t pb_cursor = 0;
-    char url[256]; snprintf(url, sizeof(url), "%s/intents/pending", SHIM_URL_BASE);
+    char url[256]; snprintf(url, sizeof(url), "%s/v1/intents/pending", SHIM_URL_BASE);
     char *rxbuf = malloc(HTTP_RX_BUF);
 
     render_passbook(pb_cursor);

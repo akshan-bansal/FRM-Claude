@@ -119,7 +119,12 @@ opt-in per-run via `--require-card` on `paper_ib.py` / `paper_kraken.py`.
   intent — the signature won't verify.
 - **Thesis from the VS engine.** `intel/vs_engine.py` composes a `<=140` char thesis
   (overlay risk clauses have priority over user-supplied notes during truncation) and
-  persists a full writeup to `state/intel_writeups/{intel_ref}.json`.
+  persists a full writeup to `state/intel_writeups/{intel_ref}.json`. Framing is
+  research not advice — clauses describe observed signal state, never issue directives.
+- **URL versioning.** Every non-public route lives under `/v1/…` (SPEC_VERSION 1.0.0).
+  `/healthz` and `/openapi.json` stay unversioned so a fresh client can bootstrap.
+  Legacy unversioned paths still work during the deprecation window; the shim logs a
+  warning on every hit.
 
 Layout:
 

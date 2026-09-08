@@ -268,10 +268,15 @@ def _resp(schema_ref: str) -> dict:
 
 
 PATHS: dict[str, dict] = {
+    # Public bootstrap paths — deliberately unversioned so a fresh client can
+    # probe liveness and fetch this spec before knowing which API version to
+    # use. Every other route lives under /v1/…; legacy (unprefixed) callers
+    # still work during the deprecation window but the shim logs a warning
+    # on every hit and this spec no longer advertises them.
     "/healthz": {
         "get": {
             "summary": "Liveness probe",
-            "description": "Public — no auth. Safe for load balancers.",
+            "description": "Public — no auth. Version-agnostic. Safe for load balancers.",
             "responses": {"200": {"description": "shim is up", **_resp("HealthzBody")}},
         }
     },
@@ -279,11 +284,12 @@ PATHS: dict[str, dict] = {
         "get": {
             "summary": "This spec",
             "description": "Public. Serves the OpenAPI 3.1 document describing the shim. "
-                           "Cached with an ETag; supports `If-None-Match`.",
+                           "Version-agnostic so a client can discover the current wire "
+                           "version. Cached with an ETag; supports `If-None-Match`.",
             "responses": {"200": {"description": "the spec"}},
         }
     },
-    "/card/register": {
+    "/v1/card/register": {
         "post": {
             "summary": "Register or replace a card's pubkey",
             "security": _AUTH,
@@ -297,7 +303,7 @@ PATHS: dict[str, dict] = {
             },
         }
     },
-    "/card/{card_id}": {
+    "/v1/card/{card_id}": {
         "delete": {
             "summary": "Revoke a card",
             "description": "After this call, signatures from the old key are refused. "
@@ -312,7 +318,7 @@ PATHS: dict[str, dict] = {
             },
         }
     },
-    "/intents": {
+    "/v1/intents": {
         "post": {
             "summary": "Publish an intent to the card",
             "description": "Only the trading engine should call this. Returns a Prompt "
@@ -328,7 +334,7 @@ PATHS: dict[str, dict] = {
             },
         }
     },
-    "/intents/pending": {
+    "/v1/intents/pending": {
         "get": {
             "summary": "Long-poll for pending prompts",
             "description": "Called by the card every ~1–2 s. Returns every prompt whose "
@@ -340,7 +346,7 @@ PATHS: dict[str, dict] = {
             },
         }
     },
-    "/intents/{intent_id}": {
+    "/v1/intents/{intent_id}": {
         "get": {
             "summary": "Fetch one pending prompt",
             "security": _AUTH,
@@ -354,7 +360,7 @@ PATHS: dict[str, dict] = {
             },
         }
     },
-    "/intents/{intent_id}/response": {
+    "/v1/intents/{intent_id}/response": {
         "post": {
             "summary": "Card responds to a pending intent",
             "description": (
@@ -379,7 +385,7 @@ PATHS: dict[str, dict] = {
             },
         }
     },
-    "/intel/{ref}": {
+    "/v1/intel/{ref}": {
         "get": {
             "summary": "VS-engine writeup for a resolved intent",
             "description": "Rendered by the card's CENTER-button detail view or a companion "
@@ -396,7 +402,7 @@ PATHS: dict[str, dict] = {
             },
         }
     },
-    "/passbook": {
+    "/v1/passbook": {
         "get": {
             "summary": "Newest-first view of resolved verdicts",
             "description": "Companion to the card's on-device passbook. Server-side record "

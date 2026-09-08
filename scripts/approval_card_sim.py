@@ -122,7 +122,7 @@ def run(
 ) -> None:
     # Register (idempotent on the server side; re-registering is fine).
     status, resp = _post(
-        f"{shim_url}/card/register",
+        f"{shim_url}/v1/card/register",
         {"card_id": card_id, "pubkey_pem": pubkey_pem(key).decode("utf-8")},
     )
     if status >= 400:
@@ -133,7 +133,7 @@ def run(
     seen: set[str] = set()
     while True:
         try:
-            status, resp = _get(f"{shim_url}/intents/pending")
+            status, resp = _get(f"{shim_url}/v1/intents/pending")
         except urllib.error.URLError as e:
             print(f"shim unreachable: {e}", file=sys.stderr)
             time.sleep(poll_interval)
@@ -163,7 +163,7 @@ def run(
                 "signature": base64.b64encode(sig).decode("ascii"),
             }
             status, resp = _post(
-                f"{shim_url}/intents/{prompt['intent_id']}/response", body
+                f"{shim_url}/v1/intents/{prompt['intent_id']}/response", body
             )
             print(f"-> {decision}: {status} {resp}")
 

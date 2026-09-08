@@ -1251,55 +1251,59 @@ memory file `tradecard-zero-vendor-infra-architecture.md`; the summary:
 The revised first-week migration plan (below) reflects this: no
 `owners` table, no coordinator client, no vendor push service.
 
-### Sub-obj 4 queue (next commits on the same branch)
+### Sub-obj 4 queue
 
-- **URL versioning to `/v1/…`** — freeze the wire before firmware pins its paths.
-  Every route the shim serves today gets remounted at `/v1/{route}`; the
-  bare paths (e.g. `/intents/pending`) return `301 Moved Permanently` to
-  `/v1/…` for one release, then drop. `info.version` in the OpenAPI spec
-  goes to `1.0.0`. Card simulator + firmware README + the paper scripts'
-  “register a card via POST /card/register” lines all get bumped. Add a
-  CI check that fails when a live route lacks a `/v1/` prefix.
-- **Multi-broker routing inside a single Router** — today's `Router` holds
-  one `Broker` instance and the card just displays whatever
-  `router.broker.name` is set to. Turn `intent.broker` into a real routing
-  key: `Router(brokers: dict[str, Broker], default: str)`, dispatch inside
-  `submit()` selects by `intent.broker` (falls back to `default`), and
-  every existing risk gate keeps running unchanged. `wire_card_approval`
-  passes the dispatched broker name into the prompt so the WYSIWYS
-  canonical remains the true destination. Follow-ups this enables:
-  IB-plus-Kraken on one paper process, per-broker daily budgets, and the
-  Canadian-user story where equities go to IB and crypto to Kraken.
+- ✅ **URL versioning to `/v1/…`** — landed. Every non-public route now lives
+  under `/v1/…`; legacy unversioned paths still resolve during the
+  deprecation window but the shim logs a warning per hit and the OpenAPI
+  spec advertises `/v1/…` only. `SPEC_VERSION` bumped to `1.0.0`.
+- ⏳ **Multi-broker routing inside a single Router** — QUEUED FOR NEXT SESSION
+  (moved 2026-09-08). Today's `Router` holds one `Broker` instance and the
+  card displays whatever `router.broker.name` is set to. Turn
+  `intent.broker` into a real routing key:
+  `Router(brokers: dict[str, Broker], default: str)`; dispatch inside
+  `submit()` selects by `intent.broker` (falls back to `default`); every
+  existing risk gate keeps running unchanged. `wire_card_approval` passes
+  the dispatched broker name into the prompt so the WYSIWYS canonical
+  remains the true destination. Reason for the delay: land the FastAPI
+  port first (see below) so this refactor happens in the target framework
+  once, not twice.
 
-Both build cleanly on what's already merged; nothing here changes
-`Router._gate` or the autonomous-daemon gate list.
+Nothing here changes `Router._gate` or the autonomous-daemon gate list.
 
 ### Shim runtime migration — first-week plan (revised for zero-vendor-infra)
 
-Runs on `feat/tradecard-approval` in order:
+Runs on `feat/tradecard-approval` in order (revised 2026-09-08 to
+front-load the framework port before the multi-broker refactor, so the
+refactor lands in the final shape once instead of being re-done on the
+FastAPI side):
 
-1. **URL versioning to `/v1/…`** (as above).
+1. ✅ **URL versioning to `/v1/…`** — landed.
 2. **SQLite persistence for the store** — replace the in-memory
    `dict` + `deque` behind the existing `ApprovalStore` Protocol.
    Prompts survive restart, `passbook_max` becomes a `LIMIT`, indexes
    on `resolved_at` and `intent_id`. Single schema, single owner.
-3. **~~Owners + per-owner bearer tokens~~** — DROPPED. The
-   zero-vendor-infra decision makes the shim single-owner-per-box; a
-   bearer token still exists but scopes to the box, not to a user
-   record. Reconsider only if a household wants shared-box multi-card
-   with per-card scopes — not a v1 concern.
-4. **FastAPI port** — same endpoints, same OpenAPI spec (auto-generated
+3. **FastAPI port** — same endpoints, same OpenAPI spec (auto-generated
    from pydantic models lifted from `approval_schemas.py`), TLS via
    `uvicorn --ssl-keyfile`, native SSE / WebSocket for the push channel.
+   Moved ahead of multi-broker so subsequent work happens in the target
+   framework directly.
+4. **Multi-broker routing inside a single Router** — see the queued
+   description above. Lands after the FastAPI port so the Router refactor
+   and its wire surface line up in one pass.
 5. **Packaging** — `pip install trading-live-claude[shim]`, a Docker
    image on Docker Hub, systemd unit under `deploy/`.
-6. **New: sigstore-signed release workflow** — GitHub Actions job that
-   builds firmware images + wheels on tag, signs with cosign, publishes
-   the signatures to the transparency log, attaches to the GitHub
-   Release. The card's OTA path verifies these signatures on download.
-7. **New: PWA scaffold** — static Svelte or preact build published to
+6. **Sigstore-signed release workflow** — GitHub Actions job that builds
+   firmware images + wheels on tag, signs with cosign, publishes the
+   signatures to the transparency log, attaches to the GitHub Release.
+   The card's OTA path verifies these signatures on download.
+7. **PWA scaffold** — static Svelte or preact build published to
    GitHub Pages under `/app`, discovers the LAN shim via mDNS or a
    user-typed URL, uses the OpenAPI spec to codegen the client.
+
+DROPPED (kept for the record): per-owner bearer tokens / owners table —
+the zero-vendor-infra decision makes the shim single-owner-per-box and a
+bearer token scopes to the box, not to a user record.
 
 Not on the near-term list: coordinator service, cloud-hosted anything,
 plugin sandbox, Postgres, phone-as-shim. Those come only when there are
