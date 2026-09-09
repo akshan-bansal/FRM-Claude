@@ -1,0 +1,55 @@
+# Approval-shim test suite. Runs on every push and every PR.
+#
+# Intentionally narrow — only the TradeCard test surface, not the full
+# repo's pytest run (which touches network-facing IB/Kraken paths that
+# don't belong in CI). The four files below are the wire the branch adds
+# and the wire this PR is protecting.
+name: tradecard-tests
+on:
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - "src/trading_live_claude/execution/**"
+      - "src/trading_live_claude/intel/vs_engine.py"
+      - "tests/test_approval_*.py"
+      - "tests/test_vs_engine.py"
+      - "pyproject.toml"
+      - ".github/workflows/test.yml"
+  pull_request:
+    paths:
+      - "src/trading_live_claude/execution/**"
+      - "src/trading_live_claude/intel/vs_engine.py"
+      - "tests/test_approval_*.py"
+      - "tests/test_vs_engine.py"
+
+concurrency:
+  group: tradecard-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # We only need the shim + test deps for these four test files —
+          # skip the ib/kraken/quant/plot extras to keep the CI slice small.
+          pip install '.[shim]'
+          pip install pytest pandas cryptography structlog pydantic
+
+      - name: Run tradecard tests
+        run: |
+          python -m pytest \
+            tests/test_approval_router.py \
+            tests/test_vs_engine.py \
+            tests/test_approval_shim.py \
+            tests/test_approval_sqlite.py \
+            -v --no-cov --tb=short
