@@ -1278,28 +1278,41 @@ front-load the framework port before the multi-broker refactor, so the
 refactor lands in the final shape once instead of being re-done on the
 FastAPI side):
 
-1. ✅ **URL versioning to `/v1/…`** — landed.
-2. **SQLite persistence for the store** — replace the in-memory
-   `dict` + `deque` behind the existing `ApprovalStore` Protocol.
-   Prompts survive restart, `passbook_max` becomes a `LIMIT`, indexes
-   on `resolved_at` and `intent_id`. Single schema, single owner.
-3. **FastAPI port** — same endpoints, same OpenAPI spec (auto-generated
-   from pydantic models lifted from `approval_schemas.py`), TLS via
-   `uvicorn --ssl-keyfile`, native SSE / WebSocket for the push channel.
-   Moved ahead of multi-broker so subsequent work happens in the target
-   framework directly.
-4. **Multi-broker routing inside a single Router** — see the queued
-   description above. Lands after the FastAPI port so the Router refactor
-   and its wire surface line up in one pass.
-5. **Packaging** — `pip install trading-live-claude[shim]`, a Docker
-   image on Docker Hub, systemd unit under `deploy/`.
-6. **Sigstore-signed release workflow** — GitHub Actions job that builds
-   firmware images + wheels on tag, signs with cosign, publishes the
-   signatures to the transparency log, attaches to the GitHub Release.
-   The card's OTA path verifies these signatures on download.
-7. **PWA scaffold** — static Svelte or preact build published to
-   GitHub Pages under `/app`, discovers the LAN shim via mDNS or a
-   user-typed URL, uses the OpenAPI spec to codegen the client.
+1. ✅ **URL versioning to `/v1/…`** — landed (commit `509d287`).
+2. ✅ **SQLite persistence for the store** — landed (commit `c8db37a`).
+   Prompts + pubkeys + passbook rows survive shim restart; single-owner
+   schema.
+3. ✅ **FastAPI port** — landed (commit `f13b45d`). Pydantic models are
+   the single source of truth; hand-authored `approval_schemas.py`
+   deleted. Legacy paths still resolve via middleware during the
+   deprecation window.
+4. ⏳ **Multi-broker routing inside a single Router** — QUEUED FOR NEXT
+   SESSION. `Router(brokers: dict[str, Broker], default: str)`; dispatch
+   inside `submit()` selects by `intent.broker` (falls back to `default`).
+   Watch for merge interaction with `629594c` (kill-switch / gross-
+   leverage / per-symbol cap / intra-day forced exit) which landed on
+   `feat/multi-scoring-attention-map` — the risk-architecture work
+   touches `Router._gate` internals; ApprovalRouter only wraps `submit`,
+   but the rebase will need care.
+5. ✅ **Packaging** — landed (commit `d95764c`). `tradecard-shim` console
+   entry-point, hardened `deploy/Dockerfile` (unprivileged uid 10001,
+   `/data` volume, healthcheck), hardened `deploy/tradecard-shim.service`
+   (NoNewPrivileges, MemoryDenyWriteExecute, private tmp, empty
+   capability bounding set).
+6. ✅ **Sigstore-signed release workflow** — landed (commit `5b5dbe8`).
+   `.github/workflows/release.yml` fires on `v*` tags, builds wheel +
+   sdist, attests SLSA v1 provenance, signs with cosign keyless via OIDC
+   to Rekor, attaches `.sigstore.json` bundles to a GitHub Release. Also
+   `.github/workflows/test.yml` runs the 58-test approval slice on push
+   / PR. `deploy/VERIFY.md` documents the customer-facing cosign
+   invocation. Firmware `.bin` signing plugs in the same way once the
+   ESP-IDF build lands in CI.
+7. ✅ **PWA scaffold** — landed (commit `dede629`). `pwa/` is a static
+   companion viewer (index.html + manifest + sw.js — no build step). No
+   third-party JavaScript, no fonts / icons off-domain, no telemetry.
+   Bearer token in sessionStorage only. Renders pending prompts + the
+   passbook against the user's own shim over LAN.
+   `.github/workflows/pages.yml` publishes on push to `main`.
 
 DROPPED (kept for the record): per-owner bearer tokens / owners table —
 the zero-vendor-infra decision makes the shim single-owner-per-box and a
