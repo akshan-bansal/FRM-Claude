@@ -1318,6 +1318,33 @@ DROPPED (kept for the record): per-owner bearer tokens / owners table —
 the zero-vendor-infra decision makes the shim single-owner-per-box and a
 bearer token scopes to the box, not to a user record.
 
+### Follow-up PRs after `feat/tradecard-approval` merges
+
+The current branch closes out the shim runtime migration plan except for
+item 4. Two objectives are queued as their own follow-up PRs so the
+current 18-commit review doesn't grow further:
+
+- **`feat/tradecard-multi-broker`** — item 4 of the migration plan.
+  Refactor `Router` to carry `brokers: dict[str, Broker]` + `default: str`
+  instead of a single `broker`; dispatch inside `submit()` selects by
+  `intent.broker` (falls back to `default`); ApprovalRouter's WYSIWYS
+  canonical continues to bind the dispatched broker name. Rebase target
+  is whatever's on `main` at that point — the risk-architecture work
+  from `629594c` (kill-switch / gross-leverage / per-symbol cap /
+  intra-day forced exit) touches `Router._gate` internals, and this
+  refactor is small enough (~1 file, ~1 test file, existing 58 tests
+  stay green) that the rebase surface is limited.
+- **`feat/tradecard-settings`** — on-device SETTINGS menu + a new
+  signed-intent kind for settings changes. Server side: a
+  `POST /v1/settings` endpoint that accepts a signed
+  `SettingsChangeIntent`, mutates `config/trading.yaml` on ACCEPT, and
+  journals the change to the passbook with an `S` verdict alongside the
+  `A` / `D` / `X` trade verdicts. Firmware side: new state in the poll
+  loop, D-pad menu rendering, LEFT/RIGHT to step values, CENTER to
+  publish. Tier-A card-enforced rules (per-tap cap, broker allowlist,
+  trading hours) go in NVS on the card; Tier-B rules (watchlist, heat
+  cap, R filter) round-trip through the shim.
+
 Not on the near-term list: coordinator service, cloud-hosted anything,
 plugin sandbox, Postgres, phone-as-shim. Those come only when there are
 real users forcing the decisions.
