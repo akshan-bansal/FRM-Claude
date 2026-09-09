@@ -61,6 +61,8 @@ shim = [
 
 [project.scripts]
 trading = "trading_live_claude.cli:app"
+# TradeCard shim entrypoint — installed under `pip install .[shim]`.
+tradecard-shim = "trading_live_claude.execution.approval_cli:main"
 
 [build-system]
 requires = ["hatchling"]

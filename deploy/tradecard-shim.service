@@ -1,0 +1,62 @@
+[Unit]
+# TradeCard approval shim, systemd unit for a customer running the shim
+# on their own always-on box (NAS, Raspberry Pi, small home server).
+# See NEXT_SESSION.md §11 for the deployment shape.
+#
+# Install:
+#   sudo cp deploy/tradecard-shim.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tradecard-shim
+#
+# Config expected at /etc/tradecard/env (mode 0600, owner tradecard):
+#   TRADECARD_AUTH_TOKEN=<paste the auto-minted token>
+#   TRADECARD_HOST=127.0.0.1        # or 0.0.0.0 behind a tunnel
+#   TRADECARD_PORT=8787
+#   TRADECARD_DB=/var/lib/tradecard/approval.db
+#   TRADECARD_WRITEUP_DIR=/var/lib/tradecard/intel_writeups
+Description=TradeCard approval shim
+Documentation=https://github.com/akshan-bansal/FRM-Claude
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=tradecard
+Group=tradecard
+EnvironmentFile=/etc/tradecard/env
+ExecStart=/usr/local/bin/tradecard-shim \
+    --host ${TRADECARD_HOST} \
+    --port ${TRADECARD_PORT} \
+    --db ${TRADECARD_DB} \
+    --writeup-dir ${TRADECARD_WRITEUP_DIR} \
+    --auth-token ${TRADECARD_AUTH_TOKEN}
+Restart=on-failure
+RestartSec=5s
+
+# Hardening — the shim never needs privileged surface. If any of these
+# break bring-up on your distro, the fix is your distro's docs, not
+# loosening the sandbox.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# The shim only needs to read config, write state, and bind a TCP port.
+ReadWritePaths=/var/lib/tradecard
+StateDirectory=tradecard
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
