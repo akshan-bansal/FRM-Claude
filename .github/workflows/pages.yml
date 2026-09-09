@@ -1,0 +1,35 @@
+# Publish the PWA to GitHub Pages on every push to main. Static content,
+# no build step — the PWA is intentionally plain HTML + one JS file so a
+# reviewer can read the whole client end-to-end.
+name: tradecard-pwa
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pwa/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: "pwa/"
+      - id: deploy
+        uses: actions/deploy-pages@v4
