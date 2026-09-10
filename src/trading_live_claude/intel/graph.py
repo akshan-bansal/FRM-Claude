@@ -53,6 +53,7 @@ DEFAULT_GRAPH_JOURNAL = "state/intel_graph.jsonl"
 # traded X" or "did fills cluster around a stressed_by market bridge" first-class node targets.
 NodeType = Literal[
     "poll", "domain", "region", "source", "market", "event", "venue", "symbol",
+    "analysis",
 ]
 
 # Edge predicates.
@@ -68,7 +69,7 @@ NodeType = Literal[
 #                paired with venue and symbol nodes to keep the record queryable)
 Predicate = Literal[
     "observed", "elevated_in", "co_occurs", "stressed_by",
-    "mentioned_by", "about_domain", "affects_region", "traded",
+    "mentioned_by", "about_domain", "affects_region", "traded", "ranked_by",
 ]
 
 # Threshold below which "elevated" is not asserted. Matches the interpret.py convention that a
@@ -363,18 +364,61 @@ def wash_journal_file(
     policies: dict[Predicate, DecayPolicy] | None = None,
     now: _datetime | None = None,
     backup: bool = True,
+    max_prune_fraction: float | None = 0.05,
 ) -> dict[str, int]:
     """Rewrite the journal in place with wash_edges applied. Returns a before/after summary.
 
     Atomically writes to a ``.washing`` sibling then swaps in, so a crash mid-write cannot
     corrupt the journal. When ``backup=True`` (default) the pre-wash file is preserved at
     ``<path>.bak`` so the last wash is always undoable.
+
+    ``max_prune_fraction`` (2026-09-09) caps the share of edges removed in a single wash.
+    Rationale: during data-accrual phase, the default per-predicate TTL + min_weight
+    policies were pruning ~20% per wash — outpacing the accrual rate and losing signal for
+    longitudinal queries. Cap defaults to 5%/day; pass ``None`` to disable (full policy
+    pruning). When the cap binds, the NEWEST would-be-pruned edges are reprieved (i.e., we
+    keep edges closer to the cap boundary rather than deeper past it), which preserves
+    query continuity at the cost of retaining some edges past their nominal TTL. Set
+    empirically per per-predicate breakdown in the return dict.
+
+    Return dict adds ``pruned_by_predicate`` — a {predicate: count} of what WOULD have been
+    pruned by policy (before the cap). Consumers can log/plot this to tune the cap
+    empirically or the underlying decay policies.
     """
     p = Path(path)
     if not p.exists():
-        return {"before": 0, "after": 0, "pruned": 0}
+        return {"before": 0, "after": 0, "pruned": 0, "pruned_by_predicate": {}}
     before_edges = load_edges(p)
-    after_edges = wash_edges(before_edges, policies=policies, now=now)
+    after_policy = wash_edges(before_edges, policies=policies, now=now)
+
+    # Identify would-be-pruned edges by (predicate, subject, object, as_of) triple. Cannot
+    # use id() — wash_edges emits new Edge instances when weights decay (dataclass replace),
+    # so kept-but-decayed edges would falsely show as pruned. This 4-tuple is unique per row
+    # because as_of is the poll timestamp and (subject, predicate, object) is the graph key.
+    def _key(e):
+        return (e.predicate, e.subject, e.object, e.as_of)
+    kept_keys = {_key(e) for e in after_policy}
+    would_pruned = [e for e in before_edges if _key(e) not in kept_keys]
+    would_prune_predicates: dict[str, int] = {}
+    for e in would_pruned:
+        would_prune_predicates[e.predicate] = would_prune_predicates.get(e.predicate, 0) + 1
+
+    after_edges = after_policy
+    cap_binding = False
+    if max_prune_fraction is not None and len(before_edges) > 0:
+        max_prune_count = int(len(before_edges) * max_prune_fraction)
+        would_prune_count = len(would_pruned)
+        if would_prune_count > max_prune_count:
+            cap_binding = True
+            # Reprieve the (would_prune_count - max_prune_count) newest of the would-be-pruned
+            # edges. Preserves query continuity by keeping edges closer to the cap boundary.
+            when = now or _datetime.now(UTC)
+            would_pruned.sort(
+                key=lambda e: _age_hours(e, when) if _age_hours(e, when) is not None else 1e12
+            )
+            reprieve_n = would_prune_count - max_prune_count
+            reprieved = would_pruned[:reprieve_n]                # newest of the would-be-pruned
+            after_edges = after_policy + reprieved
 
     tmp = p.with_suffix(p.suffix + ".washing")
     with tmp.open("w", encoding="utf-8") as fh:
@@ -389,8 +433,13 @@ def wash_journal_file(
         except OSError:
             pass
     tmp.replace(p)
-    return {"before": len(before_edges), "after": len(after_edges),
-            "pruned": len(before_edges) - len(after_edges)}
+    return {
+        "before": len(before_edges),
+        "after": len(after_edges),
+        "pruned": len(before_edges) - len(after_edges),
+        "pruned_by_predicate": would_prune_predicates,
+        "cap_binding": cap_binding,
+    }
 
 
 def append_edges(edges: Iterable[Edge], path: str | Path = DEFAULT_GRAPH_JOURNAL) -> None:

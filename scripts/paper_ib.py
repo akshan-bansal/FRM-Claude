@@ -58,7 +58,9 @@ from trading_live_claude.brokers.paper import PaperBroker
 from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.market import MarketData
+from trading_live_claude.execution.approval import wire_card_approval
 from trading_live_claude.execution.router import Router
+from trading_live_claude.intel.vs_engine import MarketContext, VSInvestmentEngine
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
 from trading_live_claude.portfolio.allocator import PortfolioAllocator
 from trading_live_claude.risk.sizing import PositionSizer
@@ -198,6 +200,13 @@ def main() -> None:
                     help="Wire the OSINT overlay (class scalar) + interpret entry-filter into "
                          "sizing. Needs WORLDMONITOR_API_KEY. Same effect it has on the QT and "
                          "Kraken monitors.")
+    ap.add_argument("--require-card", dest="require_card", action="store_true",
+                    help="Route every accepted intent through the ApprovalRouter — a physical "
+                         "TradeCard (or scripts/approval_card_sim.py) must ACCEPT before the "
+                         "order is dispatched. Boots the approval shim on --card-shim-port.")
+    ap.add_argument("--card-shim-port", type=int, default=8787)
+    ap.add_argument("--card-ttl", type=float, default=90.0,
+                    help="Seconds a card prompt stays live before it auto-EXPIRES.")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -221,6 +230,29 @@ def main() -> None:
         max_open_positions=settings.max_open_positions,
         min_ticket_usd=settings.min_ticket_usd,
     )
+
+    card_wiring = None
+    if args.require_card:
+        from scripts.approval_shim import start_shim_thread  # local import to keep unused paths cold
+        engine = VSInvestmentEngine()
+        def _thesis(intent, broker):
+            # Signal-row fields the daemon doesn't currently pass through
+            # get lifted client-side once strategies emit them (see the
+            # Strategy base-class contract update). For now the engine still
+            # renders a useful thesis from the intent alone.
+            return engine.explain(intent, broker=broker, market=MarketContext())
+        card_wiring = wire_card_approval(
+            router,
+            shim_host="127.0.0.1",
+            shim_port=args.card_shim_port,
+            ttl_seconds=args.card_ttl,
+            thesis_fn=_thesis,
+            shim_starter=start_shim_thread,
+        )
+        router = card_wiring.router  # type: ignore[assignment]
+        print(f"[ib-paper] --require-card ON — approval shim at {card_wiring.shim_url}. "
+              f"Register a card via POST /card/register then long-poll /intents/pending.",
+              flush=True)
 
     market = MarketData(exec_broker, cache=CandleCache(settings.data_cache_dir))
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
@@ -336,7 +368,27 @@ def main() -> None:
         arrow = "boost" if bias_map[sym] > 1.05 else "trim" if bias_map[sym] < 0.95 else "neutral"
         print(f"    {sym:>10}  x{bias_map[sym]:.2f}  ({arrow})", flush=True)
 
+    # Government bonds are HEDGES ONLY on this venue — not return-generating positions.
+    # The allocator's negative-Sharpe treatment of the rate-cycle bond ETFs was zeroing them
+    # anyway, which cancels the whole fixed_income class-scalar advantage. Instead, activate
+    # them only when the OSINT equity overlay says risk-off, sized at a baseline hedge weight.
+    _GOV_BONDS = {"TLT", "IEF", "SHY", "IEI", "TLH", "GOVT", "BND", "AGG", "MBB",
+                  "XBB.TO", "ZAG.TO", "VAB.TO", "ZFL.TO", "ZDB.TO"}
+    _HEDGE_TRIGGER = 0.5           # equity-class scalar at/below this → hedge activates
+    _HEDGE_BIAS = 1.0              # baseline sizing when active — plain neutral, not levered
+
     def _weight_bias_for(symbol: str) -> float:
+        sym_up = symbol.upper()
+        if sym_up in _GOV_BONDS:
+            # Hedge-only role: check the current OSINT equity scalar. Below trigger = active.
+            if overlay_for is not None:
+                try:
+                    dec = overlay_for("SPY")               # SPY as equity-class proxy
+                    if dec is not None and dec.scalar <= _HEDGE_TRIGGER:
+                        return _HEDGE_BIAS
+                except Exception:
+                    return 0.0
+            return 0.0                                     # dormant otherwise
         return bias_map.get(symbol, 1.0)
 
     # Alerter — mirrors the QT CLI wiring. Fills are silent to phone without this. The AlertConfig

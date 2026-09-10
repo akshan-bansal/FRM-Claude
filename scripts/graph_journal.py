@@ -176,6 +176,16 @@ def main() -> None:
                          "basket to. Implies --held-scope. Example: --pools crypto scopes the "
                          "graph poll to just CRYPTO_SLEEVE and drops WALK_FORWARD_VALIDATED "
                          "equities from the filter. Default None = all pools (unchanged behavior).")
+    ap.add_argument("--max-prune-fraction", type=float, default=0.05,
+                    help="Cap on the share of edges removed in a single wash (default 0.05 = 5%%). "
+                         "During data-accrual, unbounded per-predicate TTL + min_weight pruning was "
+                         "collapsing ~20%% per wash — faster than the accrual rate. The cap keeps "
+                         "the newest of the would-be-pruned edges, preserving longitudinal query "
+                         "continuity. Set to 0.0 to disable pruning entirely, or to a large value "
+                         "(e.g. 1.0) to restore full policy behavior. Empirical control: the "
+                         "printed wash summary shows per-predicate pruned counts BEFORE the cap "
+                         "binds so you can tune the underlying DecayPolicies if the same predicate "
+                         "dominates repeatedly.")
     args = ap.parse_args()
 
     # --pools implies --held-scope; a subset is only meaningful when the filter is engaged.
@@ -305,12 +315,22 @@ def main() -> None:
         due_for_wash = last_wash_ts is None or (now - last_wash_ts) >= wash_min_seconds
         if due_for_wash:
             try:
-                summary = wash_journal_file()
+                cap = args.max_prune_fraction if args.max_prune_fraction > 0 else None
+                summary = wash_journal_file(max_prune_fraction=cap)
                 last_wash_ts = now
                 pruned = summary["pruned"]
                 pct = (pruned / summary["before"] * 100.0) if summary["before"] else 0.0
+                cap_note = " [CAP BINDING]" if summary.get("cap_binding") else ""
                 print(f"[thicken] wash: {summary['before']} -> {summary['after']} edges "
-                      f"(pruned {pruned}, {pct:.1f}%)", flush=True)
+                      f"(pruned {pruned}, {pct:.1f}%{cap_note})", flush=True)
+                # Empirical control: per-predicate breakdown of what the policy WOULD have
+                # pruned before the cap bound. Shows which decay policies are aggressive; use
+                # to tune DEFAULT_POLICIES if the same predicate dominates repeatedly.
+                by_pred = summary.get("pruned_by_predicate") or {}
+                if by_pred:
+                    top = sorted(by_pred.items(), key=lambda kv: -kv[1])[:6]
+                    print(f"[thicken]   would-prune by predicate (pre-cap): "
+                          f"{', '.join(f'{k}={v}' for k, v in top)}", flush=True)
                 if alerter and pruned > 0:
                     title, body = format_wash(
                         before=summary["before"], after=summary["after"], pruned=pruned,

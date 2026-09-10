@@ -17,9 +17,21 @@ that is next-session item 2.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import asyncio
+
+# Windows console defaults to cp1252, which crashes on structlog's unicode output when an
+# exception message contains non-latin-1 chars — the resulting UnicodeEncodeError propagates
+# out of log.exception() and kills the paper session mid-poll. Force UTF-8 on stdout/stderr
+# so exception logging can never terminate a long-running monitor.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[union-attr]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[union-attr]
+    except Exception:
+        pass
 
 from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
 from trading_live_claude.brokers.kraken import KrakenBroker
@@ -28,10 +40,12 @@ from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.kraken_ohlc import kraken_ohlc
 from trading_live_claude.data.market import MarketData
+from trading_live_claude.execution.approval import wire_card_approval
 from trading_live_claude.execution.router import Router
 from trading_live_claude.intel.interpret import interpret
 from trading_live_claude.intel.overlay import IntelSnapshot
 from trading_live_claude.intel.routing import OverlayProvider
+from trading_live_claude.intel.vs_engine import MarketContext, VSInvestmentEngine
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
 from trading_live_claude.portfolio.allocator import PortfolioAllocator
@@ -81,7 +95,16 @@ def main() -> None:
     ap.add_argument("--paper-equity", type=float, default=100_000.0)
     ap.add_argument("--iterations", type=int, default=0,
                     help="0 = run forever; a positive N runs that many polls and stops.")
+    ap.add_argument("--require-card", dest="require_card", action="store_true",
+                    help="Route every accepted intent through the ApprovalRouter — a physical "
+                         "TradeCard (or scripts/approval_card_sim.py) must ACCEPT before the "
+                         "order is dispatched. Boots the approval shim on --card-shim-port.")
+    ap.add_argument("--card-shim-port", type=int, default=8787)
+    ap.add_argument("--card-ttl", type=float, default=90.0,
+                    help="Seconds a card prompt stays live before it auto-EXPIRES.")
     args = ap.parse_args()
+
+    sleeve = CRYPTO_SLEEVE
 
     settings = get_settings()
 
@@ -101,6 +124,19 @@ def main() -> None:
     print("[kraken-paper] Kraken feed is quote/candle ONLY. Real Kraken account untouched.",
           flush=True)
 
+    # Pre-flight symbol validation (2026-09-09). Refuses to start if any sleeve pair
+    # would 404 on candles at runtime (the MKR/USD / ARX.TO / RIG.TO failure mode).
+    # Uses the Kraken feed directly since PaperBroker.candles delegates to it anyway.
+    from trading_live_claude.analysis.symbol_validation import (
+        format_validation_banner,
+        refuse_launch_on_hard_failures,
+        validate_sleeve as _validate_sleeve,
+    )
+    _sleeve_syms = [e.symbol for e in CRYPTO_SLEEVE.values()]
+    _validations = _validate_sleeve(feed, _sleeve_syms)
+    print(format_validation_banner(_validations), flush=True)
+    refuse_launch_on_hard_failures(_validations)
+
     router = Router.build_default(
         mode="paper",
         broker=exec_broker,
@@ -112,6 +148,24 @@ def main() -> None:
         min_ticket_usd=settings.min_ticket_usd,
     )
 
+    if args.require_card:
+        from scripts.approval_shim import start_shim_thread
+        _engine = VSInvestmentEngine()
+        def _thesis(intent, broker):
+            return _engine.explain(intent, broker=broker, market=MarketContext())
+        _wiring = wire_card_approval(
+            router,
+            shim_host="127.0.0.1",
+            shim_port=args.card_shim_port,
+            ttl_seconds=args.card_ttl,
+            thesis_fn=_thesis,
+            shim_starter=start_shim_thread,
+        )
+        router = _wiring.router  # type: ignore[assignment]
+        print(f"[kraken-paper] --require-card ON — approval shim at {_wiring.shim_url}. "
+              f"Register a card via POST /card/register then long-poll /intents/pending.",
+              flush=True)
+
     market = MarketData(exec_broker, cache=CandleCache(settings.data_cache_dir))
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
 
@@ -119,10 +173,10 @@ def main() -> None:
     # symbol not in the map; here every routed symbol IS in the map, so the fallback should never
     # actually be selected — just picked as the sleeve's leader for clarity.
     smap = {entry.symbol: STRATEGIES[entry.strategy](**dict(entry.params))
-            for entry in CRYPTO_SLEEVE.values()}
-    fallback_entry = next(iter(CRYPTO_SLEEVE.values()))
+            for entry in sleeve.values()}
+    fallback_entry = next(iter(sleeve.values()))
     fallback = STRATEGIES[fallback_entry.strategy](**dict(fallback_entry.params))
-    sym_list = list(CRYPTO_SLEEVE)
+    sym_list = list(sleeve)
     print(f"[kraken-paper] monitoring {len(sym_list)} pairs: {sym_list}", flush=True)
 
     # Intel overlay + interpret bias — the same wires the equity `signal --intel-overlay` uses.
@@ -156,7 +210,7 @@ def main() -> None:
     # score. Runs once at startup; the correlation matrix is stable enough at daily cadence
     # that a start-of-session compute is fine (weekly refresh cadence at most).
     print("[kraken-paper] computing correlation-aware allocator weights...", flush=True)
-    bias_map = _compute_allocator_bias(CRYPTO_SLEEVE)
+    bias_map = _compute_allocator_bias(sleeve)
     print("[kraken-paper] allocator conviction bias (baseline = 1.0):", flush=True)
     for sym in sorted(bias_map, key=lambda s: -bias_map[s]):
         arrow = "boost" if bias_map[sym] > 1.05 else "trim" if bias_map[sym] < 0.95 else "neutral"
@@ -181,7 +235,7 @@ def main() -> None:
         smtp_pass=settings.smtp_pass,
         email_to=settings.alert_email_to,
     ))
-    strategy_name_for = {entry.symbol: entry.strategy for entry in CRYPTO_SLEEVE.values()}
+    strategy_name_for = {entry.symbol: entry.strategy for entry in sleeve.values()}
 
     def _emit(ev: MonitorEvent) -> None:
         state = "NEW" if ev.is_transition else f"persisting ({ev.poll_count})"

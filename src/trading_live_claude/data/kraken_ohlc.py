@@ -123,7 +123,11 @@ def kraken_trades_paginated(
 
     if not rows:
         return pd.DataFrame(columns=["time", "price", "volume", "side"])
-    df = pd.DataFrame(rows, columns=["price", "volume", "time_s", "side", "ordertype", "misc"])
+    # Kraken's Trades response is [price, volume, time, side, ordertype, misc] for crypto (6
+    # columns) but returns a 7th trailing field for FX pairs — likely a trade id. Take the first
+    # 6 columns unconditionally so the parser accepts both shapes without a schema fork.
+    trimmed = [r[:6] for r in rows]
+    df = pd.DataFrame(trimmed, columns=["price", "volume", "time_s", "side", "ordertype", "misc"])
     df["time"] = pd.to_datetime(df["time_s"].astype(float), unit="s", utc=True)
     df["price"] = df["price"].astype(float)
     df["volume"] = df["volume"].astype(float)

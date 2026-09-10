@@ -1,0 +1,25 @@
+menu "TradeCard"
+
+config TRADECARD_WIFI_SSID
+    string "Wi-Fi SSID"
+    default "your-ssid"
+
+config TRADECARD_WIFI_PSK
+    string "Wi-Fi password"
+    default "your-password"
+
+config TRADECARD_SHIM_URL
+    string "Approval shim base URL"
+    default "http://192.168.1.20:8787"
+    help
+        Base URL of the ApprovalRouter shim (scripts/approval_shim.py).
+        Do not include a trailing slash.
+
+config TRADECARD_CARD_ID
+    string "Card ID"
+    default "card-001"
+    help
+        Stable identifier this card presents to the shim. Persisted with
+        the keypair; changing it forces a re-registration.
+
+endmenu

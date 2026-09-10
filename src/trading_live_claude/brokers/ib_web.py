@@ -306,10 +306,33 @@ class IBWebBroker(Broker):
         if stype == "FUT":
             conid = self._resolve_futures_front_month(symbol)
         else:
-            body = self._post("/iserver/secdef/search", {"symbol": symbol, "name": False,
+            # IB's /iserver/secdef/search does not accept exchange suffixes like .TO, .L, .AX.
+            # Strip and, when a suffix was present, prefer the matching listing from the results.
+            bare = symbol.split(".")[0]
+            body = self._post("/iserver/secdef/search", {"symbol": bare, "name": False,
                                                            "secType": stype})
             if not isinstance(body, list) or not body:
                 raise BrokerError(f"IB Web API: no contracts found for {symbol!r} ({stype})")
+            want_exch: str | None = None
+            up = symbol.upper()
+            if up.endswith(".TO") or up.endswith(".V"):
+                want_exch = "TSE"
+            elif up.endswith(".L"):
+                want_exch = "LSE"
+            elif up.endswith(".AX"):
+                want_exch = "ASX"
+            if want_exch:
+                # secdef/search returns candidates whose ``sections`` array flags each listing
+                # venue. Pick the first candidate that has a section matching the wanted exchange.
+                picked = None
+                for cand in body:
+                    for sec in cand.get("sections") or []:
+                        if isinstance(sec, dict) and str(sec.get("exchange", "")).upper() == want_exch:
+                            picked = cand
+                            break
+                    if picked is not None:
+                        break
+                body = [picked] if picked is not None else body
             cand = body[0]
             conid = int(cand.get("conid") or 0)
             if conid <= 0:
@@ -408,19 +431,34 @@ class IBWebBroker(Broker):
         days = max(1, (end - start).days)
         period = f"{days}d" if days <= 30 else f"{max(1, days // 30)}m"
         bar = _INTERVAL_TO_BAR.get(interval, "1d")
-        try:
-            body = self._get("/iserver/marketdata/history",
-                              {"conid": str(conid), "period": period, "bar": bar})
-        except BrokerError as e:
-            # IB Web's history endpoint 500s with "Chart data unavailable" on symbols whose
-            # snapshot hasn't fully warmed up yet, or on instruments with no historical chart
-            # entitlement on this account. Return empty so LiveMonitor skips this symbol
-            # (insufficient_history warning) rather than killing the whole poll loop.
-            msg = str(e).lower()
-            if "chart data unavailable" in msg or "-> 500" in msg or "-> 404" in msg:
-                return []
-            raise
-        rows = body.get("data") or []
+
+        # Cold-conid warm-up: the first history call on a fresh conid can return either an empty
+        # data array OR a 5xx "Chart data unavailable" while IB activates the stream. Retry the
+        # same request a few times with a short delay before deciding the contract truly has no
+        # historical chart access. Matches the snapshot warm-up pattern.
+        import time as _time
+        _RETRIES = 3
+        _WAIT_S = 0.75
+        body: dict | None = None
+        for attempt in range(_RETRIES):
+            try:
+                body = self._get("/iserver/marketdata/history",
+                                  {"conid": str(conid), "period": period, "bar": bar})
+            except BrokerError as e:
+                msg = str(e).lower()
+                if attempt < _RETRIES - 1 and (
+                    "chart data unavailable" in msg or "-> 500" in msg or "-> 404" in msg
+                ):
+                    _time.sleep(_WAIT_S)
+                    continue
+                if "chart data unavailable" in msg or "-> 500" in msg or "-> 404" in msg:
+                    return []
+                raise
+            if isinstance(body, dict) and (body.get("data") or []):
+                break
+            if attempt < _RETRIES - 1:
+                _time.sleep(_WAIT_S)
+        rows = (body.get("data") if isinstance(body, dict) else None) or []
         out: list[Candle] = []
         for row in rows:
             ts_ms = int(row.get("t") or 0)

@@ -306,11 +306,65 @@ def test_wash_journal_file_roundtrips_and_writes_a_backup(tmp_path: Path) -> Non
     from trading_live_claude.intel.graph import append_edges as _ae
     _ae([*edges, ancient], path=path)
 
-    summary = wash_journal_file(path, now=now)
+    # Explicit max_prune_fraction=None so the 3-edge test isn't capped at 0 pruned.
+    summary = wash_journal_file(path, now=now, max_prune_fraction=None)
     assert summary["before"] == 3
     assert summary["after"] == 2
     assert summary["pruned"] == 1
     assert (tmp_path / "graph.jsonl.bak").exists()          # backup was written
+
+
+def test_wash_max_prune_fraction_caps_removal(tmp_path: Path) -> None:
+    """max_prune_fraction caps single-wash removal. Newest of the would-be-pruned edges
+    are reprieved so query continuity is preserved."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    path = tmp_path / "graph.jsonl"
+
+    # Build 20 edges — 10 fresh (keep), 10 past-TTL (would be pruned without the cap).
+    # With max_prune_fraction=0.10, only 10 * 0.10 = 2 may be pruned; 8 should be reprieved.
+    fresh = [_aged_edge("observed", 1.0, 12.0, now) for _ in range(10)]
+    past_ttl = [_aged_edge("observed", 1.0, (31 * 24) + i, now) for i in range(10)]  # 31d+i old
+    from trading_live_claude.intel.graph import append_edges as _ae
+    _ae([*fresh, *past_ttl], path=path)
+
+    summary = wash_journal_file(path, now=now, max_prune_fraction=0.10)
+    assert summary["before"] == 20
+    assert summary["pruned"] == 2                              # capped
+    assert summary["after"] == 18
+    assert summary["cap_binding"] is True
+    # Per-predicate breakdown reports what WOULD have been pruned (all 10 observed) — the
+    # cap doesn't hide the underlying policy signal.
+    assert summary["pruned_by_predicate"]["observed"] == 10
+
+
+def test_wash_max_prune_fraction_none_disables_cap(tmp_path: Path) -> None:
+    """max_prune_fraction=None restores the pre-2026-09-09 uncapped behavior."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    path = tmp_path / "graph.jsonl"
+    fresh = [_aged_edge("observed", 1.0, 12.0, now) for _ in range(5)]
+    past_ttl = [_aged_edge("observed", 1.0, 60 * 24, now) for _ in range(5)]
+    from trading_live_claude.intel.graph import append_edges as _ae
+    _ae([*fresh, *past_ttl], path=path)
+
+    summary = wash_journal_file(path, now=now, max_prune_fraction=None)
+    assert summary["before"] == 10
+    assert summary["pruned"] == 5                              # all past-TTL pruned
+    assert summary["cap_binding"] is False
+
+
+def test_wash_cap_does_not_bind_when_below_threshold(tmp_path: Path) -> None:
+    """When would-prune < cap, cap_binding is False and full policy prunes apply."""
+    now = _dt(2026, 9, 1, tzinfo=UTC)
+    path = tmp_path / "graph.jsonl"
+    fresh = [_aged_edge("observed", 1.0, 12.0, now) for _ in range(20)]
+    past_ttl = [_aged_edge("observed", 1.0, 60 * 24, now)]      # 1/21 = 4.7% would prune
+    from trading_live_claude.intel.graph import append_edges as _ae
+    _ae([*fresh, *past_ttl], path=path)
+
+    summary = wash_journal_file(path, now=now, max_prune_fraction=0.05)
+    assert summary["before"] == 21
+    assert summary["pruned"] == 1                              # below cap, full prune
+    assert summary["cap_binding"] is False
 
 
 def test_recent_events_from_graph_returns_empty_when_no_event_edges() -> None:

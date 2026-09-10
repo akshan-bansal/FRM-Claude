@@ -240,10 +240,30 @@ class LiveMonitor:
             quote = self.broker.quote(symbol)
             price = quote.mid or quote.lastTradePrice or float(last["close"])
 
-            entry = int(last.get("entry", 0)) == 1
+            # Both entry-trigger channels (2026-09-09). ``entry`` is event-triggered —
+            # fires on the fresh cross. ``entry_level`` is state-triggered — fires
+            # while the current bar's state satisfies the entry condition. Strategy
+            # must set ``supports_level_trigger=True`` for the level column to be
+            # consulted; if not, we ignore ``entry_level`` even if present (backward
+            # compatible with legacy strategies that don't emit it).
+            entry_event = int(last.get("entry", 0)) == 1
+            entry_level = (
+                bool(getattr(strat, "supports_level_trigger", False))
+                and int(last.get("entry_level", 0)) == 1
+            )
+            entry = entry_event or entry_level
+            entry_trigger: str | None = None
+            if entry_event and entry_level:
+                entry_trigger = "event+level"
+            elif entry_event:
+                entry_trigger = "event"
+            elif entry_level:
+                entry_trigger = "level"
             exit_ = int(last.get("exit", 0)) == 1
             atr_value = float(last.get("atr", price * 0.02)) or price * 0.02
 
+            # ``holds`` guards re-entry from level-triggered re-fires: while a position
+            # is open, subsequent level-eligible polls fall through to the HOLD branch.
             holds = open_positions.get(symbol, 0.0) > 0
 
             if entry and not holds:
@@ -334,6 +354,8 @@ class LiveMonitor:
                 # alerter, so a real signal must surface even when the account is too small
                 # to size a position (0 shares); only the order routing is gated by shares.
                 entry_detail: dict[str, object] = {"sized": sized.shares}
+                if entry_trigger is not None:
+                    entry_detail["trigger"] = entry_trigger
                 if decision is not None or self.strategy_risk:
                     entry_detail["mitigation"] = {
                         "scalar": mitigation.scalar, "strategy": mitigation.strategy_scalar,
