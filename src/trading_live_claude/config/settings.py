@@ -120,6 +120,14 @@ class Settings(BaseSettings):
     # drawdowns. Set to 0.0 to disable; typical range 2-4 (higher = more room for noise).
     force_exit_atr_mult: float = Field(default=3.0, ge=0.0, le=10.0)
 
+    # Behavior when the per-symbol notional cap OR the portfolio gross-leverage cap
+    # would be breached (2026-09-09). 'trim' (default) resizes the intent to fit and
+    # accepts; 'reject' returns the pre-2026-09-09 behavior of dropping the whole intent.
+    # Trim exists because live paper sessions showed a boosted name (VDY.TO ts_momentum
+    # × 2.33× allocator) firing entry every poll and getting rejected every poll for 39
+    # polls in a row — while a 50%-cap position would have been perfectly tradeable.
+    on_size_cap_breach: Literal["trim", "reject"] = "trim"
+
     default_strategy: str = "ema_crossover"
     default_symbols: str = "AAPL,MSFT,SHOP.TO,XIC.TO"
     timezone: str = "America/Toronto"
@@ -181,6 +189,7 @@ _TRADING_KNOB_FIELDS: tuple[str, ...] = (
     "max_gross_leverage",
     "max_position_notional_pct",
     "force_exit_atr_mult",
+    "on_size_cap_breach",
     "default_strategy",
     "default_symbols",
     "timezone",

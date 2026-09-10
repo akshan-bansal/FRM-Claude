@@ -271,6 +271,20 @@ def signal(
                       f"${paper_equity:,.0f}, account {exec_account}. "
                       f"Real account is untouched; fills are journaled.")
 
+    # Pre-flight symbol validation (2026-09-09). Refuses to start when any symbol
+    # would 404 on candles at runtime (the ARX.TO / RIG.TO Questrade failure mode
+    # seen 2026-09-08 / 2026-09-09). Uses the underlying Questrade feed rather than
+    # the paper wrapper since PaperBroker.candles delegates anyway.
+    from .analysis.symbol_validation import (
+        format_validation_banner,
+        refuse_launch_on_hard_failures,
+        validate_sleeve as _validate_sleeve,
+    )
+    _sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    _validations = _validate_sleeve(broker, _sym_list)
+    console.print(format_validation_banner(_validations))
+    refuse_launch_on_hard_failures(_validations)
+
     router = Router.build_default(
         mode="paper" if paper else "dry-run",
         broker=exec_broker,

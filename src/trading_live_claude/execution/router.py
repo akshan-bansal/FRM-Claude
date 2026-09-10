@@ -84,6 +84,7 @@ class Router:
         max_gross_leverage: float = 1.0,
         max_position_notional_pct: float = 0.50,
         force_exit_atr_mult: float = 3.0,
+        on_size_cap_breach: Literal["trim", "reject"] = "trim",
         _confirmed: bool = False,
     ) -> None:
         if mode in {"live", "autonomous"} and not _confirmed:
@@ -105,6 +106,15 @@ class Router:
         self.max_gross_leverage = max_gross_leverage
         self.max_position_notional_pct = max_position_notional_pct
         self.force_exit_atr_mult = force_exit_atr_mult
+        # 'trim' (default, 2026-09-09) = when the per-symbol notional cap or the
+        # portfolio gross-leverage cap would be breached, RESIZE the intent's shares
+        # down to fit the tighter of the two caps and accept. 'reject' = the pre-
+        # 2026-09-09 behavior of rejecting the whole intent. Trim prevents the
+        # observed failure mode where a boosted name (VDY.TO ts_momentum × 2.33x
+        # allocator) fires ENTRY every poll, gets rejected every poll, floods
+        # Telegram, and never opens even a fractional position — while a 50%-cap
+        # position would have been perfectly valid.
+        self.on_size_cap_breach: Literal["trim", "reject"] = on_size_cap_breach
 
     # ----- alternate constructors --------------------------------------------
 
@@ -122,6 +132,7 @@ class Router:
         max_gross_leverage: float = 1.0,
         max_position_notional_pct: float = 0.50,
         force_exit_atr_mult: float = 3.0,
+        on_size_cap_breach: Literal["trim", "reject"] = "trim",
     ) -> "Router":
         if confirmation.strip() != LIVE_CONFIRM_PHRASE:
             raise LiveModeNotConfirmed(
@@ -138,6 +149,7 @@ class Router:
             max_gross_leverage=max_gross_leverage,
             max_position_notional_pct=max_position_notional_pct,
             force_exit_atr_mult=force_exit_atr_mult,
+            on_size_cap_breach=on_size_cap_breach,
             _confirmed=True,
         )
 
@@ -155,6 +167,7 @@ class Router:
         max_gross_leverage: float = 1.0,
         max_position_notional_pct: float = 0.50,
         force_exit_atr_mult: float = 3.0,
+        on_size_cap_breach: Literal["trim", "reject"] = "trim",
     ) -> "Router":
         """Build an autonomous-mode router.
 
@@ -181,6 +194,7 @@ class Router:
             max_gross_leverage=max_gross_leverage,
             max_position_notional_pct=max_position_notional_pct,
             force_exit_atr_mult=force_exit_atr_mult,
+            on_size_cap_breach=on_size_cap_breach,
             _confirmed=True,
         )
 
@@ -236,30 +250,85 @@ class Router:
             if not ok:
                 reasons.append(reason)
 
-        # 9. per-symbol notional cap (2026-09-08). Prevents any single name from
-        # dominating the book — catches the failure mode where allocator boost ×
-        # vol-target sizing hits the per-position leverage ceiling and takes the whole
-        # sleeve. Only checks entries (exits should always be allowed to close a
-        # position regardless of its size).
-        if intent.action == OrderAction.BUY and equity > 0:
+        # 9 + 10. Size caps: per-symbol notional cap + portfolio gross-leverage cap
+        # (2026-09-08 / trim mode 2026-09-09). Only apply to entries — exits reduce
+        # exposure and are always allowed regardless of size.
+        #
+        # In 'trim' mode (default), when the intent's proposed notional exceeds the
+        # tighter of the two caps, we RESIZE intent.shares down to what fits and let
+        # the trade proceed. This closes the loop where a boosted name (allocator
+        # 2.33x × ts_momentum × vol-target-at-leverage-cap) would size to 100% of
+        # equity, get rejected 39x/session by the per-symbol cap, spam Telegram, and
+        # never open even a fractional position — while a 50%-cap position would have
+        # been perfectly valid research data.
+        #
+        # In 'reject' mode, the old behavior of appending a rejection reason. Kept as
+        # an option for cases where any breach of the cap is a genuine "don't trade"
+        # signal (e.g., misconfigured allocator) rather than a "trim to fit" one.
+        if intent.action == OrderAction.BUY and equity > 0 and intent.entry > 0:
             symbol_pct = notional / equity
-            if symbol_pct > self.max_position_notional_pct:
-                reasons.append(
-                    f"single-name notional {symbol_pct:.1%} > cap {self.max_position_notional_pct:.1%}"
-                )
-
-        # 10. portfolio gross-leverage cap (2026-09-08). Prevents the sleeve as a whole
-        # from exceeding available cash. Independent of the vol-target per-position
-        # leverage cap, which is per-name only and doesn't see other open positions.
-        # Only checks entries; exits reduce leverage.
-        if intent.action == OrderAction.BUY and equity > 0:
             gross_leverage = (current_open_notional + notional) / equity
-            if gross_leverage > self.max_gross_leverage:
-                reasons.append(
-                    f"portfolio gross leverage {gross_leverage:.2f}x > cap "
-                    f"{self.max_gross_leverage:.2f}x  (open ${current_open_notional:,.0f} + "
-                    f"intent ${notional:,.0f} vs equity ${equity:,.0f})"
-                )
+            symbol_over = symbol_pct > self.max_position_notional_pct
+            leverage_over = gross_leverage > self.max_gross_leverage
+
+            if symbol_over or leverage_over:
+                if self.on_size_cap_breach == "trim":
+                    # Compute the max notional that fits BOTH caps. Take the tighter.
+                    symbol_max_notional = equity * self.max_position_notional_pct
+                    leverage_max_notional = max(
+                        0.0, equity * self.max_gross_leverage - current_open_notional
+                    )
+                    fit_notional = min(symbol_max_notional, leverage_max_notional)
+                    if fit_notional <= 0:
+                        # No room left at all — sleeve is already at leverage cap and
+                        # this new symbol can't fit. Fall through to reject rather
+                        # than trim to 0 shares (which the min-ticket gate would flag).
+                        reasons.append(
+                            f"no room after size caps: symbol cap ${symbol_max_notional:,.0f}, "
+                            f"leverage headroom ${leverage_max_notional:,.0f}"
+                        )
+                    else:
+                        # Trim shares to fit. Recompute notional for downstream gates
+                        # (min-ticket check must see the trimmed size, not the original).
+                        trimmed_shares = int(fit_notional // intent.entry)
+                        if trimmed_shares <= 0:
+                            reasons.append(
+                                f"trim would round to 0 shares (fit ${fit_notional:,.0f} / "
+                                f"entry ${intent.entry:,.2f})"
+                            )
+                        else:
+                            log.info("router.size_trimmed",
+                                     symbol=intent.symbol,
+                                     from_shares=intent.shares,
+                                     to_shares=trimmed_shares,
+                                     original_notional=notional,
+                                     trimmed_notional=trimmed_shares * intent.entry,
+                                     reason=(
+                                         f"symbol_cap={symbol_pct:.1%}>{self.max_position_notional_pct:.1%}"
+                                         if symbol_over else
+                                         f"leverage={gross_leverage:.2f}x>{self.max_gross_leverage:.2f}x"
+                                     ))
+                            intent.shares = trimmed_shares
+                            notional = trimmed_shares * intent.entry
+                            # Re-check min-ticket on the trimmed size (must not fall through
+                            # to a size below the min).
+                            if notional < self.min_ticket_usd:
+                                reasons.append(
+                                    f"after trim: notional ${notional:,.2f} below min "
+                                    f"${self.min_ticket_usd}"
+                                )
+                else:
+                    # Reject mode — preserve the pre-2026-09-09 gate behavior.
+                    if symbol_over:
+                        reasons.append(
+                            f"single-name notional {symbol_pct:.1%} > cap {self.max_position_notional_pct:.1%}"
+                        )
+                    if leverage_over:
+                        reasons.append(
+                            f"portfolio gross leverage {gross_leverage:.2f}x > cap "
+                            f"{self.max_gross_leverage:.2f}x  (open ${current_open_notional:,.0f} + "
+                            f"intent ${notional:,.0f} vs equity ${equity:,.0f})"
+                        )
 
         return GateDecision(accepted=not reasons, rejected_reasons=reasons)
 
@@ -418,6 +487,7 @@ class Router:
         max_gross_leverage: float = 1.0,
         max_position_notional_pct: float = 0.50,
         force_exit_atr_mult: float = 3.0,
+        on_size_cap_breach: Literal["trim", "reject"] = "trim",
     ) -> "Router":
         journal = OrderJournal(state_dir)
         ks = KillSwitch(state_dir, max_drawdown_pct=max_drawdown_pct, daily_loss_limit_pct=daily_loss_limit_pct)
@@ -428,6 +498,7 @@ class Router:
             max_gross_leverage=max_gross_leverage,
             max_position_notional_pct=max_position_notional_pct,
             force_exit_atr_mult=force_exit_atr_mult,
+            on_size_cap_breach=on_size_cap_breach,
         )
         if mode == "live":
             if not live_confirmation:

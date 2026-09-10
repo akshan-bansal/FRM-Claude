@@ -84,12 +84,16 @@ python scripts/warm_cache.py --held --seed equity --years 5
 
 # 3. Paper monitors (relaunch)
 python -m trading_live_claude.cli signal --strategy bollinger \
-    --symbols "EQB.TO,QQQ,XIC.TO,ZEB.TO,CGL.TO,VALE,DBC,SRU.UN.TO,CRT.UN.TO,ENB.TO,XIU.TO,VDY.TO,SLF.TO,RSI.TO,RIG.TO" \
-    --strategy-map "EQB.TO=ts_momentum,QQQ=ts_momentum,XIC.TO=rsi_meanrevert,ZEB.TO=atr_channel,CGL.TO=atr_channel,VALE=bollinger,DBC=bollinger,SRU.UN.TO=rsi_meanrevert,CRT.UN.TO=rsi_meanrevert,ENB.TO=bollinger,XIU.TO=bollinger,VDY.TO=ts_momentum,SLF.TO=bollinger,RSI.TO=bollinger,RIG.TO=bollinger" \
+    --symbols "EQB.TO,QQQ,XIC.TO,ZEB.TO,CGL.TO,VALE,DBC,SRU.UN.TO,CRT.UN.TO,ENB.TO,XIU.TO,VDY.TO,SLF.TO,RSI.TO" \
+    --strategy-map "EQB.TO=ts_momentum,QQQ=ts_momentum,XIC.TO=rsi_meanrevert,ZEB.TO=atr_channel,CGL.TO=atr_channel,VALE=bollinger,DBC=bollinger,SRU.UN.TO=rsi_meanrevert,CRT.UN.TO=rsi_meanrevert,ENB.TO=bollinger,XIU.TO=bollinger,VDY.TO=ts_momentum,SLF.TO=bollinger,RSI.TO=bollinger" \
     --interval 300 --paper --paper-equity 100000 --level --intel-overlay
 # Note: ARX.TO removed 2026-09-08 — Questrade returned HTTP 404 "Symbol not found" on
 # every candle fetch (id=6291), even though symbols/search resolves. Likely a data-
 # availability quirk on ARC Resources. RSI.TO (Rogers Sugar) and RIG.TO added same day.
+# Note: RIG.TO removed 2026-09-09 — same 404-on-candles / resolves-on-search quirk
+# (id=15164671). 20 monitor.step.error rows across a single ~1h session before removal.
+# RSI.TO retained (candles work fine). See Gap 1 in the symbol-mapping architecture
+# queue for the pre-flight validation that would have caught both before launch.
 python scripts/paper_kraken.py --interval 300 --paper-equity 100000
 
 # 4. Graph journal + dashboard
@@ -153,7 +157,11 @@ data-first sequencing section above.
   * Revisit earliest at ~2026-Dec (accumulator reaches ~90 days at 30-obs equivalent for
     fewer cells).
 
-- **Microstructure accumulator — 2026-09-08 build spec, ready to start.** Enables the
+- **Microstructure accumulator — OMITTED 2026-09-09 per user decision.** Build spec
+  below kept for historical context; do NOT propose implementing this. Downstream
+  LiquidityGate wire-up is stranded as a result — do not propose that either.
+
+- **Microstructure accumulator (historical spec, DO NOT BUILD).** Enables the
   three-stage liquidity chain (accumulator → deeper heatmaps → `LiquidityGate` wiring)
   by starting the durable data-collection layer. All three downstream items block on
   the accumulator existing; today they run on one-shot 30-90d snapshots.
@@ -551,6 +559,68 @@ independence but removes the mis-routing hazard. ~40 lines + tests.
 + migration — ~4-6 hr, only if cross-venue trades get proposed). Gap 1 alone would have
 prevented both this week's mid-session failures; do it first, atlas can wait.
 
+## Risk-guard validation analysis — 2026-09-09  🟡 QUEUED (needs ≥ 1 week post-gate data)
+
+Empirical audit of items 1/2/3/5 from the 2026-09-08 risk-architecture landing (commit
+`629594c`). Purpose: verify each new gate is actually firing as designed, calibrate
+thresholds against the observed fill/reject distribution, and surface false-positive vs
+false-negative behavior. Item 4 (strategy-level opt-in stops) intentionally excluded —
+it's data-blocked pending WF and has no code to audit.
+
+**Data sources (all already journalled):**
+* `state/paper_orders.jsonl` — accept/reject decisions with `rejected_reasons` list.
+  Query for the 4 new reason strings: `"single-name notional"`, `"gross leverage"`,
+  `"kill-switch tripped"`, and forced-exit reasons (in fill journal, not orders).
+* `state/paper_fills.jsonl` — records `forced-exit` reasons on the intent side when
+  Router.check_forced_exits emits them.
+* `state/paper_equity.csv` — post-fill drawdown_pct series feeds the kill-switch
+  eval; a KillSwitch trip corresponds to `state/HALTED` appearing in a given session's
+  state_dir.
+
+**Per-gate probes:**
+
+1. **Kill-switch tighten + auto-halt (item 1)** — count HALTED sentinels per session,
+   correlate with the equity trajectory that triggered them. Compare pre-2026-09-08
+   sessions (pre-tightening) vs post — did the 3% threshold trip on sessions the 8%
+   threshold would have let ride? Cross-reference against the subsequent MTM: would the
+   halted position have recovered? Rough false-positive metric.
+2. **Per-symbol notional cap 50% (item 2)** — count `"single-name notional"` rejections
+   per session. Retrospect: which name/strategy triggered the cap? Would the intent's
+   size have been the trade that hit the leverage cap (the VDY.TO failure mode)? Cap
+   binding rate = rejections / total-accepted-entries; want this in the 1-5% range
+   (frequent enough to be doing work, rare enough not to strangle the sleeve).
+3. **Intra-day forced exit (item 3)** — count forced-exit fills per session, correlate
+   with entry-to-exit unrealized loss trajectory. Empirical calibration of
+   `force_exit_atr_mult`: at 3.0, is the gate firing on noise (position would have
+   recovered) or on real breakdowns (position kept falling)? Sweep candidate values
+   {2.0, 2.5, 3.0, 3.5, 4.0} on the accrued fill history.
+5. **Portfolio gross-leverage cap 1.0× (item 5)** — count `"gross leverage"` rejections;
+   verify the sleeve's max observed gross leverage stays ≤ 1.0. Distinguish from the
+   per-symbol cap — leverage cap binds when MULTIPLE positions cumulatively hit the
+   ceiling, per-symbol binds on a SINGLE dominant position.
+
+**Cross-gate interactions to watch for:**
+* Kill-switch trip triggered by a position the per-symbol cap should have prevented
+  from opening → indicates the size cap default is too loose.
+* Forced-exit gate firing on positions that were sized within all pre-entry caps →
+  indicates the entry gates missed something the exit gate caught (good — defense in
+  depth working).
+* Same position rejected by BOTH per-symbol AND gross-leverage → indicates the two
+  gates are collinear at current defaults; may want to relax one.
+
+**Deliverable:** `reports/risk_guard_analysis_YYYY-MM-DD.md` with per-gate firing rates,
+threshold-sensitivity tables (esp. force_exit_atr_mult sweep), and any calibration
+recommendations. Uses `state/paper_orders.jsonl` + `paper_fills.jsonl` + `paper_equity.csv`
+— no fresh fetches needed.
+
+**Data-window requirement:** at least **1 week of post-2026-09-08 sessions** running both
+QT + Kraken paper. Today (2026-09-09) is day 1; earliest honest run is **~2026-09-16**.
+Longer window (2-4 weeks) improves the false-positive/false-negative separation. Same
+data-first discipline as the OSINT and thesis-calibration studies.
+
+**Not blocked by:** intel corpus depth (the analysis uses paper-broker journals, not intel
+graph). Independent of the microstructure accumulator + LiquidityGate build path.
+
 ## Risk-architecture follow-ups — 2026-09-08  🟢 4 OF 5 LANDED (item 4 data-blocked)
 
 Prompted by a QT paper session where VDY.TO at ts_momentum × 2.33× allocator boost hit the
@@ -618,6 +688,111 @@ the OOS score is a bad trade for peace of mind. Bounded work: rerun tune per str
 family, keep the assignment only if sortino_over_dd improves.
 
 ### 5. Portfolio cash-balance / gross-leverage gate on the router  ✅ LANDED 2026-09-08
+
+### 6. Trim-instead-of-reject on the size-cap gates  🟡 CODE-COMPLETE 2026-09-09, NOT EMPIRICALLY VALIDATED
+Behavior change: both size caps (per-symbol + gross-leverage) resize `intent.shares` to
+fit the tighter cap and accept, controlled by `on_size_cap_breach: 'trim' (default) |
+'reject'` on Router + settings. Falls through to reject only when no headroom remains
+OR when trimmed size falls below `min_ticket_usd`.
+
+**What actually got validated today:** the OLD reject-mode gate fired 39x on VDY.TO in
+a single QT paper session at 100%-of-equity notional (correcting a false claim earlier
+in the day that gates were idle). That validated the ORIGINAL 2026-09-08 gate was
+binding correctly.
+
+**What did NOT get validated today:** the new trim mode's runtime behavior. Written +
+unit-tested (5 tests, all passing) but not exercised against a live paper session
+until the next launch. Do NOT claim "trim prevents the 39-attempt loop" as empirical
+until at least one paper session shows the actual trim → accept → position-open
+sequence in `paper_fills.jsonl`.
+
+Old reject-mode tests preserved via explicit `on_size_cap_breach="reject"`.
+
+### 7. Alerter dedup — OMITTED 2026-09-09 per user decision.
+Do NOT propose changes to the Telegram alerter. The Alerter stays as it currently is.
+
+### 9. Exchange hopping — trading beyond user's geographical timezone  🟡 QUEUED (2026-09-09)
+
+**Levels approved but not built** (queued 2026-09-09). Applies the propagation-notes
+discipline: each level's cross-module impact is enumerated so we don't slip an
+architectural change in as a small feature.
+
+**Level 1 — Session-hours guard (~2 hr, next step).**
+* New `analysis/venue_calendar.py` with market-hours-per-venue + `is_open(venue, ts)`.
+* LiveMonitor consults the guard before polling each symbol; symbols whose venue is
+  currently closed get skipped, preventing wasteful broker calls + stale-quote signal
+  errors during off-hours.
+* No new trading enabled — foundation only. QT + Kraken behavior unchanged during
+  their live sessions.
+* **Propagation:** LiveMonitor.step() adds one gate. Broker adapters get a
+  `.venue_calendar` attribute (or free function). No state schema change. Kill-switch
+  + heat gates unaffected. Alerter behavior unchanged.
+* **Cadence effect:** polls for closed-venue symbols drop from every 5min to zero
+  during their off-hours; net API-call reduction on the current pool.
+
+**Level 2 — Multi-venue equity via IB (~6-8 hr + WF).**
+* Add Tokyo / London / Sydney / etc. equities to `WALK_FORWARD_VALIDATED`. IB socket
+  path's `_infer_stock_venue` already handles suffix routing (landed 2026-09-09).
+* Requires IB Gateway + global-market-data subscriptions (real account cost decision).
+* WF runs per new symbol before promotion.
+* **Propagation:** no code deltas beyond L1 for the routing itself; the additions
+  are data (WF pool). Intel overlay's US-centric OSINT feed does NOT surface Asia
+  events well — a Nikkei trade uses `equity` class scalar without any Asia-specific
+  intel signal. Document that gap when adding.
+
+**Level 3 — Multi-currency accounting (~8-12 hr).**
+* PaperBroker records position currency. Equity CSV adds `numeraire_equity` column
+  with FX-adjusted totals. FX rates from IB or Kraken's fiat pairs.
+* All risk gates switch to numeraire-based math (KillSwitch, PortfolioHeat, allocator
+  correlation matrix).
+* **Propagation — critical.** FX rate moves become a NEW risk vector: a position
+  flat in native currency can trip the drawdown gate through FX alone. The KillSwitch
+  daily-loss baseline needs an explicit numeraire choice (USD is conventional but
+  CAD may be the user's home currency). Correlation math is only sound in a common
+  numeraire — mixed-currency return series bias the covariance matrix by the FX
+  volatility of each pair.
+* Feedback loop: FX-adjusted equity → KillSwitch.evaluate → potential HALT even when
+  book is fine in native currency. Must be tested with an FX-shock scenario before
+  live.
+
+**Level 4 — 24-hr scheduler + non-overlapping correlation (~15-20 hr, speculative).**
+* True global book, session-aware intent scheduling, correlation smoothing across
+  venues with different close times (Kalman filter or overlapping-window rebase).
+* Only worth designing after L2 + L3 have live evidence — this level is a
+  hypothesis, not a build spec.
+
+**Sequencing gate:** Levels 2-4 depend on real IB account market-data subscriptions
+(spend decision) AND on the L3 numeraire choice (architecture decision). L1 is
+bounded and independent — worth doing regardless of the higher levels.
+
+### 8. Event + level entry triggers (both, decoupled)  🟡 QUEUED (2026-09-09)
+User standing rule: we need BOTH event-based (fresh cross) AND level-based (state
+currently satisfied) entry triggers — neither one alone is reliable enough.
+
+Failure modes each covers for the other:
+* **Event-only fails when:** the monitor starts after the fresh cross has already
+  happened; OR the first-fired intent is gate-rejected (e.g., size-cap trim now
+  handles this on-line, but there are other reject reasons where the position never
+  opens); OR the fresh-cross bar is skipped for any polling reason. Result: no entry
+  until the NEXT cross, which may never come for many bars.
+* **Level-only fails when:** the current level is persistent for many polls in a row
+  (would re-fire indefinitely, requiring open-position checks to prevent re-entry);
+  OR the level is a one-bar spike that closed level-eligible even though the intent
+  was "trigger at the crossing".
+
+Contract shape:
+* Each strategy emits BOTH `entry_event` (0/1 on fresh cross) AND `entry_level`
+  (0/1 while state currently satisfies condition). Strategy authors pick which apply
+  to their setup — momentum crossings are event; band-touch dips are level.
+* LiveMonitor consumes both columns; per-symbol config picks which to act on
+  (default: event; opt-in to level for specific families).
+* Router's open-position check prevents re-entry on level-triggered re-fires
+  (already handled by the monitor's holding-book, but the check needs to be tight
+  in the level path).
+
+Touches every strategy class (adds one column) + LiveMonitor + optionally per-strategy
+config. Estimate 3-4 hr + tests. **Explicitly does NOT touch the Alerter** — the
+alerter's ergonomics are separate and out of scope per the standing rule above.
 Surfaced from the same VDY-concentration session: 3 fills totaled $110,109 notional
 against $99,995 starting equity — paper broker allowed cash to go **negative (−$10,124)**
 because the sizer's `max_leverage=1.0` is per-position (vol-scale-ceiling), not

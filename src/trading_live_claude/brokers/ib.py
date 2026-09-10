@@ -341,7 +341,14 @@ class IBBroker(Broker):
 
     def place_order(self, order: Order) -> Order:
         """Refuses unless ``enable_live_orders=True`` at construction. Same contract as
-        ``KrakenBroker``. Wraps the project's ``Order`` in IB's Order + Contract shape."""
+        ``KrakenBroker``. Wraps the project's ``Order`` in IB's Order + Contract shape.
+
+        Exchange + currency inference (2026-09-09): strips ``.TO`` / ``.V`` / ``.L`` /
+        ``.AX`` suffixes and routes to the correct venue + currency instead of always
+        submitting SMART/USD. Prior audit gap: ``XIC.TO`` submitted via socket would
+        have hit SMART US-only routing with USD currency — silent mis-routing that
+        the IB Web adapter already handled via ``_resolve_stk_conid``.
+        """
         if not self._enable_live_orders:
             raise OrderRejected(
                 "IBBroker: live orders disabled. Wrap this broker in PaperBroker(feed=...) "
@@ -351,7 +358,8 @@ class IBBroker(Broker):
         ib = self._require_ib()
         from ib_insync import LimitOrder, MarketOrder, Stock
 
-        contract = Stock(order.symbol, "SMART", "USD")
+        bare, exchange, currency = _infer_stock_venue(order.symbol)
+        contract = Stock(bare, exchange, currency)
         if order.orderType.value == "Limit" and order.limitPrice is not None:
             ib_order = LimitOrder(
                 action="BUY" if order.action == OrderAction.BUY else "SELL",
@@ -469,6 +477,35 @@ def _to_ib_contract(spec: IBContract) -> Any:
     # Escape hatch: raw Contract for any type not enumerated above.
     return Contract(secType=spec.sec_type.upper(), symbol=spec.symbol,
                      exchange=spec.exchange, currency=spec.currency)
+
+
+# Exchange-suffix → (exchange, currency) map shared with IB Web's `_resolve_stk_conid`.
+# US-listed tickers have no suffix and route SMART/USD (SMART is IB's price-improvement
+# router across US venues). Suffixed tickers get their listing venue explicitly with the
+# right currency — silently sending XIC.TO to SMART/USD would either fail or execute
+# against the wrong instrument.
+_STOCK_SUFFIX_VENUE: dict[str, tuple[str, str]] = {
+    ".TO": ("TSE", "CAD"),        # Toronto Stock Exchange
+    ".V":  ("VENTURE", "CAD"),    # TSX Venture
+    ".L":  ("LSE", "GBP"),        # London
+    ".AX": ("ASX", "AUD"),        # Sydney
+}
+
+
+def _infer_stock_venue(symbol: str) -> tuple[str, str, str]:
+    """Return (bare_symbol, exchange, currency) for an IB `Stock()` contract.
+
+    Strips known exchange suffixes and returns the appropriate venue + currency; unknown
+    or absent suffixes default to SMART/USD (the US default that was IBBroker's blanket
+    fallback prior to 2026-09-09). Ports the same logic IBWebBroker._resolve_stk_conid
+    uses on the REST side; keeps the two adapters routing consistently for the same
+    input symbol.
+    """
+    up = symbol.upper()
+    for suffix, (exch, ccy) in _STOCK_SUFFIX_VENUE.items():
+        if up.endswith(suffix):
+            return symbol[: -len(suffix)], exch, ccy
+    return symbol, "SMART", "USD"
 
 
 def _interval_to_ib_bar_size(interval: str) -> str:

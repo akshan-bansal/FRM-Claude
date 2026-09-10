@@ -49,6 +49,8 @@ def _mk_router(tmp_state: Path, broker: MagicMock, **overrides) -> Router:
         max_gross_leverage=1.0,
         max_position_notional_pct=0.50,
         force_exit_atr_mult=3.0,
+        on_size_cap_breach="reject",           # default flipped to 'trim' 2026-09-09; tests
+                                                # that assert reject behavior keep old mode
     )
     kwargs.update(overrides)
     return Router.build_default(**kwargs)
@@ -184,6 +186,78 @@ def test_forced_exit_fails_open_on_missing_data(tmp_state, broker) -> None:
         positions, current_prices={"QQQ": 100.0}, atr_at_entry={"SPY": 1.0}
     )
     assert exits == []
+
+
+# ---- 2026-09-09: trim mode on the size caps ------------------------------------------
+
+def test_trim_mode_per_symbol_cap_resizes_intent_and_accepts(tmp_state, broker) -> None:
+    """The exact VDY.TO failure mode from 2026-09-09: 100%-of-equity intent gets trimmed
+    to the 50% cap instead of rejected 39x in a row."""
+    router = _mk_router(tmp_state, broker,
+                        max_position_notional_pct=0.50,
+                        on_size_cap_breach="trim")
+    intent = _mk_intent(shares=1000, entry=100.0, stop=95.0)  # $100k intent = 100% of equity
+    decision = router._gate(intent, equity=100_000, existing_risk=0.0,
+                            open_positions=0, current_open_notional=0.0)
+    assert decision.accepted                                    # trim accepts, doesn't reject
+    assert intent.shares == 500                                 # trimmed to fit 50% cap ($50k)
+
+
+def test_trim_mode_gross_leverage_cap_trims_to_headroom(tmp_state, broker) -> None:
+    """Leverage cap trim: intent above headroom is resized to the remaining slack."""
+    router = _mk_router(tmp_state, broker,
+                        max_gross_leverage=1.0,
+                        max_position_notional_pct=1.0,        # widen sym cap so leverage binds
+                        on_size_cap_breach="trim")
+    # $90k already open + $20k intent → gross 1.10x; headroom = $10k, so trim to 100 sh
+    intent = _mk_intent(shares=200, entry=100.0, stop=95.0)
+    decision = router._gate(intent, equity=100_000, existing_risk=0.0,
+                            open_positions=1, current_open_notional=90_000)
+    assert decision.accepted
+    assert intent.shares == 100                                 # $10k of headroom / $100 entry
+
+
+def test_trim_mode_takes_tighter_of_two_caps(tmp_state, broker) -> None:
+    """Both caps binding — trim to the tighter one."""
+    router = _mk_router(tmp_state, broker,
+                        max_gross_leverage=1.0,
+                        max_position_notional_pct=0.30,       # sym cap tighter than leverage
+                        on_size_cap_breach="trim")
+    intent = _mk_intent(shares=1000, entry=100.0, stop=95.0)
+    decision = router._gate(intent, equity=100_000, existing_risk=0.0,
+                            open_positions=0, current_open_notional=0.0)
+    assert decision.accepted
+    assert intent.shares == 300                                 # 30% of equity
+
+
+def test_trim_mode_rejects_when_no_headroom_remains(tmp_state, broker) -> None:
+    """When existing open notional already equals equity, no room for even a trimmed
+    position — trim mode falls through to reject rather than trim-to-zero."""
+    router = _mk_router(tmp_state, broker,
+                        max_gross_leverage=1.0,
+                        max_position_notional_pct=1.0,
+                        on_size_cap_breach="trim")
+    intent = _mk_intent(shares=10, entry=100.0, stop=95.0)      # $1k intent
+    decision = router._gate(intent, equity=100_000, existing_risk=0.0,
+                            open_positions=1, current_open_notional=100_000)
+    assert not decision.accepted
+    assert any("no room" in r for r in decision.rejected_reasons)
+
+
+def test_trim_mode_rejects_when_trim_would_go_below_min_ticket(tmp_state, broker) -> None:
+    """If the trimmed notional falls below min_ticket_usd, reject."""
+    router = _mk_router(tmp_state, broker,
+                        max_gross_leverage=1.0,
+                        max_position_notional_pct=1.0,
+                        min_ticket_usd=500.0,
+                        on_size_cap_breach="trim")
+    # $99.5k already open; intent $1k → headroom $500, trim to 5 sh × $100 = $500. Right at min.
+    # Nudge min-ticket above so trim under-fits.
+    intent = _mk_intent(shares=10, entry=100.0, stop=95.0)
+    decision = router._gate(intent, equity=100_000, existing_risk=0.0,
+                            open_positions=1, current_open_notional=99_600)
+    assert not decision.accepted
+    assert any("below min" in r for r in decision.rejected_reasons)
 
 
 # ---- item 1: kill-switch auto-halt via PaperBroker ------------------------------------
