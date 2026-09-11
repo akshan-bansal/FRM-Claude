@@ -365,6 +365,8 @@ def test_openapi_covers_every_live_route(shim):
         ("POST",   "/v1/intents/{intent_id}/response"),
         ("GET",    "/v1/intel/{ref}"),
         ("GET",    "/v1/passbook"),
+        ("GET",    "/v1/stats"),
+        ("GET",    "/v1/conviction-matrix"),
     }
     spec_routes = {(m.upper(), p) for p, ops in spec["paths"].items() for m in ops}
     missing = live_routes - spec_routes
@@ -448,3 +450,103 @@ def test_publish_rejects_unknown_broker(shim):
     # handler returned {"error": "..."}. Both contain the offending broker.
     payload = json.dumps(body)
     assert "robinhood" in payload or "broker" in payload
+
+
+# --------------------------------------------------------------------------- #
+# Metrics endpoints                                                           #
+# --------------------------------------------------------------------------- #
+
+def test_stats_endpoint_returns_valid_shape(shim):
+    """GET /v1/stats returns equity, approval, and gate metrics."""
+    status, body = _get(f"{shim['url']}/v1/stats")
+    assert status == 200
+    # Check required fields
+    assert "session_id" in body
+    assert "starting_equity" in body
+    assert "session_equity" in body
+    assert "peak_equity" in body
+    assert "max_drawdown_pct" in body
+    assert "acceptance_rate" in body
+    assert "intents_total" in body
+    assert "intents_approved" in body
+    assert "intents_declined" in body
+    assert "avg_ttl_response" in body
+    assert "gate_rejections" in body
+    assert "last_gate_reason" in body
+    assert "overlay_scalar" in body
+    assert "overlay_risk_zone" in body
+    # Validate types
+    assert isinstance(body["starting_equity"], (int, float))
+    assert isinstance(body["session_equity"], (int, float))
+    assert isinstance(body["acceptance_rate"], (int, float))
+    assert 0.0 <= body["acceptance_rate"] <= 1.0
+    assert isinstance(body["intents_total"], int)
+
+
+def test_stats_equity_defaults_to_100k(shim):
+    """With no fills, session_equity defaults to starting_equity."""
+    status, body = _get(f"{shim['url']}/v1/stats")
+    assert status == 200
+    assert body["starting_equity"] == 100_000.0
+    assert body["session_equity"] >= body["starting_equity"] - 1.0  # allow rounding
+
+
+def test_conviction_matrix_returns_valid_shape(shim):
+    """GET /v1/conviction-matrix returns heatmap (symbols × strategies)."""
+    status, body = _get(f"{shim['url']}/v1/conviction-matrix")
+    assert status == 200
+    assert "symbols" in body
+    assert "strategies" in body
+    assert "matrix" in body
+    assert "updated_at" in body
+    # Validate structure
+    symbols = body["symbols"]
+    strategies = body["strategies"]
+    matrix = body["matrix"]
+    assert isinstance(symbols, list)
+    assert isinstance(strategies, list)
+    assert isinstance(matrix, list)
+    # Validate dimensions match
+    assert len(matrix) == len(symbols), "Matrix rows must match symbol count"
+    for row in matrix:
+        assert len(row) == len(strategies), "Matrix columns must match strategy count"
+    # Validate conviction scores in [0, 1]
+    for row in matrix:
+        for score in row:
+            assert 0.0 <= score <= 1.0, f"Conviction score out of bounds: {score}"
+
+
+def test_conviction_matrix_has_expected_symbols(shim):
+    """Conviction matrix includes common symbols."""
+    status, body = _get(f"{shim['url']}/v1/conviction-matrix")
+    assert status == 200
+    symbols = body["symbols"]
+    # Check for a few expected symbols
+    assert "SPY" in symbols
+    assert "BTC/USD" in symbols
+
+
+def test_stats_metrics_reflect_passbook(shim):
+    """Stats endpoint should reflect decisions in passbook."""
+    key = Ed25519PrivateKey.generate()
+    pem = key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    _post(f"{shim['url']}/v1/card/register",
+          {"card_id": "cm", "pubkey_pem": pem.decode()})
+
+    # Publish and accept 2 intents
+    for _ in range(2):
+        _publish_and_respond(shim, key, "cm", "ACCEPT")
+
+    # Publish and decline 1 intent
+    _publish_and_respond(shim, key, "cm", "DECLINE")
+
+    # Check stats reflect the decisions
+    status, body = _get(f"{shim['url']}/v1/stats")
+    assert status == 200
+    assert body["intents_total"] == 3
+    assert body["intents_approved"] == 2
+    assert body["intents_declined"] == 1
+    assert body["acceptance_rate"] == 2.0 / 3.0  # 2 out of 3 decided (non-expired)
