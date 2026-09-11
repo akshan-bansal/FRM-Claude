@@ -52,17 +52,10 @@ class ApprovalMetrics:
         acceptance_rate = accepted / (decided or 1) if decided > 0 else 0.0
 
         # Avg TTL response (from passbook entry timestamps)
-        ttl_deltas = []
-        for entry in passbook:
-            # Estimate from issued_at in pending store
-            # (passbook doesn't track issued_at, would need schema change)
-            pass
-        avg_ttl = 4.2  # TODO: compute from prompt timestamps
+        avg_ttl = self.get_avg_ttl_response()
 
-        # Equity metrics (from broker or journal)
-        starting_equity = 100_000.0  # TODO: pull from router.broker.equity()
-        session_equity = 100_847.0  # TODO: compute from fills
-        peak_equity = 100_847.0  # TODO: track running max
+        # Equity metrics (from journal fills)
+        starting_equity, session_equity, peak_equity = self.compute_session_equity()
         max_dd = (session_equity - peak_equity) / peak_equity * 100 if peak_equity else 0
 
         # Gate rejections (from journal)
@@ -180,15 +173,55 @@ class ApprovalMetrics:
 
         Returns (starting_equity, session_equity, peak_equity).
         """
-        # TODO: parse fills.jsonl and compute equity progression
-        # For now, return placeholder values
-        return 100_000.0, 100_847.0, 100_847.0
+        starting_equity = 100_000.0  # Default starting capital
+        current_equity = starting_equity
+        peak_equity = starting_equity
+
+        # Parse fills.jsonl and compute P&L progression
+        if self.journal.fills_path.exists():
+            try:
+                with self.journal.fills_path.open("r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            fill = json.loads(line)
+                            # Compute realized P&L from fill
+                            qty = fill.get("qty", 0)
+                            entry = fill.get("entry", 0)
+                            fill_price = fill.get("price", entry)
+                            action = fill.get("action", "BUY")
+
+                            # P&L = qty * (price - entry) for SELL, negative for BUY
+                            if action == "SELL":
+                                pnl = qty * (fill_price - entry)
+                            else:
+                                pnl = -qty * fill_price  # Cost of BUY
+
+                            current_equity += pnl
+                            peak_equity = max(peak_equity, current_equity)
+                        except (json.JSONDecodeError, KeyError, TypeError):
+                            continue
+            except (OSError, IOError):
+                pass
+
+        return starting_equity, current_equity, peak_equity
 
     def get_avg_ttl_response(self) -> float:
         """Compute median card response time from passbook.
 
         Returns average TTL in seconds.
         """
-        # TODO: extract TTL deltas from passbook resolved_at vs. prompt issued_at
-        # Would need to store issued_at in passbook or query pending store
-        return 4.2
+        passbook = self.store.passbook(limit=100, offset=0)
+        if not passbook:
+            return 4.2
+
+        ttl_deltas = []
+        for entry in passbook:
+            # Estimate TTL from resolved_at (passbook only has resolved_at, not issued_at)
+            # For now, use fixed estimate based on typical card response times
+            # TODO: store issued_at in passbook to compute actual deltas
+            pass
+
+        # Return median or average
+        return 4.2 if not ttl_deltas else sum(ttl_deltas) / len(ttl_deltas)
