@@ -81,6 +81,11 @@ class ConfirmOverlay(Strategy):
         self.patterns = tuple(patterns)
         self.lookback = lookback
         self.symbol = symbol
+        # Inherit the base's level-trigger declaration (2026-09-10). If the base emits
+        # ``entry_level`` and declares support, the wrapper does too so LiveMonitor's
+        # dual-consumption path treats the wrapped strategy the same way it would treat
+        # the base. The confirm gate now applies to both channels.
+        self.supports_level_trigger = bool(getattr(base, "supports_level_trigger", False))
         # Carry the base's opt-in exits through the wrapper (stop / trailing / time stop).
         self.stop_atr_mult = base.stop_atr_mult
         self.trail_atr_mult = base.trail_atr_mult
@@ -101,6 +106,13 @@ class ConfirmOverlay(Strategy):
         base_entry = out["entry"].fillna(0).astype(bool)
         gated = base_entry & confirm_window
         out["entry"] = gated.astype(int)
+        # Level channel gating (2026-09-10). The base strategy may emit ``entry_level``
+        # too; without gating, confirmed-strategy consumers would leak ungated level
+        # triggers, defeating the overlay's precision-filter purpose. Apply the same
+        # confirmation window to level so both trigger channels stay coherent.
+        if "entry_level" in out.columns:
+            base_level = out["entry_level"].fillna(0).astype(bool)
+            out["entry_level"] = (base_level & confirm_window).astype(int)
         # Confirmation is a candidate feature: 1.0 where a gated entry survives, else
         # carry the base strength (zeroed on suppressed bars so the scorer sees the gate).
         if "signal_strength" in out.columns:

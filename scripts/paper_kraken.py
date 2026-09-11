@@ -102,13 +102,6 @@ def main() -> None:
                     help="Seconds a card prompt stays live before it auto-EXPIRES.")
     ap.add_argument("--iterations", type=int, default=0,
                     help="0 = run forever; a positive N runs that many polls and stops.")
-    ap.add_argument("--require-card", dest="require_card", action="store_true",
-                    help="Route every accepted intent through the ApprovalRouter — a physical "
-                         "TradeCard (or scripts/approval_card_sim.py) must ACCEPT before the "
-                         "order is dispatched. Boots the approval shim on --card-shim-port.")
-    ap.add_argument("--card-shim-port", type=int, default=8787)
-    ap.add_argument("--card-ttl", type=float, default=90.0,
-                    help="Seconds a card prompt stays live before it auto-EXPIRES.")
     args = ap.parse_args()
 
     sleeve = CRYPTO_SLEEVE

@@ -147,6 +147,127 @@ def test_livemonitor_trigger_source_labeling() -> None:
     ) == "level"
 
 
+# --- 2026-09-10: mean-reversion strategy family + wrappers ---------------------------
+
+def test_rsi_meanrevert_emits_both_columns() -> None:
+    from trading_live_claude.strategies.examples.rsi_meanrevert import RsiMeanRevert
+    # Long enough for RSI(14) to compute; last bars have RSI probably around ~20-30
+    prices = [100.0] * 20 + [95.0, 92.0, 90.0, 89.0, 88.0, 89.0, 90.0]
+    df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices,
+                        "volume": np.full(len(prices), 1000, dtype=int)})
+    strat = RsiMeanRevert(window=14, oversold=30.0)
+    out = strat.generate_signals(df, StrategyContext(symbol="TEST"))
+    assert "entry_level" in out.columns
+    assert RsiMeanRevert.supports_level_trigger is True
+
+
+def test_zscore_ou_emits_both_columns() -> None:
+    from trading_live_claude.strategies.examples.mean_reversion import ZScoreOU
+    # Price sequence that goes stretched-below then recovers
+    prices = [100.0] * 25 + [95.0, 92.0, 90.0, 89.0, 92.0]
+    df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices,
+                        "volume": np.full(len(prices), 1000, dtype=int)})
+    strat = ZScoreOU(window=20, entry_z=2.0)
+    out = strat.generate_signals(df, StrategyContext(symbol="TEST"))
+    assert "entry_level" in out.columns
+    assert ZScoreOU.supports_level_trigger is True
+    # entry_level fires while z is below -entry_z (spread stretched)
+    assert out["entry_level"].sum() >= 1
+
+
+def test_bb_rsi_combo_emits_both_columns() -> None:
+    from trading_live_claude.strategies.examples.mean_reversion import BbRsiCombo
+    # Use noisy prices so the Bollinger band width is never zero (the
+    # signal_strength math in BbRsiCombo divides by (bb_upper - bb_lower) and
+    # constant-price warmups produce band=0 → NA propagation. Unrelated to this
+    # test's target, so we side-step it with noise).
+    rng = np.random.default_rng(42)
+    base = np.linspace(100.0, 95.0, 30)
+    prices = list(base + rng.normal(0.0, 0.5, 30))
+    df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices,
+                        "volume": np.full(len(prices), 1000, dtype=int)})
+    strat = BbRsiCombo(window=20, n_std=2.0, rsi_window=14, rsi_th=40.0)
+    out = strat.generate_signals(df, StrategyContext(symbol="TEST"))
+    assert "entry_level" in out.columns
+    assert BbRsiCombo.supports_level_trigger is True
+
+
+def test_rsi2_connors_emits_both_columns() -> None:
+    from trading_live_claude.strategies.examples.mean_reversion import Rsi2Connors
+    # Uptrend + brief pullback so RSI(2) drops
+    n_up = 210
+    n_pull = 4
+    prices = list(np.linspace(80.0, 120.0, n_up)) + [118.0, 115.0, 113.0, 114.0][:n_pull]
+    df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices,
+                        "volume": np.full(len(prices), 1000, dtype=int)})
+    strat = Rsi2Connors(rsi_window=2, entry_th=10.0, trend_window=200, exit_window=5)
+    out = strat.generate_signals(df, StrategyContext(symbol="TEST"))
+    assert "entry_level" in out.columns
+    assert Rsi2Connors.supports_level_trigger is True
+
+
+def test_confirm_overlay_gates_entry_level_the_same_way_as_entry() -> None:
+    """When ConfirmOverlay wraps a level-supporting base, entry_level must be gated
+    by the same candlestick-confirmation window — otherwise confirmed strategies
+    leak ungated level triggers."""
+    from trading_live_claude.strategies.overlay import ConfirmOverlay
+    from trading_live_claude.strategies.examples.bollinger import BollingerMeanRevert
+    base = BollingerMeanRevert(window=20, n_std=2.0)
+    overlay = ConfirmOverlay(base=base)
+    # The overlay inherits supports_level_trigger from the base
+    assert overlay.supports_level_trigger is True
+
+    # Synthetic frame — level would fire many times on a base bollinger, gate ensures
+    # it fires only where the candle pattern also confirms.
+    prices = [100.0] * 25 + [90.0] * 5 + [100.0]
+    df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices,
+                        "volume": np.full(len(prices), 1000, dtype=int)})
+    base_out = base.generate_signals(df, StrategyContext(symbol="TEST"))
+    overlay_out = overlay.generate_signals(df, StrategyContext(symbol="TEST"))
+    # Overlay's entry_level must be a SUBSET (fewer fires) than the base's, because
+    # gating can only remove — never add — triggers.
+    assert overlay_out["entry_level"].sum() <= base_out["entry_level"].sum()
+
+
+def test_composite_ors_entry_level_across_members() -> None:
+    """Composite's entry_level is the OR of member entry_levels; supports_level_trigger
+    reflects any-member-supports."""
+    from trading_live_claude.strategies.composite import CompositeStrategy
+    from trading_live_claude.strategies.examples.bollinger import BollingerMeanRevert
+    from trading_live_claude.strategies.examples.ema_crossover import EmaCrossover
+
+    # Bollinger supports level; EmaCrossover does not. Composite should still declare
+    # level support (any-member) and emit the entry_level column.
+    comp = CompositeStrategy(members=[BollingerMeanRevert(window=20, n_std=2.0),
+                                        EmaCrossover()])
+    assert comp.supports_level_trigger is True
+
+    prices = [100.0] * 25 + [90.0] * 5 + [100.0]
+    df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices,
+                        "volume": np.full(len(prices), 1000, dtype=int)})
+    out = comp.generate_signals(df, StrategyContext(symbol="TEST"))
+    assert "entry_level" in out.columns
+    # Level fires at least once from the Bollinger member
+    assert out["entry_level"].sum() >= 1
+
+
+def test_composite_omits_entry_level_when_no_member_supports_it() -> None:
+    """A composite of pure event-triggered members shouldn't fabricate a level
+    column — it stays out of the output so LiveMonitor's has-column check is honest."""
+    from trading_live_claude.strategies.composite import CompositeStrategy
+    from trading_live_claude.strategies.examples.ema_crossover import EmaCrossover
+    from trading_live_claude.strategies.examples.momentum_breakout import DonchianBreakout
+
+    comp = CompositeStrategy(members=[EmaCrossover(), DonchianBreakout()])
+    assert comp.supports_level_trigger is False
+
+    prices = list(np.linspace(80.0, 120.0, 60))
+    df = pd.DataFrame({"open": prices, "high": prices, "low": prices, "close": prices,
+                        "volume": np.full(len(prices), 1000, dtype=int)})
+    out = comp.generate_signals(df, StrategyContext(symbol="TEST"))
+    assert "entry_level" not in out.columns
+
+
 def test_open_position_guard_blocks_level_reentry() -> None:
     """When a position is already open, the (entry and not holds) branch is skipped
     even if entry_level fires. This is the same guard the event trigger relied on,

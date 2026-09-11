@@ -15,6 +15,14 @@ class RsiMeanRevert(Strategy):
 
     name = "rsi_meanrevert"
     description = "Long when RSI exits oversold; flat when RSI reverts to mean"
+    # Emits both entry columns (2026-09-10). ``entry`` fires on the fresh cross where
+    # RSI crosses UP through ``oversold``. ``entry_level`` fires whenever the current
+    # RSI is at or below ``oversold`` — the setup is currently eligible even without
+    # a fresh cross. LiveMonitor's open-position guard prevents re-entry while a
+    # position is held. NOTE: level-triggered mean-reversion can buy into an
+    # ongoing drop; the exit rule (RSI reverts to neutral) is what defines the
+    # thesis and the time_stop kick-out on the base risk contract still applies.
+    supports_level_trigger: bool = True
 
     def __init__(self, window: int = 14, oversold: float = 30.0, neutral: float = 50.0, atr_window: int = 14) -> None:
         super().__init__(window=window, oversold=oversold, neutral=neutral, atr_window=atr_window)
@@ -32,6 +40,9 @@ class RsiMeanRevert(Strategy):
         out["atr"] = atr(out, self.atr_window)
         prev = out["rsi"].shift(1)
         out["entry"] = ((prev <= self.oversold) & (out["rsi"] > self.oversold)).astype(int)
+        # Level trigger: currently in the oversold zone (no fresh-cross requirement).
+        # fillna guards warm-up bars where RSI is NaN before the window fills.
+        out["entry_level"] = (out["rsi"] <= self.oversold).fillna(False).astype(int)
         out["exit"] = ((prev <= self.neutral) & (out["rsi"] > self.neutral)).astype(int)
         out["size_hint"] = 1.0
         # Graded conviction: how far below the neutral line RSI sits (more oversold = stronger).

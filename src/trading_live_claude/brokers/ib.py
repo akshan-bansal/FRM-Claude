@@ -37,8 +37,11 @@ short-circuits before dispatch).
 """
 from __future__ import annotations
 
+import threading
+from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from ..logging_setup import get_logger
@@ -168,6 +171,20 @@ class IBBroker(Broker):
         self._readonly = readonly_market_data
         self._ib: Any = None                    # lazy-imported ib_insync.IB() instance
         self._connected = False
+        # News feed state (see subscribe_news / drain_news). Bounded so a burst can't grow
+        # the process; the drain callback is expected to keep up. maxlen matches the task
+        # spec's 1000-entry buffer.
+        self._news_buffer: deque[dict[str, Any]] = deque(maxlen=1000)
+        self._news_lock = threading.Lock()
+        self._news_provider_filter: set[str] | None = None
+        self._news_subscribed_contracts: list[Any] = []
+        self._news_bulletins_on = False
+        # Track (providerCode, articleId) pairs seen inside the current buffer window so a
+        # duplicate NewsTick fired by ib_insync (some providers repeat) doesn't turn into two
+        # graph edges. The set is cleared alongside the buffer on drain, so long-term dedup
+        # is the caller's job — this only guards a single drain cycle.
+        self._news_seen: set[tuple[str, str]] = set()
+        self._news_tick_handler: Any = None
 
     # ---- connection lifecycle ------------------------------------------------
 
@@ -314,6 +331,182 @@ class IBBroker(Broker):
                 except ValueError:
                     return 0.0
         return 0.0
+
+    # ---- news feed (headlines + bulletins) ----------------------------------
+    # Wraps IB's news surface (reqMktData tick 292, reqHistoricalNews, reqNewsBulletins)
+    # into the vendor-record shape intel.graph.event_records_to_edges consumes. Not part
+    # of the Broker protocol — a caller opting in must construct an IBBroker explicitly.
+    #
+    # Buffer semantics: the tick/bulletin handlers append to a bounded deque under a lock;
+    # drain_news atomically swaps the buffer out. A drop from the deque's maxlen is silent
+    # by design — the drain cadence is set high enough (e.g. 30s) that in-order loss is
+    # not expected; if it starts happening, the correct answer is a wider maxlen or a
+    # faster drain, not a broker-side crash. Live-order state is untouched throughout.
+    #
+    # Providers not subscribed on the IB account emit no ticks; that failure mode is silent
+    # on IB's side too. Call list_news_providers() at wiring time to log what actually flows.
+
+    def list_news_providers(self) -> list[dict[str, str]]:
+        """Return the news providers this account is subscribed to.
+
+        Each dict has ``code`` (the providerCode IB uses in NewsTick / historical news
+        requests) and ``name`` (the human-facing label). Empty list = the account has no
+        news subscriptions active; wiring should degrade gracefully in that case.
+        """
+        ib = self._require_ib()
+        out: list[dict[str, str]] = []
+        for p in ib.reqNewsProviders() or []:
+            code = getattr(p, "code", "") or ""
+            name = getattr(p, "name", "") or ""
+            if code:
+                out.append({"code": str(code), "name": str(name)})
+        return out
+
+    def subscribe_news(
+        self,
+        symbols: Sequence[str],
+        providers: Sequence[str] | None = None,
+        *,
+        include_bulletins: bool = False,
+    ) -> None:
+        """Subscribe to real-time headlines for the given equity symbols.
+
+        Uses ``reqMktData(contract, genericTickList='mdoff,292')`` — tick type 292 is IB's
+        streaming news headline channel; ``mdoff`` suppresses the price ticks we don't need
+        alongside. Each incoming ``NewsTick`` is projected into the record shape
+        ``event_records_to_edges`` accepts and pushed to the buffer.
+
+        ``providers`` is an optional allow-list of provider codes (e.g. ``('BRFG', 'FLY')``);
+        ticks from other providers are dropped rather than buffered. ``None`` accepts all.
+
+        ``include_bulletins=True`` additionally calls ``reqNewsBulletins(True)`` to buffer
+        account-wide bulletins (free, no per-symbol subscription needed). These land in the
+        same buffer with ``providerCode='IB-BULLETIN'`` and ``meta.symbol=None``.
+        """
+        ib = self._require_ib()
+        from ib_insync import Stock
+        self._news_provider_filter = set(providers) if providers else None
+
+        # IB's news channel is global — ib.tickNewsEvent fires per NewsTick without a conId,
+        # so per-symbol attribution is not reliable from the tick payload alone. What the
+        # per-symbol reqMktData subscription controls is *whether* IB streams headlines for
+        # that instrument's tape to this session; the tick itself lands on the global bus.
+        # We therefore record symbol=None on tick records and put attribution in follow-up
+        # NLP (intel/interpret.py) if the caller wants it — see task 67689008 caveats.
+
+        def _on_tick_news(tick: Any) -> None:
+            provider = str(getattr(tick, "providerCode", "") or "")
+            article_id = str(getattr(tick, "articleId", "") or "")
+            headline = str(getattr(tick, "headline", "") or "")
+            if not provider or not headline:
+                return
+            if self._news_provider_filter is not None and provider not in self._news_provider_filter:
+                return
+            rec = _news_tick_to_record(
+                provider_code=provider, article_id=article_id, headline=headline,
+                time_stamp=getattr(tick, "timeStamp", None),
+                extra_data=getattr(tick, "extraData", None), symbol=None,
+            )
+            with self._news_lock:
+                key = (provider, article_id)
+                if article_id and key in self._news_seen:
+                    return
+                if article_id:
+                    self._news_seen.add(key)
+                self._news_buffer.append(rec)
+
+        # Idempotence: attaching the same handler twice would duplicate every tick. ib_insync
+        # Events dedupe by identity, so use one stored bound handler per broker instance.
+        if getattr(self, "_news_tick_handler", None) is None:
+            self._news_tick_handler = _on_tick_news
+            ib.tickNewsEvent += _on_tick_news
+
+        for sym in symbols:
+            bare, exchange, currency = _infer_stock_venue(sym)
+            contract = Stock(bare, exchange, currency)
+            ib.reqMktData(contract, "mdoff,292", False, False)
+            self._news_subscribed_contracts.append(contract)
+
+        if include_bulletins and not self._news_bulletins_on:
+            ib.reqNewsBulletins(True)
+            def _on_bulletin(b: Any) -> None:
+                headline = str(getattr(b, "message", "") or "")
+                if not headline:
+                    return
+                msg_id = str(getattr(b, "msgId", "") or "")
+                rec = _news_tick_to_record(
+                    provider_code="IB-BULLETIN", article_id=msg_id, headline=headline,
+                    time_stamp=None, extra_data=None, symbol=None,
+                )
+                with self._news_lock:
+                    key = ("IB-BULLETIN", msg_id)
+                    if msg_id and key in self._news_seen:
+                        return
+                    if msg_id:
+                        self._news_seen.add(key)
+                    self._news_buffer.append(rec)
+            ib.newsBulletinEvent += _on_bulletin
+            self._news_bulletins_on = True
+
+        log.info("ib.news.subscribed", symbols=list(symbols),
+                 providers=list(providers) if providers else "all",
+                 bulletins=self._news_bulletins_on)
+
+    def drain_news(self) -> list[dict[str, Any]]:
+        """Pop and return every buffered news record. Clears the buffer + dedup set.
+
+        The records are shaped for ``intel.graph.event_records_to_edges``:
+        ``{"id", "title", "headline", "sources", "ingestedAt", "meta"}`` — where ``id`` is
+        ``f"{providerCode}:{articleId}"``, ``sources`` is a one-element list, ``ingestedAt``
+        is ISO-8601 UTC, and ``meta`` carries the originating symbol and IB's ``extraData``
+        pointer for the full article body.
+        """
+        with self._news_lock:
+            out = list(self._news_buffer)
+            self._news_buffer.clear()
+            self._news_seen.clear()
+        return out
+
+    def historical_news(
+        self,
+        symbol: str,
+        providers: Sequence[str],
+        since: datetime,
+        until: datetime | None = None,
+        limit: int = 300,
+    ) -> list[dict[str, Any]]:
+        """Backfill news for ``symbol`` between ``since`` and ``until`` (default: now).
+
+        Requires the target providers to be subscribed on the IB account; if none are, IB
+        returns an empty list. Return shape matches ``drain_news()``.
+        """
+        ib = self._require_ib()
+        from ib_insync import Stock
+        bare, exchange, currency = _infer_stock_venue(symbol)
+        contract = Stock(bare, exchange, currency)
+        (qualified,) = ib.qualifyContracts(contract) or (None,)
+        if qualified is None or not getattr(qualified, "conId", 0):
+            return []
+        con_id = int(qualified.conId)
+        end = until or datetime.now(UTC)
+        # IB's historical news API expects "YYYY-MM-DD HH:MM:SS.000" strings.
+        start_s = since.strftime("%Y-%m-%d %H:%M:%S.000")
+        end_s = end.strftime("%Y-%m-%d %H:%M:%S.000")
+        raw = ib.reqHistoricalNews(
+            con_id, ",".join(providers), start_s, end_s, int(limit),
+        ) or []
+        out: list[dict[str, Any]] = []
+        for h in raw:
+            provider = str(getattr(h, "providerCode", "") or "")
+            article_id = str(getattr(h, "articleId", "") or "")
+            headline = str(getattr(h, "headline", "") or "")
+            if not provider or not headline:
+                continue
+            out.append(_news_tick_to_record(
+                provider_code=provider, article_id=article_id, headline=headline,
+                time_stamp=getattr(h, "time", None), extra_data=None, symbol=symbol,
+            ))
+        return out
 
     # ---- L2 depth-of-book ----------------------------------------------------
 
@@ -506,6 +699,46 @@ def _infer_stock_venue(symbol: str) -> tuple[str, str, str]:
         if up.endswith(suffix):
             return symbol[: -len(suffix)], exch, ccy
     return symbol, "SMART", "USD"
+
+
+def _news_tick_to_record(
+    *,
+    provider_code: str,
+    article_id: str,
+    headline: str,
+    time_stamp: Any,
+    extra_data: Any,
+    symbol: str | None,
+) -> dict[str, Any]:
+    """Project an IB news event into the vendor-record shape event_records_to_edges reads.
+
+    ``time_stamp`` may be an int (epoch ms from NewsTick.timeStamp), a datetime (from
+    HistoricalNews.time), or None (bulletins carry no timestamp — we stamp with now).
+    ``ingestedAt`` is populated regardless so _event_id's fallback hash works if the
+    provider ever ships a blank articleId. ``sources`` is a one-element list so
+    _extract_sources yields the provider code as the corroboration key.
+    """
+    if isinstance(time_stamp, datetime):
+        dt = time_stamp if time_stamp.tzinfo else time_stamp.replace(tzinfo=UTC)
+    elif isinstance(time_stamp, (int, float)) and time_stamp > 0:
+        # IB emits epoch seconds on NewsTick despite the "timeStamp" name (~10-digit values
+        # in the wild); guard against a vendor that ever ships milliseconds by scaling down.
+        secs = float(time_stamp)
+        if secs > 1e12:                              # clearly milliseconds
+            secs = secs / 1000.0
+        dt = datetime.fromtimestamp(secs, tz=UTC)
+    else:
+        dt = datetime.now(UTC)
+    ident = f"{provider_code}:{article_id}" if article_id else ""
+    rec: dict[str, Any] = {
+        "id": ident,
+        "title": headline,
+        "headline": headline,
+        "sources": [provider_code],
+        "ingestedAt": dt.isoformat(),
+        "meta": {"symbol": symbol, "extraData": extra_data or ""},
+    }
+    return rec
 
 
 def _interval_to_ib_bar_size(interval: str) -> str:

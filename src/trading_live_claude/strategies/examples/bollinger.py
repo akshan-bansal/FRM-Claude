@@ -42,7 +42,8 @@ class BollingerMeanRevert(Strategy):
         # Level trigger — state currently satisfies the entry condition (close at or
         # below the lower band). Fires every bar the condition holds. LiveMonitor's
         # open-position guard suppresses re-entry when a position is already open.
-        out["entry_level"] = (out["close"] <= out["bb_lower"]).astype(int)
+        # fillna guards warm-up bars where bb_lower is NaN before the window fills.
+        out["entry_level"] = (out["close"] <= out["bb_lower"]).fillna(False).astype(int)
         out["exit"] = (out["close"] >= out["bb_mid"]).astype(int)
         out["size_hint"] = 1.0
         # Graded conviction: depth of the dip, mid->lower band mapped to [0, 1].

@@ -20,6 +20,10 @@ class Rsi2Connors(Strategy):
 
     name = "rsi2_connors"
     description = "RSI(2) pullback above the 200-SMA (Connors)"
+    # Entry condition is inherently level-shaped already (RSI < threshold AND trend
+    # intact — a state, not a cross), so entry_level mirrors entry itself. Emitting
+    # both columns for API consistency with the rest of the mean-reversion set.
+    supports_level_trigger: bool = True
 
     def __init__(
         self,
@@ -49,6 +53,10 @@ class Rsi2Connors(Strategy):
         exit_ma = sma(out["close"], self.exit_window)
         out["atr"] = atr(out, self.atr_window)
         out["entry"] = ((r < self.entry_th) & (out["close"] > trend)).astype(int)
+        # Level trigger identical to entry — the strategy's entry condition is
+        # already level-shaped (state check, not a cross). Emitted as its own
+        # column so LiveMonitor's dual-consumption path can act on it uniformly.
+        out["entry_level"] = out["entry"].astype(int)
         out["exit"] = (out["close"] > exit_ma).astype(int)
         out["signal_strength"] = ((self.entry_th - r) / self.entry_th).clip(0.0, 1.0).fillna(0.0)
         return out
@@ -63,6 +71,9 @@ class ZScoreOU(Strategy):
 
     name = "zscore_ou"
     description = "Rolling z-score mean reversion"
+    # entry fires on a fresh cross back UP through -entry_z (reversal-confirmed);
+    # entry_level fires whenever z is currently below -entry_z (spread still stretched).
+    supports_level_trigger: bool = True
 
     def __init__(self, window: int = 20, entry_z: float = 2.0, exit_z: float = 0.0, atr_window: int = 14) -> None:
         super().__init__(window=window, entry_z=entry_z, exit_z=exit_z, atr_window=atr_window)
@@ -80,6 +91,11 @@ class ZScoreOU(Strategy):
         out["atr"] = atr(out, self.atr_window)
         # Confirmed reversal: z crosses back UP through -entry_z (was stretched, now turning).
         out["entry"] = ((z.shift(1) < -self.entry_z) & (z >= -self.entry_z)).astype(int)
+        # Level trigger: spread still stretched below the entry z-score. Fires without
+        # requiring the reversal confirmation — a still-falling spread is still a
+        # potential mean-reversion setup at the cost of higher drawdown risk if the
+        # spread continues below. fillna guards warm-up bars where z is NaN.
+        out["entry_level"] = (z < -self.entry_z).fillna(False).astype(int)
         out["exit"] = (z > self.exit_z).astype(int)
         out["signal_strength"] = (-z / (self.entry_z * 1.5)).clip(0.0, 1.0).fillna(0.0)
         return out
@@ -94,6 +110,10 @@ class BbRsiCombo(Strategy):
 
     name = "bb_rsi_combo"
     description = "Bollinger lower-band tag confirmed by oversold RSI"
+    # entry fires on the fresh confluence-cross (close crosses back above lower band
+    # while RSI is still oversold); entry_level fires whenever BOTH conditions are
+    # currently true (close below lower band AND RSI below rsi_th).
+    supports_level_trigger: bool = True
 
     def __init__(
         self, window: int = 20, n_std: float = 2.0, rsi_window: int = 14, rsi_th: float = 40.0, atr_window: int = 14
@@ -119,6 +139,13 @@ class BbRsiCombo(Strategy):
         out["entry"] = (
             (prev_close < out["bb_lower"].shift(1)) & (out["close"] >= out["bb_lower"]) & (r < self.rsi_th)
         ).astype(int)
+        # Level trigger: both conditions currently satisfied (close below lower band
+        # AND RSI still below rsi_th). Fires without waiting for the cross. fillna
+        # keeps warm-up bars (where bb_lower / RSI are NaN) at 0 rather than raising
+        # on the int cast.
+        out["entry_level"] = (
+            (out["close"] < out["bb_lower"]) & (r < self.rsi_th)
+        ).fillna(False).astype(int)
         out["exit"] = (out["close"] > out["bb_mid"]).astype(int)
         band = (out["bb_upper"] - out["bb_lower"]).replace(0, pd.NA)
         depth = ((out["bb_lower"] - out["close"]) / band).clip(0.0, 1.0)

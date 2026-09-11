@@ -37,6 +37,39 @@ Human-in-the-loop; sessions started + stopped as needed rather than persistent. 
 
 ## Recent shipments
 
+**2026-09-10 — uncommitted (user runs commits by hand):**
+- **IB news → intel-graph adapter.** `IBBroker` gained `list_news_providers()`,
+  `subscribe_news(symbols, providers, include_bulletins)`, `drain_news()`, and
+  `historical_news(symbol, providers, since, until, limit)`. Backed by a bounded 1000-entry
+  `deque` under a `threading.Lock`, with in-window `(providerCode, articleId)` dedup and
+  once-per-instance handler attach on `ib.tickNewsEvent`. Records are shaped for
+  `intel/graph.py::event_records_to_edges` (`id`, `title`, `headline`, `sources`,
+  `ingestedAt`, `meta`). IB's global news channel has no per-symbol conId — this is
+  documented in-code and the record's `meta.symbol` is `None`; per-symbol attribution is a
+  follow-up via `intel/interpret.py` on the headline. `scripts/paper_ib.py` grew three
+  flags: `--news-providers CODE1,CODE2` (empty disables), `--news-bulletins`, and
+  `--news-cadence-s` (default 30s, independent of the 300s quote poll). A new
+  `_NewsSidecarThread` drains and calls `event_records_to_edges → append_edges` into
+  `state/intel_graph.jsonl` with `domain="ib_news"`. Refuses `--transport web` (Web API has
+  no streaming news). Boot log calls `list_news_providers()` and warns on requested
+  providers not on the account. **Level: shipped, unit-tested (11 new tests in
+  `tests/test_ib_news.py`, all 55 across ib_broker/ib_news/intel_graph pass, ruff-clean),
+  NOT runtime-exercised** — the pipeline has never fired against a live IB news tick,
+  only against the `_FakeIB` fixture. Runtime validation is queued below.
+- **Futures cross-sectional screen script** — `scripts/screen_futures.py` created:
+  fetches 2y daily front-month bars via ib_insync `ContFuture` for 15 roots
+  (CL/NG/HO/RB/BZ energy; GC/SI/PL/PA/HG metals; ZC/ZS/ZW/ZL/ZM grains), computes
+  `mom_12m`, `mom_1m`, `z20`, 50/200 trend, `vol_ann`, blends into a cross-sectional
+  `tech_z` composite, cross-references with the latest `intel_overlay.jsonl` snapshot via
+  `IntelOverlay.evaluate()` (class scalar) and `intel.interpret.interpret()` (theme
+  boost, +15% when the root's theme is in an active thesis's `themes`). Writes
+  `reports/futures_screen.csv` + `reports/futures_screen.png` (dual-panel: final rank +
+  tech-vs-scalar split). **Level: shipped, parses, ruff-clean — NEVER RUN.** Requires TWS
+  or IB Gateway on 7496 with API enabled + `readonly` client-id 44. Once TWS is up:
+  ```
+  IB_PAPER_PORT=7496 .venv/Scripts/python.exe scripts/screen_futures.py --years 2
+  ```
+
 **2026-09-05 — commit `638f8d3`:**
 - Asset-class calibration layer (`analysis/calibration.py`) — CalibrationProfile per
   OverlayClass + `calibrate_for(strategy, symbol)` translation. tune.py wires it; strategies
@@ -106,6 +139,79 @@ python scripts/dashboard.py --refresh 300
 Note: IB-paper feedback-loop gaps 1-6 all closed 2026-09-03 → 2026-09-04. Cross-path wiring
 Tiers 1-3 closed. Remaining Cross-path work (Tiers 4-5) blocks on data accrual — see the
 data-first sequencing section above.
+
+- **Runtime-exercise the IB news → intel-graph pipeline (2026-09-10 shipment).** Landed
+  code + unit tests only; never fired against a live NewsTick. Next session, with TWS on
+  socket 7496 up:
+    1. `IB_PAPER_PORT=7496 .venv/Scripts/python.exe -c "from trading_live_claude.brokers.ib
+       import IBBroker; b = IBBroker(port=7496); print(b.list_news_providers())"` to see
+       which providers this account is subscribed to (Briefing.com Trader / Fly on the Wall
+       / MT Newswire are the free ones; Reuters + Dow Jones need paid subs).
+    2. Restart paper_ib with the news flag, e.g.
+       `IB_PAPER_PORT=7496 .venv/Scripts/python.exe scripts/paper_ib.py --transport socket
+       --news-providers BRFG,FLY --news-cadence-s 30` (add `--news-bulletins` for the free
+       account-wide bulletin channel).
+    3. Watch `[ib-paper] news drained N record(s) → M edge(s)` lines and confirm rows land
+       in `state/intel_graph.jsonl` with `predicate=mentioned_by` + `subject=("event", ...)`.
+    4. Compare `count(domain="ib_news")` before/after to size the append rate.
+    Known caveats (documented in-code): IB's global news channel has no per-symbol conId
+    so `meta.symbol=None`; per-symbol attribution belongs in `intel/interpret.py` follow-up.
+    Also `reqMktData` counts against IB's ~100 concurrent-line limit — news adds one line
+    per symbol on top of the existing quote subscriptions.
+- **First run of `scripts/screen_futures.py`.** Ready but never executed — TWS on 7496 was
+  down at end-of-session on 2026-09-10 despite the user asking to launch it. Same TWS
+  environment as the runtime-exercise above; the script only needs `readonly=True` so no
+  order path is touched. Note the `2 Y` duration string — IB error 321 fires on any
+  historical fetch >365d expressed in days. If a root fails to `qualifyContracts`, the
+  script logs `unqualified` and continues. Deliverable: `reports/futures_screen.csv` +
+  `.png` with 15 rows ranked by `final = tech_z × class_scalar × theme_boost`.
+
+- **Kraken tick-level deepening — periodic cron.** `scripts/deepen_kraken_trades.py`
+  (landed 2026-09-10, uncommitted) paginates `/0/public/Trades` per sleeve pair, caches
+  raw ticks to `data/cache/kraken_trades/<WIRE>.parquet`, and emits a summary CSV at
+  `reports/kraken_trade_intel.csv`. Resumable — each pair picks up from its last cached
+  row's ns cursor. Kraken's public tier is ~1 req/sec so a full sleeve pull at
+  `--max-pages 30` runs ~5-6 min. Wire it as a scheduled task so the caches never fall
+  stale:
+    * Cadence: every 2h (Kraken's ~1000 trades/page × 30 pages × 13 pairs comfortably
+      covers 2h of ticks even for the busiest pairs).
+    * Runner: Windows Task Scheduler or a `mcp__scheduled-tasks__create_scheduled_task`
+      entry that shells `.venv/Scripts/python.exe scripts/deepen_kraken_trades.py
+      --lookback-hours 6 --max-pages 30 --sleep 1.1`. The 6h lookback is the safety net
+      for a missed run; the resume-from-cursor logic makes the actual pull only new
+      rows.
+    * Rate limit: bump `--sleep` to 1.1 when running unattended — the 1.05s default
+      occasionally trips Kraken's soft cap under load.
+    * Consent: the user asked once (2026-09-10) — this is scoped to that request.
+      Do NOT enable without re-asking; the `no-unattended-automation-without-consent`
+      memory applies. If the user re-confirms, the scheduled task's config should also
+      be committed to the repo (a systemd unit file or an equivalent PowerShell script
+      under `scripts/` so it's reproducible).
+
+- **Microstructure → intel-graph edge design.** With tick-level caches now accumulating
+  per-pair (see above), the intel graph could grow a first-class microstructure edge
+  type so persistence + wash + queries treat order-flow evidence the same way they treat
+  OSINT events. Design sketch worth an RFC-style review before landing:
+    * New `Predicate` in `intel/graph.py`: `"flow_imbalanced"` (subject = `("market",
+      "kraken")`, object = `("symbol", "BTC/USD")`, weight = `buy_vol_share - 0.5` so
+      +ve is buy-heavy and -ve sell-heavy, `meta = {"window_h": 24, "notional_usd": ...,
+      "trades": ..., "vwap": ...}`).
+    * New `Predicate` `"vwap_gap"` for tape-vs-quote drift — `weight = (mid - vwap_24h) /
+      vwap_24h`. Signs a research thesis without becoming a signal.
+    * Emission cadence: same 2h cron above computes both edges per pair from the fresh
+      cache slice and calls `append_edges` — no HTTP inside the graph writer.
+    * Wash policy: microstructure edges decay FAST (short-memory — a 24h imbalance is
+      irrelevant a week later). Add a `DecayPolicy` row keyed on the new predicates
+      with `half_life_hours ~= 24` and `hard_ttl_days = 3`.
+    * Non-goals for the first PR: no per-tick edges (would blow up the journal
+      linearly with volume); no auto-emission during the paper loop (that's the news
+      channel's role, and it changes the loop's I/O profile). Tick-level edges belong
+      only in a batch job so the trading loop stays lean.
+    * Tests: fixture parquet → `event_records_to_edges`-style projector → assert
+      predicates + weight signs; round-trip through `append_edges` → `load_edges`.
+    * Risk: only affects the intel graph, not Router / gates. Safe to prototype
+      behind a `--emit-edges` flag on `deepen_kraken_trades.py` before promoting to
+      always-on behavior.
 
 - **Cross-path Tiers 4 + 5** — Realized P&L → thesis calibration; prediction evaluation.
   Both need weeks of accrued paper fills + thesis history. 7 days accrued / ~30 days
