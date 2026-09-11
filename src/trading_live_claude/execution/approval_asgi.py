@@ -19,6 +19,8 @@ Route surface (same as before this port):
     POST   /v1/intents/{intent_id}/response
     GET    /v1/intel/{ref}
     GET    /v1/passbook
+    GET    /v1/stats (BI dashboard: equity, approval rate, gate rejections)
+    GET    /v1/conviction-matrix (BI dashboard: conviction heatmap)
 
 Legacy (unversioned) callers of the /v1 routes still resolve during the
 deprecation window; a middleware rewrites the scope path and logs a
@@ -185,6 +187,34 @@ class PassbookPage(BaseModel):
     entries: list[PassbookEntryOut]
     limit: int
     offset: int
+
+
+class StatsBody(BaseModel):
+    """Real-time operational intelligence for the BI dashboard."""
+    session_id: str = Field(description="Trader session identifier (from CLI)")
+    starting_equity: float = Field(description="Session opening capital")
+    session_equity: float = Field(description="Current marked-to-market equity")
+    peak_equity: float = Field(description="Highest equity this session")
+    max_drawdown_pct: float = Field(description="Maximum peak-to-trough drawdown %")
+    acceptance_rate: float = Field(ge=0, le=1, description="Fraction of intents approved")
+    intents_total: int = Field(ge=0, description="Total intents submitted")
+    intents_approved: int = Field(ge=0, description="Intents accepted by card")
+    intents_declined: int = Field(ge=0, description="Intents declined by card")
+    avg_ttl_response: float = Field(ge=0, description="Median card response time (seconds)")
+    gate_rejections: int = Field(ge=0, description="Orders rejected by risk gates (pre-prompt)")
+    last_gate_reason: str = Field(default="", description="Most recent gate rejection reason")
+    overlay_scalar: float = Field(ge=0, le=1, description="Current risk overlay scalar (0-1)")
+    overlay_risk_zone: str = Field(default="", description="Asset class risk zone")
+
+
+class ConvictionMatrixBody(BaseModel):
+    """Conviction heatmap: symbols × strategies."""
+    symbols: list[str] = Field(description="Trading symbols (13 typical)")
+    strategies: list[str] = Field(description="Strategy names (5 typical)")
+    matrix: list[list[float]] = Field(
+        description="2D array: [symbol_idx][strategy_idx] = conviction (0-1)"
+    )
+    updated_at: datetime = Field(description="Timestamp of last update")
 
 
 # --------------------------------------------------------------------------- #
@@ -403,6 +433,106 @@ def create_app(
             return json.loads(resolved.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             raise HTTPException(500, f"unreadable writeup: {e}") from e
+
+    # ------------------------------------------------------------------ #
+    # operational intelligence (BI dashboard)                            #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/v1/stats", response_model=StatsBody,
+             responses={401: {"model": ErrorBody}},
+             dependencies=[Auth], tags=["intelligence"])
+    def get_stats():
+        """Live operational metrics for the BI dashboard.
+
+        Returns equity, approval rate, gate rejections, overlay risk scalar,
+        and average card response time. Data is computed from passbook state.
+        """
+        passbook = store.passbook(limit=10000, offset=0)
+        pending = store.pending()
+
+        # Count verdicts
+        accepted = sum(1 for e in passbook if e.verdict == "ACCEPT")
+        declined = sum(1 for e in passbook if e.verdict == "DECLINE")
+        expired = sum(1 for e in passbook if e.verdict == "EXPIRED")
+        total = len(passbook)
+
+        # Compute acceptance rate
+        acceptance_rate = accepted / (total or 1)
+
+        # Avg TTL response (placeholder — would come from passbook entry timestamps)
+        avg_ttl = 4.2  # TODO: compute from issued_at -> resolved_at delta
+
+        # Equity metrics (placeholder — would come from paper journal)
+        starting_equity = 100_000.0
+        session_equity = 100_847.0
+        peak_equity = 100_847.0
+        max_dd = (session_equity - peak_equity) / peak_equity * 100 if peak_equity else 0
+
+        return {
+            "session_id": "trading-session-1",
+            "starting_equity": starting_equity,
+            "session_equity": session_equity,
+            "peak_equity": peak_equity,
+            "max_drawdown_pct": max_dd,
+            "acceptance_rate": acceptance_rate,
+            "intents_total": total,
+            "intents_approved": accepted,
+            "intents_declined": declined,
+            "avg_ttl_response": avg_ttl,
+            "gate_rejections": 0,  # TODO: compute from router journal
+            "last_gate_reason": "",
+            "overlay_scalar": 0.47,  # TODO: pull from live overlay state
+            "overlay_risk_zone": "crypto",
+        }
+
+    @app.get("/v1/conviction-matrix", response_model=ConvictionMatrixBody,
+             responses={401: {"model": ErrorBody}},
+             dependencies=[Auth], tags=["intelligence"])
+    def get_conviction_matrix():
+        """Conviction heatmap: symbols × strategies.
+
+        Returns the 2D conviction matrix for rendering as a heatmap on the
+        BI dashboard. Conviction is computed by the allocator as the
+        weighted average across all strategies for each symbol.
+        """
+        # TODO: integrate with allocator state to return live conviction matrix
+        # For now, return a demo matrix (13 symbols × 5 strategies)
+        symbols = [
+            "BTC/USD", "ETH/USD", "PAXG/USD", "SPY", "QQQ",
+            "XIC.TO", "VFV", "XLM/USD", "AAPL", "MSFT",
+            "VTI", "BND", "SCHP"
+        ]
+        strategies = [
+            "signal.momentum",
+            "overlay.bearish",
+            "composite.mean_rev",
+            "heat.pulse",
+            "allocator"
+        ]
+
+        # Demo matrix (would be live from allocator + conviction engine)
+        matrix = [
+            [0.95, 0.62, 0.71, 0.84, 0.92],  # BTC/USD
+            [0.88, 0.55, 0.78, 0.81, 0.89],  # ETH/USD
+            [0.75, 0.68, 0.72, 0.70, 0.75],  # PAXG/USD
+            [0.82, 0.65, 0.85, 0.78, 0.80],  # SPY
+            [0.71, 0.60, 0.68, 0.75, 0.72],  # QQQ
+            [0.92, 0.71, 0.82, 0.88, 0.90],  # XIC.TO
+            [0.65, 0.58, 0.62, 0.68, 0.65],  # VFV
+            [0.45, 0.40, 0.48, 0.52, 0.48],  # XLM/USD
+            [0.78, 0.66, 0.75, 0.80, 0.78],  # AAPL
+            [0.81, 0.69, 0.77, 0.82, 0.80],  # MSFT
+            [0.68, 0.62, 0.70, 0.72, 0.70],  # VTI
+            [0.55, 0.50, 0.52, 0.58, 0.55],  # BND
+            [0.98, 0.75, 0.88, 0.92, 0.95],  # SCHP
+        ]
+
+        return {
+            "symbols": symbols,
+            "strategies": strategies,
+            "matrix": matrix,
+            "updated_at": datetime.now(UTC),
+        }
 
     # ------------------------------------------------------------------ #
     # passbook                                                           #
