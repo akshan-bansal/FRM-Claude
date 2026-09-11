@@ -1,0 +1,559 @@
+<title>FRM-Claude Engineering Brief</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #f4f6f8;
+    --surface: #ffffff;
+    --surface-sunk: #eceff3;
+    --ink: #1a1d23;
+    --ink-soft: #3c424c;
+    --muted: #5f6672;
+    --faint: #8b919c;
+    --rule: #dde1e7;
+    --rule-strong: #c3c9d2;
+    --accent: #0f5c5a;
+    --accent-soft: #e3efee;
+    --ok: #1b6b4a;
+    --warn: #8a5a00;
+    --crit: #a3282b;
+    --ok-bg: #e6f1eb;
+    --warn-bg: #f7efdd;
+    --crit-bg: #f7e6e6;
+
+    --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+    --serif: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+    --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #14171c;
+      --surface: #1b1f26;
+      --surface-sunk: #23282f;
+      --ink: #e8eaee;
+      --ink-soft: #c5cad2;
+      --muted: #939aa6;
+      --faint: #6d7480;
+      --rule: #2d333c;
+      --rule-strong: #3d444e;
+      --accent: #5cbdb6;
+      --accent-soft: #17322f;
+      --ok: #63c393;
+      --warn: #d9a544;
+      --crit: #e2807f;
+      --ok-bg: #162a20;
+      --warn-bg: #2c2416;
+      --crit-bg: #2d1b1c;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #14171c;
+    --surface: #1b1f26;
+    --surface-sunk: #23282f;
+    --ink: #e8eaee;
+    --ink-soft: #c5cad2;
+    --muted: #939aa6;
+    --faint: #6d7480;
+    --rule: #2d333c;
+    --rule-strong: #3d444e;
+    --accent: #5cbdb6;
+    --accent-soft: #17322f;
+    --ok: #63c393;
+    --warn: #d9a544;
+    --crit: #e2807f;
+    --ok-bg: #162a20;
+    --warn-bg: #2c2416;
+    --crit-bg: #2d1b1c;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 920px;
+    margin: 0 auto;
+    padding-inline: 24px;
+    padding-block: 56px 96px;
+  }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:hover { color: var(--ink); }
+
+  code, .mono { font-family: var(--mono); font-size: 0.855em; }
+  code {
+    background: var(--surface-sunk);
+    padding: 0.1em 0.34em;
+    border-radius: 3px;
+    color: var(--ink-soft);
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead { border-bottom: 2px solid var(--ink); padding-bottom: 20px; }
+  .eyebrow {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  h1 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: clamp(30px, 5.4vw, 43px);
+    line-height: 1.1;
+    letter-spacing: -0.018em;
+    margin: 10px 0 0;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 18px;
+    color: var(--ink-soft);
+    margin: 14px 0 0;
+    max-width: 62ch;
+  }
+
+  /* ---------- health strip ---------- */
+  .health {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin-top: 32px;
+  }
+  .health div { background: var(--surface); padding: 13px 15px; }
+  .health dt {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .health dd {
+    font-family: var(--sans);
+    font-size: 21px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    margin: 3px 0 0;
+    letter-spacing: -0.01em;
+  }
+  .health dd span { font-size: 12px; font-weight: 500; color: var(--faint); }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 52px; }
+  h2 {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 4px;
+    padding-bottom: 9px;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  h3 {
+    font-family: var(--sans);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.008em;
+    margin: 30px 0 8px;
+    color: var(--ink);
+  }
+  p { margin: 14px 0; max-width: 68ch; }
+  .lede { font-size: 17px; }
+
+  ul, ol { max-width: 68ch; padding-left: 21px; margin: 14px 0; }
+  li { margin: 7px 0; }
+  li::marker { color: var(--faint); }
+
+  /* ---------- tables ---------- */
+  .scroll { overflow-x: auto; margin: 20px 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 540px;
+    font-family: var(--sans);
+    font-size: 13.5px;
+  }
+  caption {
+    caption-side: top;
+    text-align: left;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--muted);
+    padding-bottom: 9px;
+  }
+  th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--rule-strong);
+    padding: 0 12px 7px 0;
+    vertical-align: bottom;
+  }
+  td {
+    padding: 9px 12px 9px 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+    color: var(--ink-soft);
+  }
+  td:first-child, th:first-child { padding-left: 0; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; padding-right: 0; }
+  th.num { text-align: right; padding-right: 0; }
+  .gate-n {
+    font-family: var(--mono);
+    color: var(--faint);
+    width: 1.6em;
+  }
+  td .mono { color: var(--ink); }
+
+  /* ---------- findings ---------- */
+  .finding {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--rule-strong);
+    padding: 17px 19px;
+    margin: 16px 0;
+  }
+  .finding.crit { border-left-color: var(--crit); }
+  .finding.warn { border-left-color: var(--warn); }
+  .finding.note { border-left-color: var(--accent); }
+  .finding-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: baseline;
+    margin-bottom: 2px;
+  }
+  .finding h3 { margin: 0; font-size: 16px; }
+  .chip {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .chip.crit { background: var(--crit-bg); color: var(--crit); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
+  .chip.note { background: var(--accent-soft); color: var(--accent); }
+  .chip.ok { background: var(--ok-bg); color: var(--ok); }
+  .finding p { margin: 9px 0 0; font-size: 15px; max-width: 66ch; }
+  .finding p:first-of-type { margin-top: 7px; }
+  .evidence {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 11px;
+    padding-top: 9px;
+    border-top: 1px dotted var(--rule-strong);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .evidence b {
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-right: 6px;
+  }
+
+  /* ---------- layer diagram ---------- */
+  .layers { display: flex; flex-direction: column; gap: 10px; margin: 22px 0; }
+  .layer {
+    display: grid;
+    grid-template-columns: 88px 1fr;
+    gap: 16px;
+    align-items: start;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 14px 16px;
+  }
+  .layer-n {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding-top: 2px;
+  }
+  .layer-body { font-size: 14.5px; color: var(--ink-soft); }
+  .layer-body strong { color: var(--ink); font-family: var(--sans); font-weight: 600; font-size: 14px; }
+  .layer-body .mono { color: var(--ink); }
+
+  /* ---------- priorities ---------- */
+  ol.priorities { counter-reset: p; list-style: none; padding-left: 0; max-width: 68ch; }
+  ol.priorities > li {
+    counter-increment: p;
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 13px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--rule);
+    margin: 0;
+  }
+  ol.priorities > li::before {
+    content: counter(p);
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    background: var(--accent-soft);
+    width: 26px;
+    height: 26px;
+    display: grid;
+    place-items: center;
+    border-radius: 2px;
+  }
+  ol.priorities strong {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 15px;
+    display: block;
+    margin-bottom: 2px;
+  }
+  ol.priorities span { font-size: 14.5px; color: var(--ink-soft); }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule-strong);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    color: var(--faint);
+  }
+
+  @media (max-width: 560px) {
+    .layer { grid-template-columns: 1fr; gap: 6px; }
+    .health dd { font-size: 19px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Repository brief · akshan-bansal/FRM-Claude</div>
+    <h1>FRM-Claude Engineering Brief</h1>
+    <p class="standfirst">A Questrade algorithmic-trading framework built so that every order — whether a human, a strategy, or Claude decides it — passes through one gated chokepoint. This is what the code actually does, and where it diverges from what the docs claim.</p>
+  </header>
+
+  <dl class="health">
+    <div><dt>Tests</dt><dd>69<span>&thinsp;/&thinsp;70 pass</span></dd></div>
+    <div><dt>Coverage</dt><dd>63<span>%</span></dd></div>
+    <div><dt>Ruff</dt><dd>25<span> findings</span></dd></div>
+    <div><dt>mypy --strict</dt><dd>17<span> errors</span></dd></div>
+    <div><dt>Source</dt><dd>3,651<span> lines</span></dd></div>
+  </dl>
+
+  <section>
+    <h2>What this is</h2>
+    <p class="lede">An end-to-end retail trading stack for Questrade: market data in, strategy signals out, risk gates in between, orders placed against either an in-memory paper book or the real brokerage. Paper mode is the default and live mode is deliberately awkward to reach.</p>
+    <p>Roughly 3,650 lines of Python across 43 modules, plus about 1,160 lines of Claude Code scaffolding — seven skills, fourteen slash commands, three subagents, and a <code>SessionStart</code> hook. The agent scaffolding is not decoration: it is a real part of the safety model, and it is where some of the strongest and weakest guarantees live.</p>
+    <p>Stack: Python 3.13 on <code>uv</code>, <code>typer</code> CLI, <code>pydantic</code> v2 at every boundary, <code>httpx</code> for HTTP, <code>structlog</code> for logging, pandas/numpy for vectorized signals, <code>pytest</code> + <code>respx</code> for tests with no live calls.</p>
+
+    <h3>Two ways to trade, one way to execute</h3>
+    <p>The repo supports a Claude-driven trader (Claude reads state, decides, and calls <code>trading place-order</code>) and a deterministic background daemon (<code>autonomous run</code> polls and decides on its own). They are genuinely different decision-makers, but they share the same router, the same gates, and the same journal. Neither can reach a broker another way.</p>
+  </section>
+
+  <section>
+    <h2>The spine: one chokepoint</h2>
+    <p><code>Router.submit()</code> at <span class="mono">execution/router.py:221</span> is the only code path that calls <code>broker.place_order()</code>. Strategies return DataFrames; they hold no broker reference and cannot place anything. Every intent is journaled before dispatch, accepted or not.</p>
+
+    <div class="scroll">
+      <table>
+        <caption>All eight gates are evaluated on every submit; reasons accumulate rather than short-circuit, so a rejection reports every failure at once.</caption>
+        <thead>
+          <tr><th class="gate-n">#</th><th>Gate</th><th>Rejects when</th><th>Scope</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="gate-n">1</td><td>Kill-switch</td><td><span class="mono">state/HALTED</span> exists</td><td>all modes</td></tr>
+          <tr><td class="gate-n">2</td><td>Equity floor</td><td>equity &le; 0</td><td>all modes</td></tr>
+          <tr><td class="gate-n">3</td><td>Share count</td><td>shares &le; 0</td><td>all modes</td></tr>
+          <tr><td class="gate-n">4</td><td>Minimum ticket</td><td>shares × entry &lt; <span class="mono">min_ticket_usd</span> ($100)</td><td>all modes</td></tr>
+          <tr><td class="gate-n">5</td><td>Position cap</td><td>open positions &ge; <span class="mono">max_open_positions</span> (5)</td><td>buys only</td></tr>
+          <tr><td class="gate-n">6</td><td>Portfolio heat</td><td>(existing + new risk) ÷ equity &gt; cap (5%)</td><td>all modes</td></tr>
+          <tr><td class="gate-n">7</td><td>Stop-side sanity</td><td>long stop &ge; entry, or short stop &le; entry</td><td>all modes</td></tr>
+          <tr><td class="gate-n">8</td><td>Daily budget</td><td>&ge; 10 trades today, or notional would pass $10,000</td><td>autonomous only</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <caption>Four router modes. Constructing <code>Router(mode="live")</code> or <code>"autonomous"</code> directly raises <code>LiveModeNotConfirmed</code> — both require a named alternate constructor.</caption>
+        <thead>
+          <tr><th>Mode</th><th>Orders go to</th><th>Entry requirement</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="mono">paper</span></td><td>In-memory book, real quotes, 5&nbsp;bps slippage</td><td>none — this is the default</td></tr>
+          <tr><td><span class="mono">dry-run</span></td><td>Nowhere; gates run and journal is written</td><td>none</td></tr>
+          <tr><td><span class="mono">live</span></td><td>Questrade REST</td><td>Typed phrase <span class="mono">I UNDERSTAND THE RISK</span></td></tr>
+          <tr><td><span class="mono">autonomous</span></td><td>Questrade REST (practice or live)</td><td><span class="mono">AUTONOMOUS_ENABLED</span> env var, re-read at every construction</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>State is append-only JSONL under <span class="mono">state/</span>: every intent to <span class="mono">orders.jsonl</span>, rejections additionally to <span class="mono">rejected.jsonl</span>, fills to <span class="mono">fills.jsonl</span>. The daily budget recomputes itself by replaying today's accepted rows, so it survives restarts without extra bookkeeping.</p>
+  </section>
+
+  <section>
+    <h2>Three independent safety layers</h2>
+    <p>The design worth admiring here is that the safety story does not rest on any single mechanism. Three layers sit in series, each enforced by a different system.</p>
+
+    <div class="layers">
+      <div class="layer">
+        <div class="layer-n">Harness</div>
+        <div class="layer-body"><strong>Claude cannot run the dangerous commands at all.</strong> <span class="mono">.claude/settings.json</span> denies <span class="mono">trading live</span>, <span class="mono">autonomous run</span>, and <span class="mono">clear-kill</span>, plus reads of <span class="mono">.env</span> and <span class="mono">state/tokens.json</span>. Enforced before Python starts.</div>
+      </div>
+      <div class="layer">
+        <div class="layer-n">Python</div>
+        <div class="layer-body"><strong>The type system refuses unconfirmed live routers.</strong> Live mode needs an exact typed phrase; autonomous mode needs an environment sentinel read fresh on every construction, deliberately never cached.</div>
+      </div>
+      <div class="layer">
+        <div class="layer-n">Runtime</div>
+        <div class="layer-body"><strong>A file stops everything.</strong> <span class="mono">touch state/HALTED</span> from any shell blocks every subsequent order; the router re-reads it on each submit. Clearing it requires the literal ack <span class="mono">I HAVE INVESTIGATED</span>, and Claude is denied the clear command outright.</div>
+      </div>
+    </div>
+
+    <p>One more quiet but real protection: <code>_load_trading_yaml()</code> filters incoming YAML against an explicit allowlist of non-secret knobs, so even a hostile <span class="mono">config/trading.yaml</span> cannot inject a refresh token or encryption key. Secrets have exactly one source.</p>
+  </section>
+
+  <section>
+    <h2>Findings</h2>
+    <p>Eight things worth knowing, verified against the code rather than the documentation. The first three change behaviour; the rest are drift and hygiene.</p>
+
+    <div class="finding crit">
+      <div class="finding-head">
+        <h3>The kill-switch never trips itself</h3>
+        <span class="chip crit">Behavioural</span>
+      </div>
+      <p><code>KillSwitch.evaluate()</code> contains the automatic trip logic — equity wipeout, max drawdown, daily loss limit — and it has <em>zero production call sites</em>. Only tests invoke it. Both <code>max_drawdown_kill_switch</code> (10%) and <code>daily_loss_limit_pct</code> (3%) are threaded dutifully into the constructor, but the method that reads them is never called by the daemon or the live loop.</p>
+      <p>The practical effect: the kill-switch is a manual instrument only. Nothing halts an autonomous session that is quietly drawing down. A human trip still works well — the router re-reads the sentinel on every submit, so <code>trading kill</code> stops new orders on the next iteration.</p>
+      <div class="evidence"><b>Evidence</b> grep for <span class="mono">.evaluate(</span> across <span class="mono">src/</span> and <span class="mono">tests/</span> returns two hits, both in <span class="mono">tests/test_risk.py</span>. <span class="mono">monitor/live_loop.py</span> and <span class="mono">cli.py:autonomous_run</span> check <span class="mono">state()</span> only.</div>
+    </div>
+
+    <div class="finding crit">
+      <div class="finding-head">
+        <h3>The autonomous flags Claude must not flip are reachable through a file Claude can write</h3>
+        <span class="chip crit">Policy gap</span>
+      </div>
+      <p><span class="mono">CLAUDE.md</span> lists flipping <code>AUTONOMOUS_ENABLED</code> and <code>AUTONOMOUS_ACCOUNT</code> under "what Claude is NOT allowed to do", framing both as <span class="mono">.env</span> values the human owns. But both are members of <code>_TRADING_KNOB_FIELDS</code>, which means <span class="mono">config/trading.yaml</span> can set them — and YAML is passed to <code>Settings(**yaml_data)</code> as init kwargs, which outrank both environment variables and <span class="mono">.env</span> in pydantic-settings. That file is explicitly <code>Write</code>- and <code>Edit</code>-allowed in <span class="mono">settings.json</span>.</p>
+      <p>The allowed command pattern <code>Bash(uv run trading autonomous start:*)</code> also covers <code>--account live</code> via its wildcard, and <code>autonomous start</code> injects <code>AUTONOMOUS_ENABLED=true</code> into the child process itself — satisfying the router's sentinel check. So the chain closes through permitted actions only: the policy is enforced by instruction, not by the permission system.</p>
+      <p>The hard stop for real money does hold: live trading still needs a refresh token and encryption key from <span class="mono">.env</span>, which Claude genuinely cannot read or write. Practice-account autonomous trading, however, is reachable. Worth noting too that the refusal message reads "AUTONOMOUS_ENABLED is false in .env", which names the wrong source — YAML is the one that wins.</p>
+      <div class="evidence"><b>Evidence</b> <span class="mono">config/settings.py:111-137</span> (allowlist includes both flags) · <span class="mono">cli.py:470</span> (gate reads <span class="mono">settings.autonomous_enabled</span>) · <span class="mono">cli.py:485-488</span> (injects the sentinel) · <span class="mono">.claude/settings.json</span> (YAML writable, <span class="mono">start:*</span> allowed).</div>
+    </div>
+
+    <div class="finding warn">
+      <div class="finding-head">
+        <h3><code>daemon.stop()</code> reports failure after succeeding</h3>
+        <span class="chip warn">Bug · reproduced</span>
+      </div>
+      <p>This is the one failing test. <code>AutonomousDaemon.stop()</code> sends <code>SIGTERM</code>, then polls <code>_pid_alive()</code> until a timeout. But <code>_pid_alive()</code> uses <code>os.kill(pid, 0)</code>, which succeeds for an un-reaped zombie, and <code>start()</code> discards its <code>Popen</code> handle — so when start and stop happen inside one process, nothing reaps the child and the poll never observes the death. The call spins the full timeout and returns <code>False</code> on a process that died instantly.</p>
+      <p>Normal CLI use masks this completely: <code>autonomous start</code> and <code>autonomous stop</code> are separate processes, and the daemon is reparented to init, which reaps it properly. The fix is to reap the child rather than to lengthen the timeout.</p>
+      <div class="evidence"><b>Reproduced</b> A direct <span class="mono">stop(timeout_seconds=5)</span> returned <span class="mono">False</span> after exactly 5.0s; <span class="mono">ps</span> showed the process already gone and <span class="mono">_pid_alive</span> returned <span class="mono">False</span> immediately afterward. Fails as <span class="mono">tests/test_daemon.py::test_start_and_stop_short_lived</span>.</div>
+    </div>
+
+    <div class="finding warn">
+      <div class="finding-head">
+        <h3>The heat gate runs on a hardcoded risk proxy</h3>
+        <span class="chip warn">Accuracy</span>
+      </div>
+      <p>Gate 6 is only as good as the <code>existing_risk</code> figure it receives, and the live loop computes that as <code>abs(qty) × price × 0.02</code> — a flat 2% stand-in for every open position, with a candid comment saying so ("lacking real stops post-hoc"). Real stops are chosen at entry and then not tracked, so portfolio heat is an estimate, not a measurement.</p>
+      <p>Exits show the same seam: they pass <code>stop = price × 1.10</code>, a placeholder whose only job is to satisfy gate 7's short-side check by construction. Neither is wrong as scaffolding, but neither should be mistaken for enforced risk.</p>
+      <div class="evidence"><b>Evidence</b> <span class="mono">monitor/live_loop.py</span> — <span class="mono">existing_risk</span> accumulation in <span class="mono">step()</span>, and the SELL branch's <span class="mono">stop=price * 1.10</span>.</div>
+    </div>
+
+    <div class="finding warn">
+      <div class="finding-head">
+        <h3>The lookahead guard is required by policy and called by nothing</h3>
+        <span class="chip warn">Test gap</span>
+      </div>
+      <p><span class="mono">CLAUDE.md</span> requires every new strategy to ship a lookahead-bias regression test, and the <code>signal-generation</code> skill points at a helper to do it with. That helper — <code>no_lookahead_check()</code> — has no call sites outside its own module. No test uses it. The one similarly-named test, <code>test_ema_no_lookahead</code>, checks an indicator directly.</p>
+      <p>The helper is also a heuristic (it compares signal correlation against current versus next-bar close, and its own docstring calls a positive result "suspicious, not necessarily proof") and it returns <code>True</code> when the expected column is absent — so a malformed frame passes silently. Six strategies are registered; none is guarded this way.</p>
+      <div class="evidence"><b>Evidence</b> <span class="mono">signals/generator.py:42</span> definition; grep for <span class="mono">no_lookahead</span> finds only the export, the skill doc, and an unrelated indicator test.</div>
+    </div>
+
+    <div class="finding note">
+      <div class="finding-head">
+        <h3>Documentation has drifted from the code in five places</h3>
+        <span class="chip note">Drift</span>
+      </div>
+      <p>Enough that a newcomer following the docs would write code that does not compile:</p>
+      <ul>
+        <li><span class="mono">ARCHITECTURE.md</span>'s file layout lists <span class="mono">execution/paper.py</span>, <span class="mono">execution/live.py</span> and <span class="mono">data/symbols.py</span> — none exist — while omitting <span class="mono">daemon.py</span>, <span class="mono">tune.py</span> and <span class="mono">execution/daily_budget.py</span>.</li>
+        <li><span class="mono">CLAUDE.md</span> names the guard <code>no_lookahead(df)</code>; the real symbol is <code>no_lookahead_check(df, signal_col="entry")</code>.</li>
+        <li><span class="mono">CLAUDE.md</span> gives the strategy contract as <code>generate_signals(self, df)</code>; the real signature requires a second argument, <code>ctx: StrategyContext</code>.</li>
+        <li><span class="mono">.claude/agents/risk-gate.md</span> tells the agent to run <span class="mono">tests/test_lookahead.py</span>, which does not exist.</li>
+        <li><code>daily_budget.py</code>'s docstring says it reads <span class="mono">orders.jsonl</span> and <span class="mono">fills.jsonl</span>; it reads only the former.</li>
+      </ul>
+    </div>
+
+    <div class="finding note">
+      <div class="finding-head">
+        <h3>The stated quality bars do not currently pass</h3>
+        <span class="chip note">Hygiene</span>
+      </div>
+      <p><span class="mono">CLAUDE.md</span> sets <code>ruff</code> for lint and <code>mypy --strict</code> for typing. Neither is clean today, though nothing found is behavioural: 25 ruff findings, all hygiene (7 unused imports, 5 quoted annotations, 3 deprecated typing imports, 3 import-order, plus a few simplifications), 18 of them auto-fixable. mypy reports 17 errors across 8 files, mostly untyped <code>typer</code> callbacks in <span class="mono">cli.py</span>, with one genuine type conflict at <span class="mono">cli.py:659</span> assigning a <code>PaperBroker</code> to a <code>QuestradeBroker</code>-annotated variable.</p>
+      <p>Coverage sits at 63%, but it is unevenly distributed in the least comfortable direction: <span class="mono">live_loop.py</span> — the module that actually trades — is the weakest at 31%, followed by <span class="mono">pairs.py</span> (41%), <span class="mono">alerter.py</span> (51%) and <span class="mono">tune.py</span> (54%). The router itself is well covered.</p>
+      <div class="evidence"><b>Note</b> <span class="mono">pytest</span> needs <span class="mono">uv sync --extra dev</span> first; the checked-in environment has runtime deps but no test tooling, and a bare <span class="mono">uv run pytest</span> fails on a missing numpy rather than a missing pytest.</div>
+    </div>
+
+    <div class="finding note">
+      <div class="finding-head">
+        <h3>YAML outranks the environment, so the documented escape hatch is narrower than described</h3>
+        <span class="chip note">Subtlety</span>
+      </div>
+      <p><code>settings.py</code> describes environment variables as an "escape hatch, useful in CI and one-off shells". Because YAML arrives as init kwargs, it wins over both env and <span class="mono">.env</span> — so that hatch only works for keys <em>absent</em> from <span class="mono">trading.yaml</span>. <code>get_settings()</code> is also <code>lru_cache</code>d, meaning config is read once per process and a mid-session YAML edit does not reach a running daemon.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>What is solidly built</h2>
+    <p>Worth stating plainly, because the findings above are the exceptions rather than the texture:</p>
+    <ul>
+      <li><strong>The chokepoint holds.</strong> There is genuinely one path to a broker, and the layered confirmation design around it is thoughtful — a typed phrase for humans, an uncacheable env sentinel for machines, a filesystem veto for both.</li>
+      <li><strong>Secrets are structurally unreachable</strong> from the configuration Claude manages, not merely discouraged.</li>
+      <li><strong>Strategies are pure transforms.</strong> Six registered examples, each a DataFrame in and out, none holding a broker reference. The contract is the same in backtest, paper, and live.</li>
+      <li><strong>Token handling is careful:</strong> encrypted at rest, atomically rewritten, one-shot refresh semantics honoured in a single code path — exactly as Questrade requires.</li>
+      <li><strong>The sizer reports realized risk</strong> (shares × stop distance after flooring) rather than the requested budget, which is the honest number and the one the heat gate should see.</li>
+      <li><strong>Rejections are fully explained.</strong> Gates accumulate reasons instead of short-circuiting, so a blocked order tells you everything wrong with it in one line of the journal.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Suggested order of work</h2>
+    <p>Ordered by risk carried, not by effort. The first two close gaps between what the system promises and what it enforces.</p>
+    <ol class="priorities">
+      <li><strong>Wire <code>KillSwitch.evaluate()</code> into the loop — or delete its thresholds</strong><span>Call it once per iteration in <code>LiveMonitor.step()</code> with equity, peak, and day-open. If automatic tripping is not wanted, remove the two settings and say in the docs that the switch is manual, so nobody relies on protection that is not running.</span></li>
+      <li><strong>Close the autonomous policy gap in the permission system</strong><span>Either drop <code>autonomous_enabled</code> and <code>autonomous_account</code> from <code>_TRADING_KNOB_FIELDS</code> so only <span class="mono">.env</span> can set them, or narrow the allow rule from <code>autonomous start:*</code> to the exact no-argument form. Also fix the refusal message to name YAML.</span></li>
+      <li><strong>Reap the child in <code>AutonomousDaemon</code></strong><span>Keep the <code>Popen</code> handle and <code>waitpid</code> it, or check for zombie status in <code>_pid_alive()</code>. Clears the failing test and makes <code>stop()</code> honest in-process.</span></li>
+      <li><strong>Track real stops instead of the 2% proxy</strong><span>Persist the stop chosen at entry in the journal and read it back for <code>existing_risk</code>, so the heat gate measures rather than estimates.</span></li>
+      <li><strong>Add the lookahead tests the docs already promise</strong><span>One per registered strategy, and make <code>no_lookahead_check</code> fail loudly on a missing column rather than returning <code>True</code>.</span></li>
+      <li><strong>Refresh the drifted docs and clear the lint backlog</strong><span>Regenerate <span class="mono">ARCHITECTURE.md</span>'s file tree from the real layout, fix the three <span class="mono">CLAUDE.md</span> signatures, then <code>ruff check --fix</code> and annotate the <code>typer</code> callbacks.</span></li>
+    </ol>
+  </section>
+
+  <footer>
+    Compiled by reading the repository at <span class="mono">claude/repo-architecture-infographic-4nmvzz</span> — 43 source modules, 70 tests, and the <span class="mono">.claude/</span> scaffolding. Behavioural claims were verified by execution, not inferred from documentation.
+  </footer>
+
+</div>
