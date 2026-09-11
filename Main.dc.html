@@ -1,0 +1,448 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Fira Code', 'Monaco', monospace;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      color: #e2e8f0;
+    }
+
+    .container {
+      padding: 48px;
+      background: #0f172a;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+
+    .header {
+      text-align: center;
+      border-bottom: 2px solid #64748b;
+      padding-bottom: 24px;
+    }
+
+    .title {
+      font-size: 32px;
+      font-weight: 700;
+      margin: 0;
+      color: #38bdf8;
+      letter-spacing: 1px;
+    }
+
+    .subtitle {
+      font-size: 14px;
+      color: #94a3b8;
+      margin-top: 8px;
+    }
+
+    .architecture {
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+
+    .layer {
+      display: flex;
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .layer-label {
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      transform: rotate(180deg);
+      color: #64748b;
+      font-weight: 700;
+      font-size: 11px;
+      min-width: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      letter-spacing: 2px;
+    }
+
+    .layer-content {
+      display: flex;
+      gap: 16px;
+      flex: 1;
+    }
+
+    .component {
+      background: #1e293b;
+      border: 2px solid #334155;
+      border-radius: 8px;
+      padding: 16px;
+      min-width: 160px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .component-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #38bdf8;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .component-desc {
+      font-size: 11px;
+      color: #cbd5e1;
+      line-height: 1.4;
+    }
+
+    .component.data {
+      border-color: #10b981;
+      background: #064e3b;
+    }
+
+    .component.data .component-title {
+      color: #10b981;
+    }
+
+    .component.process {
+      border-color: #3b82f6;
+      background: #1e3a8a;
+    }
+
+    .component.process .component-title {
+      color: #3b82f6;
+    }
+
+    .component.risk {
+      border-color: #f59e0b;
+      background: #78350f;
+    }
+
+    .component.risk .component-title {
+      color: #fbbf24;
+    }
+
+    .component.execution {
+      border-color: #8b5cf6;
+      background: #4c1d95;
+    }
+
+    .component.execution .component-title {
+      color: #c4b5fd;
+    }
+
+    .component.state {
+      border-color: #ec4899;
+      background: #500724;
+    }
+
+    .component.state .component-title {
+      color: #f472b6;
+    }
+
+    .router-highlight {
+      border: 3px solid #ef4444;
+      background: #7f1d1d;
+      box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+    }
+
+    .router-highlight .component-title {
+      color: #fca5a5;
+      text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+    }
+
+    .flow-diagram {
+      margin-top: 32px;
+      padding: 24px;
+      background: #1e293b;
+      border-left: 4px solid #38bdf8;
+      border-radius: 4px;
+    }
+
+    .flow-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #38bdf8;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 16px;
+    }
+
+    .flow-steps {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-size: 11px;
+    }
+
+    .flow-step {
+      background: #0f172a;
+      padding: 8px 12px;
+      border-radius: 4px;
+      border: 1px solid #475569;
+      white-space: nowrap;
+    }
+
+    .flow-arrow {
+      color: #64748b;
+      font-weight: bold;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-top: 32px;
+      padding-top: 24px;
+      border-top: 2px solid #334155;
+    }
+
+    .legend-item {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 11px;
+    }
+
+    .legend-color {
+      width: 16px;
+      height: 16px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .color-data { background: #10b981; }
+    .color-process { background: #3b82f6; }
+    .color-risk { background: #fbbf24; }
+    .color-execution { background: #c4b5fd; }
+    .color-state { background: #f472b6; }
+    .color-router { background: #ef4444; }
+
+    .gate-stack {
+      padding: 12px;
+      background: #0f172a;
+      border: 1px dashed #475569;
+      border-radius: 4px;
+      font-size: 10px;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+
+    .gate-item {
+      padding: 4px 0;
+    }
+
+    .gate-check { color: #10b981; }
+    .gate-block { color: #f59e0b; }
+  </style>
+</helmet>
+
+<div class="container">
+  <div class="header">
+    <h1 class="title">FRM-Claude Architecture</h1>
+    <p class="subtitle">Algorithmic Trading Framework: Strategies → Signals → Risk Gates → Execution</p>
+  </div>
+
+  <div class="architecture">
+    <!-- DATA LAYER -->
+    <div class="layer">
+      <div class="layer-label">DATA</div>
+      <div class="layer-content">
+        <div class="component data">
+          <div class="component-title">Market Data</div>
+          <div class="component-desc">OHLCV candles via Questrade API</div>
+        </div>
+        <div class="component data">
+          <div class="component-title">Quotes</div>
+          <div class="component-desc">Real-time bid/ask/spread</div>
+        </div>
+        <div class="component data">
+          <div class="component-title">Historical</div>
+          <div class="component-desc">Backtesting data cache</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STRATEGY & SIGNAL GENERATION -->
+    <div class="layer">
+      <div class="layer-label">SIGNAL</div>
+      <div class="layer-content">
+        <div class="component process">
+          <div class="component-title">Strategy</div>
+          <div class="component-desc">Signal generator subclass<br>→ entry/exit/size_hint</div>
+        </div>
+        <div class="component process">
+          <div class="component-title">Signals</div>
+          <div class="component-desc">No-lookahead check<br>Indicator shift validation</div>
+        </div>
+        <div class="component process">
+          <div class="component-title">Backtest</div>
+          <div class="component-desc">Vectorized engine<br>Metrics: Sharpe, Max DD</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RISK GATES LAYER -->
+    <div class="layer">
+      <div class="layer-label">RISK</div>
+      <div class="layer-content">
+        <div class="component risk">
+          <div class="component-title">Position Sizing</div>
+          <div class="component-desc">ATR-based<br>Fixed-fractional</div>
+        </div>
+        <div class="component risk">
+          <div class="component-title">Portfolio Heat</div>
+          <div class="component-desc">Open risk aggregate<br>Max exposure cap</div>
+        </div>
+        <div class="component risk">
+          <div class="component-title">VaR (95%)</div>
+          <div class="component-desc">Historical drawdown<br>per-trade limit</div>
+        </div>
+        <div class="component risk">
+          <div class="component-title">Kill-Switch</div>
+          <div class="component-desc">state/HALTED file<br>Blocks ALL orders</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROUTER: THE BOTTLENECK -->
+    <div class="layer">
+      <div class="layer-label">ROUTE</div>
+      <div class="layer-content">
+        <div class="component execution router-highlight">
+          <div class="component-title">Router 🔴</div>
+          <div class="component-desc"><strong>CRITICAL GATE</strong><br>Every order intent passes through.<br>Enforces all risk checks.<br>Selects paper or live path.</div>
+          <div class="gate-stack">
+            <div class="gate-item"><span class="gate-check">✓</span> Daily trade count</div>
+            <div class="gate-item"><span class="gate-check">✓</span> Daily notional cap</div>
+            <div class="gate-item"><span class="gate-block">✗</span> Kill-switch active</div>
+            <div class="gate-item"><span class="gate-block">✗</span> Heat exceeded</div>
+            <div class="gate-item"><span class="gate-block">✗</span> VaR exceeded</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- EXECUTION PATHS -->
+    <div class="layer">
+      <div class="layer-label">EXEC</div>
+      <div class="layer-content">
+        <div class="component execution">
+          <div class="component-title">Paper Broker</div>
+          <div class="component-desc">In-memory simulation<br>Real quotes + slippage<br>Default mode</div>
+        </div>
+        <div class="component execution">
+          <div class="component-title">Live Broker</div>
+          <div class="component-desc">Questrade REST API<br>OAuth refresh tokens<br>Behind confirmation</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATE & PERSISTENCE -->
+    <div class="layer">
+      <div class="layer-label">STATE</div>
+      <div class="layer-content">
+        <div class="component state">
+          <div class="component-title">Journal</div>
+          <div class="component-desc">All fills + positions<br>Ground truth</div>
+        </div>
+        <div class="component state">
+          <div class="component-title">Tokens</div>
+          <div class="component-desc">Encrypted refresh<br>One-shot rotate</div>
+        </div>
+        <div class="component state">
+          <div class="component-title">Config</div>
+          <div class="component-desc">trading.yaml knobs<br>Per-machine</div>
+        </div>
+        <div class="component state">
+          <div class="component-title">Secrets</div>
+          <div class="component-desc">.env only<br>Not readable</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SIGNAL FLOW -->
+  <div class="flow-diagram">
+    <div class="flow-title">Live Trade Flow (Paper Mode Default)</div>
+    <div class="flow-steps">
+      <div class="flow-step">Market Data</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Strategy generates signal</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Position sizing</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Router checks gates</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Paper fills</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Journal + state</div>
+    </div>
+  </div>
+
+  <div class="flow-diagram">
+    <div class="flow-title">Autonomous Daemon Loop</div>
+    <div class="flow-steps">
+      <div class="flow-step">Periodic signal check</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Signal entry detected</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Position sizing</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Router filters</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Execute (paper/live)</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">Log + repeat</div>
+    </div>
+  </div>
+
+  <!-- LEGEND -->
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-color color-data"></div>
+      <span>Data Sources</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color color-process"></div>
+      <span>Signal Processing</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color color-risk"></div>
+      <span>Risk Gates</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color color-execution"></div>
+      <span>Execution Paths</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color color-state"></div>
+      <span>State & Persistence</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color color-router"></div>
+      <span>Critical Bottleneck</span>
+    </div>
+  </div>
+
+</div>
+
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>
