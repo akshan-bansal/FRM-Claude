@@ -146,7 +146,11 @@ class ApprovalMetrics:
             with self.journal.rejected_path.open("r") as f:
                 for line in f:
                     if line.strip():
-                        count += 1
+                        try:
+                            json.loads(line)
+                            count += 1
+                        except json.JSONDecodeError:
+                            pass
         except (OSError, IOError):
             pass
 
@@ -159,11 +163,19 @@ class ApprovalMetrics:
 
         try:
             with self.journal.rejected_path.open("r") as f:
-                lines = f.readlines()
+                lines = [line.strip() for line in f if line.strip()]
                 if lines:
-                    last = json.loads(lines[-1].strip())
-                    return last.get("reason", "")
-        except (OSError, IOError, json.JSONDecodeError):
+                    try:
+                        last = json.loads(lines[-1])
+                        # Check for 'reason' field (gate rejection reason)
+                        reason = last.get("reason", "")
+                        if reason:
+                            return reason
+                        # Fallback to any string representation
+                        return str(last.get("gate", "unknown gate"))
+                    except json.JSONDecodeError:
+                        pass
+        except (OSError, IOError):
             pass
 
         return ""
