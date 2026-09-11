@@ -30,11 +30,14 @@ def run_shim(
     port: int = 8787,
     writeup_dir: Path = DEFAULT_WRITEUP_DIR,
     auth_token: str | None = None,
+    journal=None,                # Optional OrderJournal for metrics
+    router=None,                 # Optional Router for metrics
 ) -> None:
     """Blocking uvicorn.run() — call from the main thread only."""
     import uvicorn
     app = create_app(store, registry,
-                     writeup_dir=writeup_dir, auth_token=auth_token)
+                     writeup_dir=writeup_dir, auth_token=auth_token,
+                     journal=journal, router=router)
     sys.stderr.write(
         f"approval shim listening on http://{host}:{port}"
         f"{' (auth required)' if auth_token else ' (OPEN — loopback only)'}\n"
@@ -50,12 +53,20 @@ def start_shim_thread(
     port: int,
     writeup_dir: Path | None = None,
     auth_token: str | None = None,
+    journal=None,                # Optional OrderJournal for metrics
+    router=None,                 # Optional Router for metrics
 ) -> threading.Thread:
     """Daemon-thread wrapper. Runs uvicorn.Server on its own event loop so
-    it doesn't compete with the main thread's signal handling."""
+    it doesn't compete with the main thread's signal handling.
+
+    When journal and router are provided, metrics endpoints (/v1/stats,
+    /v1/conviction-matrix) will use live data; otherwise they fall back
+    to demo data or store-only calculations.
+    """
     import uvicorn
     resolved = writeup_dir if writeup_dir is not None else DEFAULT_WRITEUP_DIR
-    app = create_app(store, registry, writeup_dir=resolved, auth_token=auth_token)
+    app = create_app(store, registry, writeup_dir=resolved, auth_token=auth_token,
+                     journal=journal, router=router)
     config = uvicorn.Config(app, host=host, port=port,
                             log_level="warning", access_log=False,
                             lifespan="off")

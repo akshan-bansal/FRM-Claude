@@ -621,6 +621,7 @@ def wire_card_approval(
         from .approval_server import start_shim_thread
         shim_thread = start_shim_thread(
             store, registry, shim_host, shim_port, auth_token=resolved_token,
+            journal=inner.journal, router=inner,
         )
 
     return CardWiring(
