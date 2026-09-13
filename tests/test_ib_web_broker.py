@@ -64,6 +64,15 @@ def test_tickle_is_a_noop_for_oauth2_which_uses_token_refresh_instead() -> None:
 
 # ---- contract resolution -------------------------------------------------------------------
 
+@respx.mock
+def test_resolve_conid_picks_the_hong_kong_listing_without_leading_zeros() -> None:
+    route = respx.post(f"{_CP_BASE}/iserver/secdef/search").mock(return_value=httpx.Response(200, json=[
+        {"conid": 1, "sections": [{"exchange": "NASDAQ"}]},
+        {"conid": 2, "sections": [{"exchange": "SEHK"}]},
+    ]))
+    assert _mk_broker().resolve_conid("0700.HK") == 2
+    assert b'"symbol":"700"' in route.calls[0].request.content.replace(b" ", b"")
+
 
 @respx.mock
 def test_resolve_conid_caches_after_the_first_lookup() -> None:

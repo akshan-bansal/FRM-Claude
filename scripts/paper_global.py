@@ -1,0 +1,176 @@
+"""Start a 24-hour global paper book: IB equities on every configured venue + the Kraken crypto sleeve.
+
+One PaperBroker, one Router (one kill-switch, heat budget and leverage cap) measured in
+``account_currency``. Feeds: stocks via IB socket (TWS / IB Gateway), ``BASE/QUOTE`` pairs via
+Kraken, each stale-guarded and converted with IB spot FX. ``SessionRouter`` queues intents for
+closed venues, releases them after the open auction, and applies spread / board-lot controls.
+Nothing touches a real account.
+
+    python scripts/paper_global.py --equities "XIC.TO,AAPL,7203.T" --crypto sleeve
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[union-attr]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[union-attr]
+    except Exception:
+        pass
+
+from trading_live_claude.analysis.symbol_validation import (
+    format_validation_banner,
+    refuse_launch_on_hard_failures,
+    validate_sleeve,
+)
+from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
+from trading_live_claude.brokers.fresh import guard_feed
+from trading_live_claude.brokers.fx import CurrencyNormalizingBroker, ib_spot_rates
+from trading_live_claude.brokers.ib import IBBroker
+from trading_live_claude.brokers.kraken import KrakenBroker
+from trading_live_claude.brokers.paper import PaperBroker
+from trading_live_claude.brokers.routed import VenueRoutedFeed
+from trading_live_claude.config import get_settings
+from trading_live_claude.data.cache import CandleCache
+from trading_live_claude.data.market import MarketData
+from trading_live_claude.execution.router import Router
+from trading_live_claude.execution.scheduler import MicrostructureConfig, SessionRouter
+from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
+from trading_live_claude.risk.sizing import PositionSizer
+from trading_live_claude.strategies import STRATEGIES
+from trading_live_claude.venues import market_open, venue_for
+
+
+def _parse_map(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for pair in (p for p in raw.split(",") if p.strip()):
+        sym, _, name = pair.partition("=")
+        out[sym.strip().upper()] = name.strip()
+    return out
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--equities", default="",
+                    help="Comma-separated IB stock symbols with venue suffixes, e.g. 'XIC.TO,AAPL,7203.T'.")
+    ap.add_argument("--crypto", default="sleeve",
+                    help="'sleeve' for CRYPTO_SLEEVE, '' for none, or comma-separated Kraken pairs.")
+    ap.add_argument("--strategy", default="bollinger", help="Fallback strategy for equities.")
+    ap.add_argument("--strategy-map", dest="strategy_map", default="",
+                    help="Per-symbol overrides, e.g. 'XIC.TO=rsi_meanrevert,7203.T=ts_momentum'.")
+    ap.add_argument("--interval", type=int, default=300)
+    ap.add_argument("--paper-equity", type=float, default=100_000.0)
+    ap.add_argument("--iterations", type=int, default=0)
+    ap.add_argument("--fill-model", dest="fill_model", choices=("touch", "mid"), default="touch",
+                    help="touch = buys at ask / sells at bid (default); mid = legacy mid-price fills.")
+    args = ap.parse_args()
+
+    settings = get_settings()
+    numeraire = settings.account_currency
+
+    equities = [s.strip().upper() for s in args.equities.split(",") if s.strip()]
+    if args.crypto.strip().lower() == "sleeve":
+        crypto = list(CRYPTO_SLEEVE)
+    else:
+        crypto = [s.strip().upper() for s in args.crypto.split(",") if s.strip()]
+    if any("/" in s for s in equities) or any("/" not in s for s in crypto):
+        raise SystemExit("--equities takes stock symbols and --crypto takes BASE/QUOTE pairs.")
+    symbols = equities + crypto
+    if not symbols:
+        raise SystemExit("Nothing to trade: pass --equities and/or --crypto.")
+
+    port = settings.ib_paper_port if settings.ib_use_paper else settings.ib_live_port
+    ib = IBBroker(host=settings.ib_host, port=port, client_id=settings.ib_client_id,
+                  account=settings.ib_account or "", enable_live_orders=False,
+                  readonly_market_data=True)
+    kraken = KrakenBroker(enable_live_orders=False)
+    routed = VenueRoutedFeed({"CRYPTO": kraken}, default=ib)
+
+    validations = validate_sleeve(routed, symbols)
+    print(format_validation_banner(validations), flush=True)
+    refuse_launch_on_hard_failures(validations)
+
+    rates = ib_spot_rates(ib, numeraire, ttl_s=settings.fx_rate_ttl_s,
+                          max_age_s=settings.fx_max_rate_age_s)
+    price_feed = CurrencyNormalizingBroker(guard_feed(routed, settings), rates)
+    exec_broker = PaperBroker(feed=price_feed, starting_equity=args.paper_equity,
+                              journal_dir=Path(settings.state_dir), fill_model=args.fill_model)
+    exec_account = exec_broker.accounts()[0].number
+
+    inner = Router.build_default(
+        mode="paper",
+        broker=exec_broker,
+        state_dir=settings.state_dir,
+        cap_pct=settings.portfolio_heat_cap,
+        max_drawdown_pct=settings.max_drawdown_kill_switch,
+        daily_loss_limit_pct=settings.daily_loss_limit_pct,
+        max_open_positions=settings.max_open_positions,
+        min_ticket_usd=settings.min_ticket_usd,
+    )
+    router = SessionRouter(
+        inner, exec_broker, account_number=exec_account,
+        config=MicrostructureConfig(
+            open_buffer_min=settings.scheduler_open_buffer_min,
+            close_buffer_min=settings.scheduler_close_buffer_min,
+            intent_ttl_min=settings.scheduler_intent_ttl_min,
+            max_spread_bps_equity=settings.max_spread_bps_equity,
+            max_spread_bps_crypto=settings.max_spread_bps_crypto,
+            board_lots={k.upper(): v for k, v in settings.board_lots.items()},
+        ),
+        journal_path=Path(settings.state_dir) / "scheduled_intents.jsonl",
+    )
+
+    overrides = _parse_map(args.strategy_map)
+    smap = {}
+    for sym in symbols:
+        if sym in overrides:
+            smap[sym] = STRATEGIES[overrides[sym]]()
+        elif sym in CRYPTO_SLEEVE:
+            entry = CRYPTO_SLEEVE[sym]
+            smap[sym] = STRATEGIES[entry.strategy](**dict(entry.params))
+    fallback = STRATEGIES[args.strategy]()
+
+    market = MarketData(exec_broker,
+                        cache=CandleCache(Path(settings.data_cache_dir) / f"numeraire_{numeraire}"))
+    venues = sorted({venue_for(s)[0].code for s in symbols})
+    print(f"[global-paper] PAPER. session_id={exec_broker.session_id} "
+          f"equity={args.paper_equity:,.0f} {numeraire} fills={args.fill_model} venues={venues}",
+          flush=True)
+    print(f"[global-paper] {len(equities)} equities via IB {settings.ib_host}:{port}, "
+          f"{len(crypto)} crypto pairs via Kraken; FX via IB spot. Real accounts untouched.",
+          flush=True)
+
+    def _emit(ev: MonitorEvent) -> None:
+        state = "NEW" if ev.is_transition else f"persisting ({ev.poll_count})"
+        print(f"[global-paper] {ev.kind.upper()} {ev.symbol} @ {ev.price:.4f} ({state})", flush=True)
+
+    monitor = LiveMonitor(
+        broker=exec_broker,
+        market=market,
+        strategy=fallback,
+        sizer=PositionSizer(risk_pct=settings.risk_pct_per_trade),
+        router=router,  # type: ignore[arg-type]
+        account_number=exec_account,
+        symbols=symbols,
+        interval_seconds=args.interval,
+        on_event=_emit,
+        account_currency=numeraire,
+        emit_on_change_only=False,
+        strategy_map=smap,
+        risk_model=settings.risk_model,
+        heat_aggregation=settings.heat_aggregation,
+        market_open_for=market_open,
+        corr_lead_lag=settings.corr_lead_lag,
+    )
+    try:
+        monitor.run_forever(max_iterations=args.iterations or None)
+    finally:
+        ib.close()
+        kraken.close()
+
+
+if __name__ == "__main__":
+    main()

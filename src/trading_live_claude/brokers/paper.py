@@ -25,7 +25,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 
 from ..logging_setup import get_logger
 from .base import Broker, OrderRejected, StaleQuote
@@ -55,8 +55,12 @@ class PaperBroker(Broker):
         journal_dir: Path | None = None,
         session_id: str | None = None,
         venue: str | None = None,
+        fill_model: Literal["mid", "touch"] = "mid",
     ) -> None:
         self._feed = feed
+        # "touch" fills buys at the ask and sells at the bid (then slippage), so a wide spread
+        # costs what it would in a real book instead of being hidden by a mid-price fill.
+        self._fill_model = fill_model
         # Venue tag on every journal row + intel-graph edge. Explicit ``venue`` wins; otherwise
         # inherit from the feed broker's declared ``.venue`` (QuestradeBroker→"questrade",
         # KrakenBroker→"kraken", IBBroker→"ib", IBWebBroker→"ib_web"); fall back to feed's ``name``
@@ -124,7 +128,11 @@ class PaperBroker(Broker):
             self._journal_order(order, ref_price=None, accepted=False,
                                 rejected_reasons=[f"stale_quote: {'; '.join(e.reasons)}"])
             raise OrderRejected(str(e)) from e
-        ref_price = quote.mid or quote.lastTradePrice or order.limitPrice
+        touch = quote.askPrice if order.action == OrderAction.BUY else quote.bidPrice
+        if self._fill_model == "touch" and touch is not None and touch > 0:
+            ref_price: float | None = touch
+        else:
+            ref_price = quote.mid or quote.lastTradePrice or order.limitPrice
         if ref_price is None or ref_price <= 0:
             self._journal_order(order, ref_price=None, accepted=False,
                                 rejected_reasons=["no_reference_price"])

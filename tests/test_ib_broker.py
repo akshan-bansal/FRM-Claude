@@ -216,6 +216,37 @@ def test_place_order_still_defaults_us_ticker_to_smart_usd(monkeypatch: pytest.M
     assert captured == {"symbol": "AAPL", "exchange": "SMART", "currency": "USD"}
 
 
+def test_infer_stock_venue_asia() -> None:
+    assert _infer_stock_venue("7203.T") == ("7203", "TSEJ", "JPY")
+    assert _infer_stock_venue("0700.HK") == ("700", "SEHK", "HKD")
+
+
+def test_quotes_and_candles_route_to_the_listing_venue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Quotes and candles used to hardcode SMART/USD even after place_order learned suffixes."""
+    built: list[tuple[str, str, str]] = []
+
+    class _FakeStock:
+        def __init__(self, symbol, exchange, currency):
+            built.append((symbol, exchange, currency))
+            self.conId = 1
+
+    class _FakeIB:
+        def reqTickers(self, *contracts):
+            return [SimpleNamespace(contract=c, bid=1.0, ask=1.1, last=1.05) for c in contracts]
+
+        def reqHistoricalData(self, contract, **kw):
+            return []
+
+    monkeypatch.setitem(sys.modules, "ib_insync", SimpleNamespace(Stock=_FakeStock))
+    b = IBBroker()
+    monkeypatch.setattr(b, "_require_ib", lambda: _FakeIB())
+    from datetime import UTC, datetime, timedelta
+    now = datetime.now(UTC)
+    b.quotes(["XIC.TO", "0700.HK"])
+    b.candles("7203.T", now - timedelta(days=5), now)
+    assert built == [("XIC", "TSE", "CAD"), ("700", "SEHK", "HKD"), ("7203", "TSEJ", "JPY")]
+
+
 def test_ib_broker_exports_from_package_namespace() -> None:
     """Registration check — IBBroker + its dataclasses must be importable from brokers/."""
     from trading_live_claude.brokers import (

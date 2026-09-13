@@ -35,6 +35,21 @@ stale_quote_frozen_s: 900           # quote unchanged this long = stale (0 disab
 stale_quote_max_trade_age_s: 0      # last trade older than this = stale (0 disables; Questrade only)
 on_stale_quote: raise               # raise = skip symbol + reject paper fill | warn = log only
 
+# === Exchange hopping ===
+# account_currency (above) is the numeraire every IB-paper price and risk gate is measured in.
+skip_closed_venues: true            # don't poll or trade a symbol outside its exchange hours
+fx_rate_ttl_s: 60                   # refresh IB spot FX at most this often
+fx_max_rate_age_s: 900              # older than this with no fresh rate -> quote treated as stale
+
+# === 24h global book (scripts/paper_global.py) ===
+scheduler_open_buffer_min: 5        # no orders in the first N min of each session (auction/first prints)
+scheduler_close_buffer_min: 10      # nor in the last N min (closing auction)
+scheduler_intent_ttl_min: 30        # queued intent expires this long after its release time
+max_spread_bps_equity: 50           # entries refused above this spread; exits are never blocked
+max_spread_bps_crypto: 30
+board_lots: {}                      # per-symbol lot size, required for .HK names, e.g. {"0700.HK": 100}
+corr_lead_lag: 1                    # Dimson lags for cross-venue correlation in the heat gate
+
 # === Questrade target ===
 # practice | live. 'practice' = Questrade's free practice account; 'live' = real money.
 questrade_env: practice

@@ -55,12 +55,40 @@ def per_trade_risk(
     return qty * abs(float(price)) * abs(float(pct))
 
 
+def lead_lag_corr(frame: pd.DataFrame, lags: int = 1) -> np.ndarray:
+    """Dimson lead-lag correlation on date-aligned returns, clipped and repaired to PSD.
+
+    Venues closing hours apart put shared news in different daily bars, so same-day correlation
+    understates co-movement; covariances and variances are summed over lags ``-lags..lags``.
+    """
+    x = frame.to_numpy(dtype=float)
+    x = x - x.mean(axis=0)
+    n = len(x)
+    s = x.T @ x / n
+    for k in range(1, lags + 1):
+        c = x[k:].T @ x[:-k] / n        # c[i, j] = cov(r_i,t , r_j,t-k)
+        s = s + c + c.T
+    var = np.diag(s).copy()
+    plain = (x * x).sum(axis=0) / n
+    var = np.where(var > 0, var, plain)
+    rho = s / np.sqrt(np.outer(var, var))
+    rho = np.clip((rho + rho.T) / 2.0, -1.0, 1.0)
+    np.fill_diagonal(rho, 1.0)
+    w, v = np.linalg.eigh(rho)
+    if w.min() < 0:
+        rho = v @ np.diag(np.clip(w, 1e-8, None)) @ v.T
+        d = np.sqrt(np.diag(rho))
+        rho = rho / np.outer(d, d)
+    return np.asarray(rho, dtype=float)
+
+
 def portfolio_risk(
     risks: Mapping[str, float],
     returns: Mapping[str, pd.Series | None],
     *,
     method: HeatAggregation = "sum",
     alpha: float = 0.05,
+    lead_lag: int = 0,
 ) -> float:
     """Aggregate per-position dollar ``risks`` into one open-risk number for the heat gate.
 
@@ -88,7 +116,7 @@ def portfolio_risk(
     if len(frame) < _MIN_OBS:
         return float(total)
 
-    rho = frame.corr().to_numpy()
+    rho = lead_lag_corr(frame, lead_lag) if lead_lag > 0 else frame.corr().to_numpy()
     r = np.array([positive[s] for s in frame.columns], dtype=float)
     combined = float(np.sqrt(max(float(r @ rho @ r), 0.0)))
     # Names without usable history contribute their standalone risk additively.

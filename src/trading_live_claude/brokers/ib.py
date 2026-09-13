@@ -45,6 +45,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from ..logging_setup import get_logger
+from ..venues import venue_for
 from .base import Broker, BrokerError, OrderRejected
 from .models import Account, Candle, Order, OrderAction, Position, Quote
 
@@ -269,11 +270,10 @@ class IBBroker(Broker):
         return self.quotes([symbol])[0]
 
     def quotes(self, symbols: list[str]) -> list[Quote]:
-        """Live tickers for one or more symbols. Uses SMART/USD stock as the default contract
-        shape; call ``quote_contract`` for anything past a plain US equity."""
+        """Live stock tickers routed to each symbol's listing venue; ``quote_contract`` for other types."""
         ib = self._require_ib()
         from ib_insync import Stock              # local import so module import stays lightweight
-        contracts = [Stock(s, "SMART", "USD") for s in symbols]
+        contracts = [Stock(*_infer_stock_venue(s)) for s in symbols]
         tickers = ib.reqTickers(*contracts)
         out: list[Quote] = []
         for sym, t in zip(symbols, tickers, strict=True):
@@ -305,7 +305,7 @@ class IBBroker(Broker):
         from ib_insync import Stock
         duration_days = max(1, (end - start).days)
         bar_size = _interval_to_ib_bar_size(interval)
-        contract = Stock(symbol, "SMART", "USD")
+        contract = Stock(*_infer_stock_venue(symbol))
         bars = ib.reqHistoricalData(
             contract, endDateTime=end.strftime("%Y%m%d %H:%M:%S"),
             durationStr=f"{duration_days} D", barSizeSetting=bar_size,
@@ -672,33 +672,12 @@ def _to_ib_contract(spec: IBContract) -> Any:
                      exchange=spec.exchange, currency=spec.currency)
 
 
-# Exchange-suffix → (exchange, currency) map shared with IB Web's `_resolve_stk_conid`.
-# US-listed tickers have no suffix and route SMART/USD (SMART is IB's price-improvement
-# router across US venues). Suffixed tickers get their listing venue explicitly with the
-# right currency — silently sending XIC.TO to SMART/USD would either fail or execute
-# against the wrong instrument.
-_STOCK_SUFFIX_VENUE: dict[str, tuple[str, str]] = {
-    ".TO": ("TSE", "CAD"),        # Toronto Stock Exchange
-    ".V":  ("VENTURE", "CAD"),    # TSX Venture
-    ".L":  ("LSE", "GBP"),        # London
-    ".AX": ("ASX", "AUD"),        # Sydney
-}
-
-
 def _infer_stock_venue(symbol: str) -> tuple[str, str, str]:
-    """Return (bare_symbol, exchange, currency) for an IB `Stock()` contract.
-
-    Strips known exchange suffixes and returns the appropriate venue + currency; unknown
-    or absent suffixes default to SMART/USD (the US default that was IBBroker's blanket
-    fallback prior to 2026-09-09). Ports the same logic IBWebBroker._resolve_stk_conid
-    uses on the REST side; keeps the two adapters routing consistently for the same
-    input symbol.
-    """
-    up = symbol.upper()
-    for suffix, (exch, ccy) in _STOCK_SUFFIX_VENUE.items():
-        if up.endswith(suffix):
-            return symbol[: -len(suffix)], exch, ccy
-    return symbol, "SMART", "USD"
+    """Return (ib_symbol, exchange, currency) for an IB `Stock()` contract, per trading_live_claude.venues."""
+    venue, bare = venue_for(symbol)
+    if venue.code == "CRYPTO":
+        return symbol, "SMART", "USD"
+    return bare, venue.ib_exchange, venue.currency
 
 
 def _news_tick_to_record(

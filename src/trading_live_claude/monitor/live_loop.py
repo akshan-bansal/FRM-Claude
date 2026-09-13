@@ -81,7 +81,11 @@ class LiveMonitor:
         weight_bias_for: Callable[[str], float] | None = None,
         persistence_for: Callable[[str], tuple[bool, str]] | None = None,
         strategy_risk: bool = False,
+        market_open_for: Callable[[str], bool] | None = None,
+        corr_lead_lag: int = 0,
     ) -> None:
+        self.market_open_for = market_open_for
+        self.corr_lead_lag = corr_lead_lag
         self.broker = broker
         self.market = market
         self.strategy = strategy
@@ -195,6 +199,27 @@ class LiveMonitor:
         positions = self.broker.positions(self.account_number)
         return {p.symbol: p.openQuantity for p in positions if p.openQuantity != 0}
 
+    def _daily_returns(self, symbol: str) -> pd.Series:
+        """Close-to-close returns indexed by UTC date, so names on different calendars align by day."""
+        df = self.market.recent(symbol, bars=90, interval="1d")
+        closes = df["close"]
+        if "time" in df:
+            closes = closes.set_axis(pd.DatetimeIndex(pd.to_datetime(df["time"], utc=True)).normalize())
+            closes = closes[~closes.index.duplicated(keep="last")]
+        return closes.pct_change()
+
+    def _sleep_seconds(self) -> float:
+        wake = getattr(self.router, "seconds_until_next_wake", None)
+        next_wake = wake(self.symbols) if wake is not None else None
+        if next_wake is None:
+            return float(self.interval_seconds)
+        if not any(self._is_open(s) for s in self.symbols):
+            return float(min(max(next_wake, 5.0), 3600.0))    # all closed: sleep to next open
+        return float(min(max(next_wake, 5.0), self.interval_seconds))
+
+    def _is_open(self, symbol: str) -> bool:
+        return self.market_open_for is None or self.market_open_for(symbol)
+
     def _last_mark(self, symbol: str) -> float:
         for p in self.broker.positions(self.account_number):
             if p.symbol == symbol:
@@ -221,23 +246,42 @@ class LiveMonitor:
         pos_risk: dict[str, float] = {}
         pos_rets: dict[str, pd.Series | None] = {}
         for sym, qty in open_positions.items():
-            try:
-                q = self.broker.quote(sym)
-                px = q.mid or q.lastTradePrice or 0.0
-            except StaleQuote:
-                # A zero price would drop this position out of the heat gate; count it at its last mark.
+            # A zero price would drop a position out of the heat gate; when the venue is closed
+            # or the quote is stale, count it at its last mark instead.
+            if not self._is_open(sym):
                 px = self._last_mark(sym)
+            else:
+                try:
+                    q = self.broker.quote(sym)
+                    px = q.mid or q.lastTradePrice or 0.0
+                except StaleQuote:
+                    px = self._last_mark(sym)
             rets: pd.Series | None = None
             if self.risk_model != "atr" or self.heat_aggregation == "corr":
                 try:
-                    rets = self.market.recent(sym, bars=90, interval="1d")["close"].pct_change()
+                    rets = self._daily_returns(sym)
                 except Exception:
                     rets = None
             pos_rets[sym] = rets
             pos_risk[sym] = per_trade_risk(qty, px, stop_distance=px * 0.02, returns=rets, model=self.risk_model)
-        existing_risk = portfolio_risk(pos_risk, pos_rets, method=self.heat_aggregation)
+        existing_risk = portfolio_risk(pos_risk, pos_rets, method=self.heat_aggregation,
+                                       lead_lag=self.corr_lead_lag)
 
+        release_due = getattr(self.router, "release_due", None)
+        if release_due is not None:
+            try:
+                release_due(equity=equity, existing_risk=existing_risk,
+                            open_positions=len(open_positions))
+            except Exception as e:                         # pragma: no cover — never break the poll
+                log.warning("monitor.release_due.failed", error=str(e))
+
+        # A router that queues closed-venue intents (SessionRouter) wants closed symbols evaluated
+        # on their last close; otherwise closed symbols are skipped outright.
+        queues_closed = bool(getattr(self.router, "queues_closed_venues", False))
         for symbol in self.symbols:
+            open_now = self._is_open(symbol)
+            if not open_now and not queues_closed:
+                continue
             strat = self._strategy_for(symbol)
             bars_needed = strat.required_history_bars()
             df = self.market.recent(symbol, bars=bars_needed + 5, interval="1d")
@@ -247,11 +291,14 @@ class LiveMonitor:
             ctx = StrategyContext(symbol=symbol, timeframe="1d")
             signals = strat.generate_signals(df, ctx)
             last = signals.iloc[-1]
-            try:
-                quote = self.broker.quote(symbol)
-            except StaleQuote:
-                continue    # no entry or exit on a price that isn't moving; other symbols still run
-            price = quote.mid or quote.lastTradePrice or float(last["close"])
+            if not open_now:
+                price = float(last["close"])    # router queues; it re-prices at the open
+            else:
+                try:
+                    quote = self.broker.quote(symbol)
+                except StaleQuote:
+                    continue    # no entry or exit on a price that isn't moving; other symbols still run
+                price = quote.mid or quote.lastTradePrice or float(last["close"])
 
             # Both entry-trigger channels (2026-09-09). ``entry`` is event-triggered —
             # fires on the fresh cross. ``entry_level`` is state-triggered — fires
@@ -469,4 +516,4 @@ class LiveMonitor:
             i += 1
             if max_iterations is not None and i >= max_iterations:
                 return
-            time.sleep(self.interval_seconds)
+            time.sleep(self._sleep_seconds())

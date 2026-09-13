@@ -43,6 +43,7 @@ from typing import Any
 import httpx
 
 from ..logging_setup import get_logger
+from ..venues import venue_for
 from .base import Broker, BrokerError, OrderRejected
 from .models import Account, Candle, Order, OrderAction, Position, Quote
 
@@ -308,19 +309,12 @@ class IBWebBroker(Broker):
         else:
             # IB's /iserver/secdef/search does not accept exchange suffixes like .TO, .L, .AX.
             # Strip and, when a suffix was present, prefer the matching listing from the results.
-            bare = symbol.split(".")[0]
+            venue, bare = venue_for(symbol)
             body = self._post("/iserver/secdef/search", {"symbol": bare, "name": False,
                                                            "secType": stype})
             if not isinstance(body, list) or not body:
                 raise BrokerError(f"IB Web API: no contracts found for {symbol!r} ({stype})")
-            want_exch: str | None = None
-            up = symbol.upper()
-            if up.endswith(".TO") or up.endswith(".V"):
-                want_exch = "TSE"
-            elif up.endswith(".L"):
-                want_exch = "LSE"
-            elif up.endswith(".AX"):
-                want_exch = "ASX"
+            want_exch = venue.ib_exchange if venue.code not in ("US", "CRYPTO") else None
             if want_exch:
                 # secdef/search returns candidates whose ``sections`` array flags each listing
                 # venue. Pick the first candidate that has a section matching the wanted exchange.

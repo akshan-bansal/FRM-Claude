@@ -222,6 +222,27 @@ class _Router:
         return None
 
 
+def test_monitor_does_not_poll_closed_venues(monkeypatch) -> None:
+    from trading_live_claude.monitor import live_loop
+    from trading_live_claude.risk.sizing import PositionSizer
+
+    feed = _Feed({"HELD": [_q("HELD")], "SHUT": [_q("SHUT")], "LIVE": [_q("LIVE", bid=10.0, ask=10.02)]})
+    guard = FreshQuoteBroker(feed, clock=_Clock())
+    seen_px: list[float] = []
+    real_risk = live_loop.per_trade_risk
+    monkeypatch.setattr(live_loop, "per_trade_risk",
+                        lambda qty, px, **kw: seen_px.append(px) or real_risk(qty, px, **kw))
+    router = _Router()
+    monitor = LiveMonitor(broker=_MonitorBroker(guard), market=_Market(), strategy=_AlwaysEnter(),
+                          sizer=PositionSizer(risk_pct=0.01), router=router, account_number="A",
+                          symbols=["SHUT", "LIVE"], risk_model="atr", heat_aggregation="sum",
+                          market_open_for=lambda s: s == "LIVE")
+    monitor.step()
+    assert seen_px[0] == 42.0                        # closed held position at its last mark
+    assert [c[0] for c in feed.calls] == ["LIVE"]    # no quote call for HELD or SHUT
+    assert router.symbols == ["LIVE"]
+
+
 def test_monitor_skips_only_the_stale_symbol_and_still_counts_held_risk(monkeypatch) -> None:
     from trading_live_claude.monitor import live_loop
     from trading_live_claude.risk.sizing import PositionSizer

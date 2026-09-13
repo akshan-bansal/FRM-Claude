@@ -137,6 +137,28 @@ class Settings(BaseSettings):
     stale_quote_max_trade_age_s: float = Field(default=0.0, ge=0.0)
     on_stale_quote: Literal["warn", "raise"] = "raise"
 
+    # Exchange hopping (venues.py, brokers/fx.py). skip_closed_venues: the monitor
+    # neither polls nor trades a symbol outside its venue's regular hours. IB paper converts
+    # every price into account_currency using IB spot FX (routed through USD), refreshed every
+    # fx_rate_ttl_s; past fx_max_rate_age_s without a rate, that symbol's quotes read as stale.
+    skip_closed_venues: bool = True
+    fx_rate_ttl_s: float = Field(default=60.0, ge=1.0)
+    fx_max_rate_age_s: float = Field(default=900.0, ge=1.0)
+
+    # 24-hour global book (execution/scheduler.py, scripts/paper_global.py). Intents for a closed
+    # venue queue until its next tradeable window: open + scheduler_open_buffer_min through close
+    # - scheduler_close_buffer_min (keeps orders out of auctions), expiring scheduler_intent_ttl_min
+    # after release. Entries need a spread under the per-class ceiling; Tokyo rounds to 100-share
+    # lots and Hong Kong names need an explicit board_lots entry. corr_lead_lag: Dimson lags for
+    # the heat gate's cross-venue correlation (0 = same-day correlation).
+    scheduler_open_buffer_min: float = Field(default=5.0, ge=0.0)
+    scheduler_close_buffer_min: float = Field(default=10.0, ge=0.0)
+    scheduler_intent_ttl_min: float = Field(default=30.0, ge=1.0)
+    max_spread_bps_equity: float = Field(default=50.0, gt=0.0)
+    max_spread_bps_crypto: float = Field(default=30.0, gt=0.0)
+    board_lots: dict[str, int] = Field(default_factory=dict)
+    corr_lead_lag: int = Field(default=1, ge=0, le=5)
+
     default_strategy: str = "ema_crossover"
     default_symbols: str = "AAPL,MSFT,SHOP.TO,XIC.TO"
     timezone: str = "America/Toronto"
@@ -202,6 +224,16 @@ _TRADING_KNOB_FIELDS: tuple[str, ...] = (
     "stale_quote_frozen_s",
     "stale_quote_max_trade_age_s",
     "on_stale_quote",
+    "skip_closed_venues",
+    "fx_rate_ttl_s",
+    "fx_max_rate_age_s",
+    "scheduler_open_buffer_min",
+    "scheduler_close_buffer_min",
+    "scheduler_intent_ttl_min",
+    "max_spread_bps_equity",
+    "max_spread_bps_crypto",
+    "board_lots",
+    "corr_lead_lag",
     "default_strategy",
     "default_symbols",
     "timezone",

@@ -17,6 +17,7 @@ from rich.table import Table
 from .analysis import build_signal_matrix, render_matrix_markdown
 from .backtest import BacktestEngine
 from .brokers import PaperBroker, QuestradeBroker
+from .venues import market_open
 from .brokers.fresh import guard_feed
 from .brokers.base import Broker
 from .config import get_settings
@@ -428,6 +429,7 @@ def signal(
         overlay_for=overlay_for,
         interpret_for=interpret_for if intel_overlay else None,
         weight_bias_for=weight_bias_for,
+        market_open_for=market_open if paper and settings.skip_closed_venues else None,
     )
     monitor.run_forever(max_iterations=iterations or None)
 
@@ -492,6 +494,7 @@ def paper(
         account_currency=settings.account_currency,
         risk_model=settings.risk_model,
         heat_aggregation=settings.heat_aggregation,
+        market_open_for=market_open if settings.skip_closed_venues else None,
     )
     monitor.run_forever(max_iterations=iterations or None)
 

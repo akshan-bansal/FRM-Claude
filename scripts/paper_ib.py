@@ -54,7 +54,9 @@ if sys.platform == "win32":
 from trading_live_claude.brokers.base import Broker
 from trading_live_claude.brokers.ib import IBBroker
 from trading_live_claude.brokers.ib_web import CPGatewayAuth, IBWebBroker
+from trading_live_claude.venues import currency_of, market_open
 from trading_live_claude.brokers.fresh import guard_feed
+from trading_live_claude.brokers.fx import CurrencyNormalizingBroker, ib_spot_rates
 from trading_live_claude.brokers.paper import PaperBroker
 from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
@@ -287,6 +289,10 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=300,
                     help="Poll interval in seconds. IB's paper feed is real-time.")
     ap.add_argument("--paper-equity", type=float, default=100_000.0)
+    ap.add_argument("--account-currency", dest="account_currency", choices=("CAD", "USD"),
+                    default=None,
+                    help="Currency the paper book and risk gates measure in. Defaults to "
+                         "account_currency in trading.yaml; other currencies convert via IB spot FX.")
     ap.add_argument("--iterations", type=int, default=0,
                     help="0 = run forever; a positive N runs that many polls and stops.")
     ap.add_argument("--intel-overlay/--no-intel-overlay", dest="intel_overlay",
@@ -318,11 +324,30 @@ def main() -> None:
     settings = get_settings()
     feed, tickle = _build_ib_feed(args, settings)
 
-    exec_broker = PaperBroker(feed=guard_feed(feed, settings), starting_equity=args.paper_equity,
+    numeraire = (args.account_currency or settings.account_currency).upper()
+    requested = [s.strip().upper() for s in f"{args.symbols},{args.futures}".split(",") if s.strip()]
+    foreign = sorted({currency_of(s) for s in requested} - {numeraire})
+    price_feed: Broker = guard_feed(feed, settings)
+    cache_dir = Path(settings.data_cache_dir)
+    if foreign:
+        if not isinstance(feed, IBBroker):
+            raise SystemExit(
+                f"[ib-paper] {', '.join(foreign)} prices must be converted into {numeraire}; live FX "
+                f"comes from IB spot quotes, which need --transport socket. Re-run with --transport "
+                f"socket, or pass --account-currency to match the symbols' currency.")
+        rates = ib_spot_rates(feed, numeraire, ttl_s=settings.fx_rate_ttl_s,
+                              max_age_s=settings.fx_max_rate_age_s)
+        price_feed = CurrencyNormalizingBroker(price_feed, rates)
+        # Converted bars must never land in the shared native-currency cache.
+        cache_dir = cache_dir / f"numeraire_{numeraire}"
+        print(f"[ib-paper] FX: converting {', '.join(foreign)} into {numeraire} via IB spot pairs",
+              flush=True)
+
+    exec_broker = PaperBroker(feed=price_feed, starting_equity=args.paper_equity,
                               journal_dir=Path(settings.state_dir))
     exec_account = exec_broker.accounts()[0].number
     print(f"[ib-paper] PAPER mode. session_id={exec_broker.session_id} "
-          f"starting_equity=${args.paper_equity:,.0f} account={exec_account}", flush=True)
+          f"starting_equity={args.paper_equity:,.0f} {numeraire} account={exec_account}", flush=True)
     print("[ib-paper] Real IB account untouched; fills are simulated against IB live quotes.",
           flush=True)
 
@@ -361,7 +386,7 @@ def main() -> None:
         print("[ib-paper] Pair the card by passing the token as "
               "Authorization: Bearer <token> on every request.", flush=True)
 
-    market = MarketData(exec_broker, cache=CandleCache(settings.data_cache_dir))
+    market = MarketData(exec_broker, cache=CandleCache(cache_dir))
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
 
     sym_list = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -548,12 +573,13 @@ def main() -> None:
         symbols=sym_list,
         interval_seconds=args.interval,
         on_event=_emit,
-        account_currency="USD",
+        account_currency=numeraire,
         emit_on_change_only=False,
         strategy_map=smap or None,
         overlay_for=overlay_for,
         interpret_for=interpret_for,
         weight_bias_for=_weight_bias_for,
+        market_open_for=market_open if settings.skip_closed_venues else None,
     )
 
     news_thread = _maybe_start_news_sidecar(feed, args)
