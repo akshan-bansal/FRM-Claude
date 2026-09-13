@@ -1,5 +1,9 @@
 # Next-session backlog
 
+**Latest session (2026-09-11 → 09-13):** see `SESSION_REPORT_2026-09-13.md` and
+`E2E_AUDIT_2026-09-11.md`. Commits `400a6ae`, `8042c91`, `2dd2043`; suite 987 passed / 0 failed.
+Open decisions carried forward are in "Open decisions from 2026-09-13" below.
+
 **Status (2026-09-08): DATA-ACCRUAL PHASE.** Live paper venues (QT + Kraken) continue to fill
 journals on demand; graph journal poll running at 30-min cadence for intel corpus depth. All
 commits on `feat/multi-scoring-attention-map`. Standing constraints unchanged: new research
@@ -17,8 +21,10 @@ Human-in-the-loop; sessions started + stopped as needed rather than persistent. 
    Full wiring: OSINT crypto scalar × interpret filter × correlation-aware allocator bias ×
    per-poll MTM × Telegram alerts × fills→graph via `traded` predicate.
 2. **QT paper** — `signal --paper --intel-overlay --level` over 15 equities (ARX.TO removed
-   2026-09-08 for silent 404 on candles; RSI.TO + RIG.TO added — RIG.TO also 404s, drop
-   next session). Same wiring shape as Kraken paper.
+   2026-09-08 for silent 404 on candles; RSI.TO + RIG.TO added — RIG.TO also 404'd and was
+   removed 2026-09-09). Same wiring shape as Kraken paper.
+5. **2026-09-13:** Kraken paper session `d8a0eca4…` started 16:51 (log
+   `logs/paper_kraken_2026-09-13_1651.log`), running pre-`2dd2043` code.
 3. **Graph journal poller** — `graph_journal.py --iterations 48 --sleep 1800 --held-scope`
    (30-min cadence, 24h coverage per session). Persistence + wash + thesis alerts;
    held-scope filter restricts to WF-validated equities + CRYPTO_SLEEVE.
@@ -35,7 +41,43 @@ Human-in-the-loop; sessions started + stopped as needed rather than persistent. 
 - `state/paper_equity.csv` — 375 MTM rows across all sessions.
 - Real QT + Kraken accounts untouched (paper-only path throughout).
 
+## Open decisions from 2026-09-13  🔴 USER CALL
+
+1. **Rotate the IBKR OAuth token.** Its value was committed in this file (`638f8d3`) and pushed to
+   `origin/feat/multi-scoring-attention-map` and `origin/feat/tradecard-approval`. The value is now
+   redacted below, but it remains in git history.
+2. **Kill-switch is effectively 8%.** `config/trading.yaml` still sets
+   `max_drawdown_kill_switch: 0.08`, overriding the 0.03 default recorded as landed on 09-08.
+3. **Real-money paths lack the paper wiring.** `trading live` and `autonomous_run` build
+   `LiveMonitor` without overlay / interpret / allocator / persistence hooks, the stale-quote guard,
+   or session routing (audit top-5 #1, still open).
+4. **`Router.check_forced_exits` has no caller** outside tests — item 3's "cheap path" never runs.
+5. **PAXG entry signal never sizes.** 2026-09-13 Kraken paper: 7 consecutive entry signals with
+   `sized: 0`, no orders, a Telegram alert every poll. Cause not diagnosed (candidate: whole-unit
+   flooring on a ~US$4,300 instrument); if so the ×3.90 BTC/PAXG allocator boost never applies.
+6. **QT paper book mixes CAD and USD names** without conversion (QQQ, VALE, DBC beside `.TO`).
+7. **Leverage-cap trim floors crypto to 0** (`router.py` `int(fit_notional // entry)`).
+8. **TradeCard signs neither thesis nor stop**, and the stop is not displayed.
+
+Also: CI (`.github/workflows/test.yml`) runs a hardcoded file list missing the new approval, E2E,
+scheduler, FX and venue tests.
+
 ## Recent shipments
+
+**2026-09-11 → 09-13 — commits `400a6ae`, `8042c91`, `2dd2043`:**
+- **E2E audit + TradeCard fixes** (`E2E_AUDIT_2026-09-11.md`). Mocked sign-off superseded
+  (`test_e2e_isolated_mocks.py`); thesis keeps overlay risk under truncation; card renders only the
+  signed canonical and refuses mismatches; atomic prompt consumption (in-memory + SQLite rowcount);
+  plain-decimal quantities in canonical and Kraken order bodies (`0.00000005`, not `5e-08`); firmware
+  sends the shim bearer token, derives TTL from `issued_at`/`expires_at`, surfaces 401 and rx
+  overflow. Firmware not compiled.
+- **Stale-quote guard** (`brokers/fresh.py`) on every paper feed: halted / delayed / priceless /
+  crossed / unchanged ≥ 900 s → paper fill rejected + journaled, symbol skipped, last good mark kept.
+- **Exchange hopping levels 1–4** (§9): `venues.py` registry; closed-venue skip; IB socket
+  quotes/candles routed by venue (were hardcoded SMART/USD); Tokyo + Hong Kong; CAD numeraire via IB
+  spot FX (`brokers/fx.py`); `SessionRouter` queues closed-venue intents and releases them after the
+  open buffer through all gates; `scripts/paper_global.py` = one CAD book over IB equities + Kraken
+  crypto; spread ceiling, board lots, auction buffers, touch fills, Dimson lead-lag correlation.
 
 **2026-09-10 — uncommitted (user runs commits by hand):**
 - **IB news → intel-graph adapter.** `IBBroker` gained `list_news_providers()`,
@@ -223,8 +265,8 @@ data-first sequencing section above.
   **BLOCKED on user-side setup** — needs the following artifacts before code can start (all
   from IBKR Client Portal → Settings → OAuth Access → Configure Third-Party API):
     1. `IBKR_OAUTH_CONSUMER_KEY` — assigned when the app is registered
-    2. `IBKR_OAUTH_TOKEN` — one pasted this session as `e0d75b4c5c1d2c0f2af7` **must be rotated
-       first** (it appeared in the session transcript at
+    2. `IBKR_OAUTH_TOKEN` — one pasted this session (value redacted 2026-09-13; still in git
+       history at `638f8d3`) **must be rotated first** (it appeared in the session transcript at
        `.claude/projects/C--Users-PC-Downloads-FRM-Claude/bac3334b-*.jsonl`, session-local but
        persistent). Rotate → new token → put in `.env` (never chat).
     3. `IBKR_OAUTH_TOKEN_SECRET` — paired with the token
@@ -541,7 +583,8 @@ shallow 720-bar Kraken fetches.
 2. **XMR/USD** — partial diversifier (avg |ρ| 0.39). Same command form, --pair XMRUSD.
 3. **ZEC/USD** — genuine diversifier per correlation study (avg |ρ| 0.41). --pair ZECUSD.
 4. **LINK/USD** — cluster; the atr_channel strategy shows some signal on shallow. --pair LINKUSD.
-5. Remaining cluster: **XRP, XLM, SOL, ADA, POL, UNI, AAVE, MKR** — batch after 1-4.
+5. Remaining cluster: **XRP, XLM, SOL, ADA, POL, UNI, AAVE** — batch after 1-4 (MKR is not
+   listed on Kraken's US endpoint and was dropped from the sleeve).
 
 Each fetch is multi-hour (Kraken /public/Trades pagination at ~1 req/s, ~1000
 trades/page). Total wall time for all 13 pairs likely 12-24 hours if run sequentially.
@@ -609,7 +652,7 @@ Each broker adapter normalizes independently (Questrade `_symbol_id()`, Kraken
 and the internal codebase uses `analysis.asset_spec.spec_for(symbol)` as canonical
 identity — functional for single-broker-per-sleeve, but three gaps have real cost.
 
-### Gap 1: Pre-flight symbol validation (small, high-value)
+### Gap 1: Pre-flight symbol validation (small, high-value)  ✅ LANDED 2026-09-09 (`analysis/symbol_validation.py`)
 Both landmines from this week's paper sessions surfaced only at runtime — ARX.TO 404'ing
 on Questrade candles across 5+ polls, MKR/USD raising `EQuery:Invalid asset pair` mid-
 poll and killing the whole Kraken session via structlog cascade. There is no `validate_
@@ -650,7 +693,7 @@ Migration path: sleeve entries stop carrying dual-form fields; they carry a
 / `_FUTURES_REGISTRY` scaffolding in `analysis/asset_spec.py` — those are effectively
 per-class atlases already, just single-broker.
 
-### Gap 3: IB socket path silent mis-routing
+### Gap 3: IB socket path silent mis-routing  ✅ CLOSED 2026-09-13 (orders/news 09-09; quotes + candles `2dd2043`)
 `brokers/ib.py:354` hardcodes `Stock(order.symbol, "SMART", "USD")` for equities.
 Canadian ETFs (`XIC.TO`, `VDY.TO`) submitted via socket would be silently mis-routed
 (SMART routes US-listed venues only; USD currency wrong for TSX). IB Web adapter fixed
@@ -735,7 +778,7 @@ $99,995 equity). Loss reached −$416 (~0.42%) with no gate firing — well belo
 kill-switch and 3.0% daily-loss limit, and no strategy-level stop configured on
 ts_momentum. Four separate follow-ups:
 
-### 1. Tighten max-drawdown kill-switch: 8.0% → 3.0%  ✅ LANDED 2026-09-08
+### 1. Tighten max-drawdown kill-switch: 8.0% → 3.0%  ⚠️ DEFAULT LANDED 2026-09-08 — local `trading.yaml` still 0.08 (found 2026-09-13)
 `config/trading.yaml::max_drawdown_kill_switch = 0.03`. The current 8.0% threshold is
 loose for a paper-validation context — by the time it trips the account has already lost
 $8k. 3.0% gives the same margin against real-world overnight-gap noise (~2σ on a broad
@@ -758,7 +801,7 @@ the position's own risk contribution (not just size). Shape:
   new gate is per-name inside a sleeve, catches the "one boosted name saturates the
   leverage cap and takes 100% of equity" failure mode the sleeve-level cap misses.
 
-### 3. Move exit checks to intra-day bar cadence  ✅ CHEAP PATH LANDED 2026-09-08 (Router.check_forced_exits); real path (intra-day bar strategy hook) deferred
+### 3. Move exit checks to intra-day bar cadence  ⚠️ CHEAP PATH CODED 2026-09-08 (Router.check_forced_exits) BUT NO CALLER outside tests (found 2026-09-13); real path deferred
 ts_momentum (and other daily-bar strategies) currently check `generate_signals` on the
 daily close only, so a −0.4% intra-day drawdown is invisible until the next EOD bar.
 Two paths to fix:
@@ -817,7 +860,14 @@ Old reject-mode tests preserved via explicit `on_size_cap_breach="reject"`.
 ### 7. Alerter dedup — OMITTED 2026-09-09 per user decision.
 Do NOT propose changes to the Telegram alerter. The Alerter stays as it currently is.
 
-### 9. Exchange hopping — trading beyond user's geographical timezone  🟡 QUEUED (2026-09-09)
+### 9. Exchange hopping — trading beyond user's geographical timezone  🟢 LEVELS 1-4 LANDED 2026-09-13 (`2dd2043`)
+
+**Landed 2026-09-13** (user decisions: CAD numeraire; venues TSX/TSX-V/LSE/ASX + Tokyo + Hong
+Kong; IB spot FX; queue closed-venue intents; one CAD book across IB + Kraken; Dimson ±1 lag;
+microstructure controls from live quotes + exchange rules only). Still required before trading
+any new venue live: IB market-data subscriptions and per-symbol walk-forward. Known limits: no
+exchange holidays (stale guard covers), LSE pence quoting unverified, native-currency returns in
+covariance, in-memory intent queue, FX needs `--transport socket`. The original plan follows.
 
 **Levels approved but not built** (queued 2026-09-09). Applies the propagation-notes
 discipline: each level's cross-module impact is enumerated so we don't slip an
@@ -1105,7 +1155,7 @@ solutions; call out and prioritize. Full agent report lives in the session trans
 ### Top-5 recommended fixes (agent's ranking) — status as of 2026-09-08
 
 1. **Wire intel/overlay/allocator/persistence hooks into `trading live` and `autonomous_run`**
-   🔴 STILL OPEN. Single-diff copy from `signal --paper` wiring block (cli.py ~189+).
+   🔴 STILL OPEN (re-verified 2026-09-13: `cli.py` live + autonomous monitors pass none of them). Single-diff copy from `signal --paper` wiring block (cli.py ~189+).
 2. ✅ **`MarketData` cache fix** — LANDED commit `638f8d3` (floor `end` to interval boundary).
 3. ✅ **Interval-name mismatch across brokers** — LANDED commit `638f8d3` (IB/Kraken lexicon
    canonical; Questrade translates on its own side).
@@ -1506,11 +1556,15 @@ Do NOT commit any of this until the user says so — the standing rule in
 
 - `lcd_puts` is a UART mirror. Real 5×7 font + framebuffer painter (u8g2 or Adafruit-GFX
   port) not linked. Nothing appears on the physical LCD yet.
-- No NTP sync. `handle_prompt` uses a hardcoded 60-second TTL rather than parsing
-  `expires_at` against a synced clock. First real-world prompt with the wrong TTL will
-  expire early or run past its actual deadline.
+- ✅ TTL (2026-09-13): countdown now `expires_at − issued_at − 3 s` from the server's own
+  stamps, no NTP needed. Countdown starts at receipt, so poll latency can still make a tap late
+  (shim refuses late responses — fails safe).
+- ✅ Auth + WYSIWYS (2026-09-13): firmware sends `TRADECARD_SHIM_TOKEN` as Bearer, renders only
+  fields parsed from the signed canonical, refuses a canonical bound to another intent. Not
+  compiled yet — run `idf.py build`.
 - No TLS. `esp_http_client` uses plain HTTP; the mbedTLS bundle is configured in
-  `sdkconfig.defaults` but the client never asks for it. Card ↔ shim is in the clear.
+  `sdkconfig.defaults` but the client never asks for it. Card ↔ shim is in the clear, so the
+  unsigned thesis text can still be rewritten in transit.
 - No deep sleep. Wi-Fi stays on between polls; battery budget for a card-form-factor cell
   measures in minutes, not hours.
 - No CENTER-button detail view. `GET /intel/{ref}` shipped on the shim side; the firmware
@@ -1549,20 +1603,17 @@ Do NOT commit any of this until the user says so — the standing rule in
 
 ### Sub-objective 4: API / plugin endpoints
 
-- **Shim has no auth.** Anyone on the LAN can POST an intent (which prompts the card) or
-  POST a fresh `/card/register` (adding a signer). Minimum acceptable: shared bearer +
-  loopback-only; production: mTLS with a shim-issued client cert per card.
-- No `DELETE /card/{card_id}` — a compromised card cannot be revoked without editing
-  in-process state or restarting the shim.
-- No `GET /passbook` — the shim knows every verdict but doesn't expose them for a
-  companion app or web dashboard.
+- ✅ Shim auth: bearer token on every `/v1` route (`hmac.compare_digest`). mTLS per card still
+  the production target.
+- ✅ `DELETE /v1/card/{card_id}` revoke landed.
+- ✅ `GET /v1/passbook` landed.
 - No SSE / WebSocket push. Card and any web client both long-poll.
 - No admin endpoint for listing active cards, pending intents, or writeup counts.
 - No rate limiting on any endpoint.
 - No CORS controls — a rogue web page loaded in the user's browser could POST to
   `localhost:8787` if that origin is ever reachable.
-- No OpenAPI spec. Third-party integrations reverse-engineer from `approval_shim.py`.
-- No URL / Accept-header versioning. First protocol change breaks every deployed card.
+- ✅ OpenAPI spec served at `/openapi.json` (FastAPI port).
+- ✅ URL versioning under `/v1/…` (SPEC_VERSION 1.0.0).
 - Router still holds one broker at a time. Multi-broker routing (`intent.broker` picks
   the destination brokerage inside a single Router) is not implemented — the card just
   displays whatever `router.broker.name` is set to for this process.
