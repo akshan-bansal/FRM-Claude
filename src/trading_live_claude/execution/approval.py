@@ -42,7 +42,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
-from ..brokers.models import Order
+from ..brokers.models import Order, plain_decimal
 from ..logging_setup import get_logger
 from .router import OrderIntent, Router
 
@@ -60,7 +60,7 @@ def canonical_bytes(
     broker: str,
     action: str,
     symbol: str,
-    shares: int,
+    shares: float,
     entry: float,
     notional_usd: float,
     account: str,
@@ -77,7 +77,9 @@ def canonical_bytes(
         broker,
         action,
         symbol,
-        str(int(shares)),
+        # Whole quantities keep the historical "12" form, so deployed-card
+        # signatures are unchanged; fractional crypto must not truncate to 0.
+        plain_decimal(shares),
         f"{float(entry):.4f}",
         f"{float(notional_usd):.2f}",
         account,
@@ -416,6 +418,12 @@ class InMemoryApprovalStore:
             return False
 
         with self._lock:
+            # Re-check: the lock was released during verify, so a concurrent
+            # response may have resolved this prompt in the meantime.
+            if entry.consumed or entry.verdict is not None:
+                log.warning("approval.response_replay", intent_id=intent_id,
+                            prior_verdict=entry.verdict)
+                return False
             entry.consumed = True
             entry.verdict = decision
             self._passbook.append(

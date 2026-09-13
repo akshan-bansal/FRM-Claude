@@ -187,11 +187,13 @@ class VSInvestmentEngine:
         overlay_clause, overlay_map, overlay_warnings = self._overlay_clauses(
             broker, overlay_snapshot, overlay_decisions
         )
-        # Priority order (least droppable first): core -> overlay risk -> notes.
-        # Risk signals must never be truncated in favor of user-supplied notes.
-        clauses: list[str] = list(core)
+        # Priority order (least droppable first): headline -> overlay risk ->
+        # remaining core -> notes. Truncation pops from the end, so risk must sit
+        # ahead of the cosmetic indicator clauses or it is the first thing lost.
+        clauses: list[str] = core[:1]
         if overlay_clause:
             clauses.append(overlay_clause)
+        clauses.extend(core[1:])
         clauses.extend(notes)
 
         thesis = self._compose_thesis(clauses)

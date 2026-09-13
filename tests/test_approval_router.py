@@ -237,6 +237,40 @@ def test_response_replay_rejected(paper_router: Router, store, card_keypair):
     t.join(timeout=2)
 
 
+def test_response_landing_during_verify_cannot_overwrite_verdict(
+    store, card_keypair, monkeypatch: pytest.MonkeyPatch
+):
+    """The lock is released while a signature verifies; a DECLINE resolved in that
+    window must not be overwritten by the ACCEPT that was already mid-flight."""
+    key, _ = card_keypair
+    inner_store, registry = store
+    prompt = inner_store.publish(_intent(), mode="paper", broker="stub", ttl_seconds=10)
+    sig = key.sign(prompt.canonical.encode("utf-8"))
+
+    real_verify = registry.verify
+    racer: dict[str, bool] = {}
+
+    def verify_then_race(card_id: str, canonical: bytes, signature: bytes) -> bool:
+        ok = real_verify(card_id, canonical, signature)
+        if not racer:
+            racer["started"] = True
+            racer["decline_ok"] = inner_store.respond(
+                prompt.intent_id, decision="DECLINE", card_id="card-001", signature=sig
+            )
+        return ok
+
+    monkeypatch.setattr(registry, "verify", verify_then_race)
+    accept_ok = inner_store.respond(
+        prompt.intent_id, decision="ACCEPT", card_id="card-001", signature=sig
+    )
+
+    assert racer["decline_ok"] is True
+    assert accept_ok is False
+    assert inner_store.wait(prompt.intent_id, timeout=0) == "DECLINE"
+    pb = inner_store.passbook()
+    assert [e.verdict for e in pb] == ["DECLINE"]
+
+
 def test_autonomous_router_cannot_be_wrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AUTONOMOUS_ENABLED", "true")
     inner = Router.build_default(
@@ -261,6 +295,22 @@ def test_canonical_bytes_stable():
     assert canonical_bytes(**{**kw, "shares": 13}) != canonical_bytes(**kw)
     # broker swap (ib -> kraken) MUST change the signed bytes
     assert canonical_bytes(**{**kw, "broker": "kraken"}) != canonical_bytes(**kw)
+    # Whole-share wire form is frozen: deployed cards have signed this exact layout.
+    assert canonical_bytes(**kw) == b"ib|Buy|XIC.TO|12|31.0500|372.60|acct-1|abc|nnn"
+
+
+def test_canonical_bytes_preserves_fractional_crypto_quantity():
+    kw = dict(
+        broker="kraken", action="Buy", symbol="BTC/USD", entry=42000.0,
+        notional_usd=2100.0, account="k1", intent_id="abc", nonce="nnn",
+    )
+    assert canonical_bytes(shares=0.05, **kw).split(b"|")[3] == b"0.05"
+    assert canonical_bytes(shares=0.00012345, **kw).split(b"|")[3] == b"0.00012345"
+    assert canonical_bytes(shares=0.00000005, **kw).split(b"|")[3] == b"0.00000005"
+    # Sub-satoshi must neither round up nor collapse to zero on the signed bytes.
+    assert canonical_bytes(shares=0.000000005, **kw).split(b"|")[3] == b"0.000000005"
+    assert canonical_bytes(shares=0.05, **kw) != canonical_bytes(shares=0.06, **kw)
+    assert canonical_bytes(shares=3.0, **kw).split(b"|")[3] == b"3"
 
 
 def test_publish_carries_broker_and_thesis(paper_router: Router, store):

@@ -15,6 +15,15 @@ config TRADECARD_SHIM_URL
         Base URL of the ApprovalRouter shim (scripts/approval_shim.py).
         Do not include a trailing slash.
 
+config TRADECARD_SHIM_TOKEN
+    string "Approval shim bearer token"
+    default ""
+    help
+        The token the shim prints at startup ("auth required"). Sent as
+        "Authorization: Bearer <token>" on every request. Leave empty only
+        for a shim started with auth disabled on strict loopback. Stored in
+        flash as plain text unless flash encryption is enabled.
+
 config TRADECARD_CARD_ID
     string "Card ID"
     default "card-001"

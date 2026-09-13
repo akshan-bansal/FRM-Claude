@@ -28,6 +28,11 @@ from trading_live_claude.execution.approval import (
     ApprovalRouter,
     CardRegistry,
     InMemoryApprovalStore,
+    canonical_bytes,
+)
+from trading_live_claude.execution.approval_sqlite import (
+    SqliteApprovalStore,
+    SqliteCardRegistry,
 )
 from trading_live_claude.execution.router import OrderIntent, Router
 from trading_live_claude.intel.overlay import IntelSnapshot
@@ -43,7 +48,7 @@ class _StubBroker:
 
     def __init__(self) -> None:
         self.placed: list = []
-        self.quotes: dict = {}
+        self._quote_cache: dict = {}
 
     def accounts(self) -> list:
         return []
@@ -52,12 +57,12 @@ class _StubBroker:
         return []
 
     def quote(self, symbol: str) -> Quote:
-        if symbol not in self.quotes:
-            self.quotes[symbol] = Quote(
+        if symbol not in self._quote_cache:
+            self._quote_cache[symbol] = Quote(
                 symbol=symbol, symbolId=1,
                 bidPrice=99.5, askPrice=100.5, lastTradePrice=100.0
             )
-        return self.quotes[symbol]
+        return self._quote_cache[symbol]
 
     def quotes(self, symbols: list[str]) -> list[Quote]:
         return [self.quote(s) for s in symbols]
@@ -129,7 +134,7 @@ class TestInvestmentEngineE2E:
     ) -> None:
         """Novel: Thesis must survive multiple overlay risk signals."""
         engine = VSInvestmentEngine(writeup_dir=tmp_approval_dir / "writeups")
-        intent = _intent("BTC/USD", 0.5)
+        intent = _intent("BTC/USD", 1)
 
         # Severe overlay stress: geo-risk 85, energy 0.8, F&G 20 (fear)
         snap = IntelSnapshot(
@@ -200,13 +205,13 @@ class TestApprovalRouterE2E:
     """Card approval flow: signal → thesis → prompt → signature → fill."""
 
     def test_full_approval_flow_accept(
-        self, paper_router: Router, approval_store, card_keypair
+        self, paper_router: Router, approval_store, card_keypair, tmp_approval_dir: Path
     ) -> None:
         """Novel: Complete flow from intent submission to order execution."""
         key, _ = card_keypair
         store, _ = approval_store
 
-        engine = VSInvestmentEngine(writeup_dir=paper_router.state_dir / "writeups")
+        engine = VSInvestmentEngine(writeup_dir=tmp_approval_dir / "writeups")
 
         def _thesis(intent: OrderIntent, broker: str) -> tuple[str, str]:
             return engine.explain(
@@ -411,89 +416,79 @@ class TestNovelSolutions:
         canonical bytes proves the card saw and signed those exact details,
         regardless of network state or server-side state loss.
         """
-        key, _ = card_keypair
+        key, pem = card_keypair
         registry = CardRegistry()
-        registry.register("test-card-1", key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ))
+        registry.register("test-card-1", pem)
         store = InMemoryApprovalStore(registry)
 
-        # Simulate a prompt
-        from trading_live_claude.execution.approval import Prompt
-
-        intent = _intent()
-        prompt = Prompt.from_intent(intent, broker="ib", thesis="Test thesis", intel_ref="vs_001")
-
-        # Sign the canonical
+        prompt = store.publish(
+            _intent(), mode="paper", broker="ib", ttl_seconds=10,
+            thesis="Test thesis", intel_ref="vs_001",
+        )
         sig = key.sign(prompt.canonical.encode("utf-8"))
 
-        # Simulate state loss: remove from pending
-        store.intents.clear()
+        # Total server-state loss: only the card's pubkey is recovered.
+        del store, registry
+        fresh = CardRegistry()
+        fresh.register("test-card-1", pem)
 
-        # But we can still verify the signature (stateless)
-        from cryptography.hazmat.primitives.asymmetric import ed25519
+        canonical = prompt.canonical.encode("utf-8")
+        assert fresh.verify("test-card-1", canonical, sig) is True
+        tampered = canonical.replace(b"|10|", b"|500|", 1)
+        assert tampered != canonical
+        assert fresh.verify("test-card-1", tampered, sig) is False
 
-        pubkey = ed25519.Ed25519PublicKey.from_public_bytes(registry.pubkeys["test-card-1"])
-        try:
-            pubkey.verify(sig, prompt.canonical.encode("utf-8"))
-            is_valid = True
-        except Exception:
-            is_valid = False
-
-        assert is_valid
-
-    def test_multi_broker_approval_context(
-        self, tmp_approval_dir: Path
-    ) -> None:
+    def test_multi_broker_approval_context(self, card_keypair) -> None:
         """Novel: Single card approves orders across multiple brokers.
 
-        The canonical bytes include the broker, so the same card can be
-        used with multiple brokers without confusion.
+        The canonical bytes include the broker, so a signature for one
+        destination cannot be replayed against another.
         """
-        engine = VSInvestmentEngine(writeup_dir=tmp_approval_dir / "writeups")
-        market = MarketContext(strategy_rank=1, universe_size=20, r_multiple=1.8)
+        key, pem = card_keypair
+        registry = CardRegistry()
+        registry.register("test-card-1", pem)
 
-        # Same symbol, different brokers
         intent = _intent("SPY", 10)
+        common = dict(
+            action=intent.action.value, symbol=intent.symbol, shares=intent.shares,
+            entry=intent.entry, notional_usd=intent.shares * intent.entry,
+            account=intent.account_number, intent_id="iid-1", nonce="n-1",
+        )
+        ib_bytes = canonical_bytes(broker="ib", **common)
+        kraken_bytes = canonical_bytes(broker="kraken", **common)
+        assert ib_bytes != kraken_bytes
 
-        thesis_ib, ref_ib = engine.explain(intent, broker="ib", market=market)
-        thesis_kraken, ref_kraken = engine.explain(intent, broker="kraken", market=market)
-
-        # Build prompts (simulating card approval)
-        from trading_live_claude.execution.approval import Prompt
-
-        prompt_ib = Prompt.from_intent(intent, broker="ib", thesis=thesis_ib, intel_ref=ref_ib)
-        prompt_kraken = Prompt.from_intent(intent, broker="kraken", thesis=thesis_kraken, intel_ref=ref_kraken)
-
-        # Canonical bytes must differ (broker is part of it)
-        assert prompt_ib.canonical != prompt_kraken.canonical
+        sig_ib = key.sign(ib_bytes)
+        assert registry.verify("test-card-1", ib_bytes, sig_ib) is True
+        assert registry.verify("test-card-1", kraken_bytes, sig_ib) is False
 
     def test_fault_tolerant_approval_with_replay_journal(
-        self, tmp_approval_dir: Path
+        self, tmp_path: Path, card_keypair
     ) -> None:
-        """Novel: Approval decisions are logged for replay and audit.
+        """Novel: Approval decisions survive a shim crash and cannot be replayed.
 
-        Even if the shim crashes, decisions can be replayed from the journal.
+        The SQLite store is the replay journal: a verdict recorded before the
+        restart is visible afterwards, and re-sending the signed response is refused.
         """
-        store = InMemoryApprovalStore(CardRegistry())
-        approval_decisions_journal: list[dict[str, str]] = []
+        key, pem = card_keypair
+        db = tmp_path / "approval.db"
+        reg = SqliteCardRegistry(db)
+        reg.register("test-card-1", pem)
+        store = SqliteApprovalStore(reg, db)
+        prompt = store.publish(_intent(), mode="paper", broker="ib", ttl_seconds=30)
+        sig = key.sign(prompt.canonical.encode("utf-8"))
+        assert store.respond(prompt.intent_id, decision="ACCEPT",
+                             card_id="test-card-1", signature=sig) is True
+        del store, reg
 
-        # Simulate storing each decision
-        def _journal_decision(intent_id: str, decision: str, card_id: str) -> None:
-            approval_decisions_journal.append({
-                "intent_id": intent_id,
-                "decision": decision,
-                "card_id": card_id,
-                "timestamp": "2026-09-11T00:00:00Z"
-            })
-
-        # If shim restarts, we can replay:
-        replayed_decisions = {}
-        for entry in approval_decisions_journal:
-            replayed_decisions[entry["intent_id"]] = entry["decision"]
-
-        assert isinstance(replayed_decisions, dict)
+        reg2 = SqliteCardRegistry(db)
+        store2 = SqliteApprovalStore(reg2, db)
+        pb = store2.passbook()
+        assert [(e.intent_id, e.verdict, e.card_id) for e in pb] == [
+            (prompt.intent_id, "ACCEPT", "test-card-1")
+        ]
+        assert store2.respond(prompt.intent_id, decision="ACCEPT",
+                              card_id="test-card-1", signature=sig) is False
 
     def test_conviction_based_approval_weighting(
         self, tmp_approval_dir: Path
@@ -569,7 +564,7 @@ def test_summary_report(capsys) -> None:
        → Thesis encodes signal strength for card UI
 
     NEXT PHASE (Phase 2):
-    • Deploy shim to GitHub Pages alongside PWA
+    • Deploy PWA to GitHub Pages; run the shim on the LAN
     • Wire /v1/stats and /v1/conviction-matrix endpoints
     • Implement decision replay journal in SQLite store
     • Add conviction display to card firmware (next PCB)

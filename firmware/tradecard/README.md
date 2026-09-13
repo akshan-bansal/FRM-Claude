@@ -26,7 +26,7 @@ Skeleton firmware for the approval card. Speaks the same REST protocol as
 | File | Purpose |
 |---|---|
 | `main/main.c` | Wi-Fi bring-up, Ed25519 keys (NVS), passbook, PCD8544 driver, 5-key input, long-poll, sign + respond |
-| `main/Kconfig.projbuild` | menuconfig entries for SSID / PSK / shim URL / card_id |
+| `main/Kconfig.projbuild` | menuconfig entries for SSID / PSK / shim URL / shim token / card_id |
 | `main/CMakeLists.txt` | Component deps: `esp_http_client`, `json`, `libsodium`, `driver`, `nvs_flash` |
 | `sdkconfig.defaults` | Target esp32s3, 8MB flash, TLS via mbedTLS |
 | `CMakeLists.txt` | Top-level project file |
@@ -61,13 +61,20 @@ idf.py build flash monitor
 
 ## Protocol contract (must match `src/trading_live_claude/execution/approval.py`)
 
+- Auth: every `/v1` call carries `Authorization: Bearer <token>` — set
+  `TRADECARD_SHIM_TOKEN` in menuconfig to the token the shim prints at startup.
+  Without it the default shim answers 401 to register, poll and respond.
 - Register: `POST /v1/card/register` with `{card_id, pubkey_pem}` — Ed25519 SPKI PEM.
 - Poll: `GET /v1/intents/pending` → `{prompts: [Prompt]}`.
-- Prompt fields the card should display: `broker`, `action`, `symbol`,
-  `shares`, `notional_usd`, `thesis` (and `intel_ref` for a full writeup
-  the phone bridge can fetch). The `expires_at` field drives the countdown.
 - Sign: exactly the `canonical` string field of the prompt, as bytes.
-  Canonical order is `broker|action|symbol|shares|entry|notional|account|intent_id|nonce`.
+  Canonical order is `broker|action|symbol|shares|entry|notional|account|intent_id|nonce`;
+  `shares` is `12` for whole quantities and e.g. `0.05` for fractional crypto.
+- **Display only what is signed.** Order details (broker, action, symbol, shares,
+  notional) are parsed from `canonical`, never from the prompt's separate JSON
+  fields, and the card refuses to sign unless `canonical` has exactly nine
+  non-empty fields and its `intent_id` matches the prompt's. `thesis` is shown as
+  unsigned context. The countdown is `expires_at − issued_at`, minus a small
+  network margin.
 - Respond: `POST /v1/intents/{id}/response` with
   `{decision: "ACCEPT"|"DECLINE", card_id, signature: base64(ed25519_sig)}`.
 
@@ -84,7 +91,7 @@ X quest  BUY VFV.TO 4sh $520
 UP/DN scroll
 ```
 
-`A` = accepted, `D` = declined, `X` = expired. Broker column tells you at
+`A` = accepted, `D` = declined, `X` = expired, `R` = refused (malformed canonical). Broker column tells you at
 a glance which brokerage the trade went to.
 
 ## What this skeleton is NOT

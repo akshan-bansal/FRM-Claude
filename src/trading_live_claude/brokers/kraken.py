@@ -43,6 +43,7 @@ from .models import (
     OrderType,
     Position,
     Quote,
+    plain_decimal,
 )
 
 log = get_logger(__name__)
@@ -245,12 +246,12 @@ class KrakenBroker(Broker):
             "pair": to_kraken_pair(order.symbol),
             "type": "buy" if order.action == OrderAction.BUY else "sell",
             "ordertype": _order_type_wire(order.orderType),
-            "volume": str(order.totalQuantity),
+            "volume": plain_decimal(order.totalQuantity),
         }
         if order.orderType in (OrderType.LIMIT, OrderType.STOP_LIMIT) and order.limitPrice is not None:
-            body["price"] = str(order.limitPrice)
+            body["price"] = plain_decimal(order.limitPrice)
         if order.orderType in (OrderType.STOP, OrderType.STOP_LIMIT) and order.stopPrice is not None:
-            body["price2"] = str(order.stopPrice)
+            body["price2"] = plain_decimal(order.stopPrice)
 
         try:
             result = private_post(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
 
@@ -99,6 +100,18 @@ class Candle(BaseModel):
     close: float
     volume: int = 0
     VWAP: float | None = None
+
+
+def plain_decimal(x: float) -> str:
+    """Exact decimal text with no exponent or rounding: 12.0 -> "12", 5e-08 -> "0.00000005".
+
+    ``str(float)`` switches to scientific notation below 1e-4, which exchange APIs
+    reject and which would mis-render satoshi-scale crypto quantities.
+    """
+    q = float(x)
+    if q.is_integer():
+        return str(int(q))
+    return format(Decimal(repr(q)), "f")
 
 
 class Order(BaseModel):

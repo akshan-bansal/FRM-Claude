@@ -16,7 +16,7 @@ Implementing real-time operational intelligence for the TradeCard approval syste
 
 ### 1. ✅ E2E Test Suite
 - `tests/test_e2e_approval_complete.py` — 8 comprehensive pytest fixtures
-- `test_e2e_isolated.py` — Standalone runner (no external dependencies)
+- `test_e2e_isolated_mocks.py` — mocks only, imports no production code (not evidence of system behaviour)
 - **All tests functionally passing:**
   - Overlay stress thesis generation
   - Graceful degradation on sparse context
@@ -263,7 +263,7 @@ Commits (latest first):
 
 Files:
   + tests/test_e2e_approval_complete.py (8 pytest fixtures, all passing)
-  + test_e2e_isolated.py (standalone runner, no external dependencies)
+  + test_e2e_isolated_mocks.py (mocks only — not evidence of system behaviour)
   + E2E_TEST_RESULTS.md (test findings + 6 novel solutions)
   + bi-dashboard.html (interactive dashboard artifact)
   + src/trading_live_claude/execution/approval_metrics.py (NEW)

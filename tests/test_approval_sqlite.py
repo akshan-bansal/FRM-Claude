@@ -153,6 +153,36 @@ def test_replay_of_signed_response_refused(db_path, keypair):
                          signature=sig) is False
 
 
+def test_response_losing_race_reports_false(db_path, keypair, monkeypatch):
+    """The CAS update protects the verdict; the losing responder must be told so."""
+    key, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+    prompt = store.publish(_intent(), mode="paper", broker="ib", ttl_seconds=5)
+    sig = key.sign(prompt.canonical.encode())
+
+    real_verify = reg.verify
+    racer: dict = {}
+
+    def verify_then_race(card_id, canonical, signature):
+        ok = real_verify(card_id, canonical, signature)
+        if not racer:
+            racer["started"] = True
+            racer["decline_ok"] = store.respond(
+                prompt.intent_id, decision="DECLINE", card_id="c1", signature=sig
+            )
+        return ok
+
+    monkeypatch.setattr(reg, "verify", verify_then_race)
+    accept_ok = store.respond(prompt.intent_id, decision="ACCEPT", card_id="c1",
+                              signature=sig)
+
+    assert racer["decline_ok"] is True
+    assert accept_ok is False
+    assert [e.verdict for e in store.passbook()] == ["DECLINE"]
+
+
 def test_bad_signature_does_not_consume(db_path, keypair):
     _, pem = keypair
     reg = SqliteCardRegistry(db_path)

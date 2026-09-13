@@ -90,17 +90,38 @@ def _get(url: str) -> tuple[int, dict]:
 # UI helpers                                                                  #
 # --------------------------------------------------------------------------- #
 
-def render_prompt(p: dict) -> str:
-    """The compact line the real card e-ink will show."""
+CANONICAL_FIELDS = (
+    "broker", "action", "symbol", "shares", "entry",
+    "notional_usd", "account", "intent_id", "nonce",
+)
+
+
+def parse_canonical(p: dict) -> dict[str, str] | None:
+    """Fields of the exact bytes the card will sign, or None if they can't be trusted.
+
+    Order details are displayed from these, never from the prompt's separate JSON
+    fields — otherwise a shim could show one trade and have the card sign another.
+    Mirrors ``parse_canonical`` in ``firmware/tradecard/main/main.c``.
+    """
+    parts = str(p.get("canonical", "")).split("|")
+    if len(parts) != len(CANONICAL_FIELDS) or not all(parts):
+        return None
+    signed = dict(zip(CANONICAL_FIELDS, parts, strict=True))
+    if signed["intent_id"] != p.get("intent_id"):
+        return None
+    return signed
+
+
+def render_prompt(p: dict, signed: dict[str, str]) -> str:
+    """The compact line the real card will show. Order fields come from ``signed``."""
     seconds_left = max(
         0,
         int((datetime.fromisoformat(p["expires_at"]) - datetime.now(UTC)).total_seconds()),
     )
-    broker = (p.get("broker") or "?").upper()
     header = (
-        f"[{broker}] {p['action']:>4} {p['symbol']:<8} {p['shares']:>4}sh  "
-        f"${p['notional_usd']:>10,.2f}  R=${p['risk_dollars']:>7,.2f}  "
-        f"[{p['strategy']}]  {seconds_left}s"
+        f"[{signed['broker'].upper()}] {signed['action']:>4} {signed['symbol']:<8} "
+        f"{signed['shares']:>4}sh  ${float(signed['notional_usd']):>10,.2f}  "
+        f"R=${p['risk_dollars']:>7,.2f}  [{p['strategy']}]  {seconds_left}s"
     )
     thesis = p.get("thesis") or ""
     if thesis:
@@ -147,8 +168,13 @@ def run(
             if prompt["intent_id"] in seen:
                 continue
             seen.add(prompt["intent_id"])
+            signed = parse_canonical(prompt)
+            if signed is None:
+                print(f"\nREFUSED {prompt['intent_id']}: canonical malformed or bound "
+                      "to another intent — not signing", file=sys.stderr)
+                continue
             print("\n" + "=" * 78)
-            print(render_prompt(prompt))
+            print(render_prompt(prompt, signed))
             print("=" * 78)
 
             decision = _decide(prompt, auto=auto)

@@ -247,36 +247,42 @@ def run_tests() -> None:
                 risk_dollars=100, account_number="TEST-001", symbolId=1,
             )
 
-            # Submit and wait for prompt
+            import threading
+            import time
+
+            holder: dict = {}
+            submitter = threading.Thread(target=lambda: holder.__setitem__(
+                "order",
+                approval.submit(intent, equity=100_000, existing_risk=0, open_positions=0),
+            ))
+            submitter.start()
+
             pending = None
             for attempt in range(100):
                 pending = store.pending()
                 if pending:
                     break
-                import time
                 time.sleep(0.01)
 
             assert pending, "No prompt published"
             prompt = pending[0]
 
-            # Sign the canonical bytes
             sig = key.sign(prompt.canonical.encode("utf-8"))
+            assert registry.verify("test-card-1", prompt.canonical.encode("utf-8"), sig), \
+                "Signature verification failed"
+            assert store.respond(prompt.intent_id, decision="ACCEPT",
+                                 card_id="test-card-1", signature=sig), "Response refused"
 
-            # Verify signature
-            from cryptography.hazmat.primitives.asymmetric import ed25519
-            pubkey = ed25519.Ed25519PublicKey.from_public_bytes(registry.pubkeys["test-card-1"])
-            try:
-                pubkey.verify(sig, prompt.canonical.encode("utf-8"))
-                sig_valid = True
-            except Exception:
-                sig_valid = False
+            submitter.join(timeout=5)
+            assert not submitter.is_alive(), "submit() did not return"
+            order = holder.get("order")
+            assert order is not None, "Accepted intent was not dispatched"
+            assert broker.placed and broker.placed[0].symbol == "SPY"
 
-            assert sig_valid, "Signature verification failed"
-
-            print(f"  ✓ Signature verification passed")
+            print(f"  ✓ Signed ACCEPT dispatched the order")
             print(f"    Prompt ID: {prompt.intent_id}")
             print(f"    Canonical: {prompt.canonical[:70]}...")
-            print(f"    Signature valid: {sig_valid}")
+            print(f"    Placed: {order.symbol} x{intent.shares}")
             tests_passed += 1
         except Exception as e:
             print(f"  ✗ FAILED: {e}")

@@ -26,7 +26,9 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
@@ -58,11 +60,15 @@
 #define WIFI_PSK            CONFIG_TRADECARD_WIFI_PSK
 #define SHIM_URL_BASE       CONFIG_TRADECARD_SHIM_URL
 #define CARD_ID             CONFIG_TRADECARD_CARD_ID
+#define SHIM_TOKEN          CONFIG_TRADECARD_SHIM_TOKEN
 
 #define POLL_INTERVAL_MS    1500
-#define HTTP_RX_BUF         4096
+#define HTTP_RX_BUF         16384   /* each pending prompt is ~0.7 KB of JSON */
 #define PASSBOOK_ENTRIES    32
 #define PASSBOOK_LINE_LEN   40
+#define CANON_MAX           256
+#define TTL_FALLBACK_S      60
+#define TTL_NET_MARGIN_S    3   /* leave time for the signed response to reach the shim */
 
 /* GPIO — 5-key D-pad + center */
 #define GPIO_UP             GPIO_NUM_4
@@ -103,7 +109,7 @@ static uint8_t g_pk[crypto_sign_PUBLICKEYBYTES];
 
 typedef struct __attribute__((packed)) {
     int64_t  ts_epoch;                 /* seconds since epoch */
-    char     verdict;                  /* 'A' | 'D' | 'X' (expired) */
+    char     verdict;                  /* 'A' | 'D' | 'X' (expired) | 'R' (refused: bad canonical) */
     char     broker[8];                /* "ib", "kraken", "questrade" */
     char     line[PASSBOOK_LINE_LEN];  /* e.g. "BUY XIC.TO 12sh $372" */
 } pb_entry_t;
@@ -297,16 +303,23 @@ static char *pubkey_pem(void) {
 /* HTTP                                                                  */
 /* --------------------------------------------------------------------- */
 
-typedef struct { char *buf; size_t len; size_t cap; } rx_t;
+typedef struct { char *buf; size_t len; size_t cap; int truncated; } rx_t;
 
 static esp_err_t http_event(esp_http_client_event_t *evt) {
     rx_t *rx = evt->user_data;
     if (evt->event_id == HTTP_EVENT_ON_DATA && rx && evt->data_len > 0) {
-        if (rx->len + evt->data_len + 1 > rx->cap) return ESP_OK;
+        if (rx->len + evt->data_len + 1 > rx->cap) { rx->truncated = 1; return ESP_OK; }
         memcpy(rx->buf + rx->len, evt->data, evt->data_len);
         rx->len += evt->data_len; rx->buf[rx->len] = '\0';
     }
     return ESP_OK;
+}
+
+static void set_auth_header(esp_http_client_handle_t h) {
+    static char auth[256];
+    if (SHIM_TOKEN[0] == '\0') return;
+    snprintf(auth, sizeof(auth), "Bearer %s", SHIM_TOKEN);
+    esp_http_client_set_header(h, "Authorization", auth);
 }
 
 static int http_post_json(const char *url, const char *body, rx_t *rx) {
@@ -315,6 +328,7 @@ static int http_post_json(const char *url, const char *body, rx_t *rx) {
         .user_data = rx, .timeout_ms = 10000,
     };
     esp_http_client_handle_t h = esp_http_client_init(&c);
+    set_auth_header(h);
     esp_http_client_set_header(h, "Content-Type", "application/json");
     esp_http_client_set_post_field(h, body, strlen(body));
     esp_err_t err = esp_http_client_perform(h);
@@ -329,6 +343,7 @@ static int http_get(const char *url, rx_t *rx) {
         .user_data = rx, .timeout_ms = 10000,
     };
     esp_http_client_handle_t h = esp_http_client_init(&c);
+    set_auth_header(h);
     esp_err_t err = esp_http_client_perform(h);
     int s = (err == ESP_OK) ? esp_http_client_get_status_code(h) : -1;
     esp_http_client_cleanup(h);
@@ -397,21 +412,61 @@ static key_t wait_key(int timeout_ms) {
 }
 
 /* --------------------------------------------------------------------- */
+/* canonical parsing — WYSIWYS                                           */
+/* --------------------------------------------------------------------- */
+
+/* Field order must match canonical_bytes() in execution/approval.py. */
+enum {
+    CF_BROKER, CF_ACTION, CF_SYMBOL, CF_SHARES, CF_ENTRY,
+    CF_NOTIONAL, CF_ACCOUNT, CF_INTENT_ID, CF_NONCE, CANON_FIELDS
+};
+
+/* Everything the user is shown about the order comes from the exact bytes
+ * that get signed, never from the prompt's separate JSON fields — otherwise
+ * a shim could display one trade and have the card sign another.
+ * Splits buf in place; returns 1 only for exactly CANON_FIELDS non-empty fields. */
+static int parse_canonical(char *buf, char *fields[CANON_FIELDS]) {
+    int n = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, "|", &save); tok; tok = strtok_r(NULL, "|", &save)) {
+        if (n == CANON_FIELDS) return 0;
+        fields[n++] = tok;
+    }
+    return n == CANON_FIELDS;
+}
+
+static int iso_to_epoch(const char *s, double *out) {
+    int y, mo, d, h, mi;
+    double sec;
+    if (!s || sscanf(s, "%4d-%2d-%2dT%2d:%2d:%lf", &y, &mo, &d, &h, &mi, &sec) != 6) return 0;
+    struct tm t = { .tm_year = y - 1900, .tm_mon = mo - 1, .tm_mday = d,
+                    .tm_hour = h, .tm_min = mi, .tm_sec = 0 };
+    *out = (double)mktime(&t) + sec;
+    return 1;
+}
+
+/* Prompt window from the server's own issued_at/expires_at, so no NTP is needed.
+ * The countdown starts at receipt, so poll latency can still make a tap late;
+ * the shim refuses late responses, which fails safe. */
+static int prompt_ttl_seconds(cJSON *p) {
+    double issued, expires;
+    if (!iso_to_epoch(cJSON_GetStringValue(cJSON_GetObjectItem(p, "issued_at")), &issued) ||
+        !iso_to_epoch(cJSON_GetStringValue(cJSON_GetObjectItem(p, "expires_at")), &expires)) {
+        return TTL_FALLBACK_S;
+    }
+    int ttl = (int)(expires - issued) - TTL_NET_MARGIN_S;
+    return ttl < 1 ? 1 : ttl;
+}
+
+/* --------------------------------------------------------------------- */
 /* rendering                                                             */
 /* --------------------------------------------------------------------- */
 
-static void render_prompt(cJSON *p) {
-    const char *broker = cJSON_GetStringValue(cJSON_GetObjectItem(p, "broker"));
-    const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(p, "action"));
-    const char *symbol = cJSON_GetStringValue(cJSON_GetObjectItem(p, "symbol"));
-    const char *thesis = cJSON_GetStringValue(cJSON_GetObjectItem(p, "thesis"));
-    int shares = cJSON_GetObjectItem(p, "shares")->valueint;
-    double notional = cJSON_GetObjectItem(p, "notional_usd")->valuedouble;
-
+static void render_prompt(char *f[CANON_FIELDS], const char *thesis) {
     char l1[24], l2[24], l3[24], l4[24];
-    snprintf(l1, sizeof(l1), "[%s]", broker ? broker : "?");
-    snprintf(l2, sizeof(l2), "%s %s", action ? action : "?", symbol ? symbol : "?");
-    snprintf(l3, sizeof(l3), "%d sh $%.0f", shares, notional);
+    snprintf(l1, sizeof(l1), "[%s]", f[CF_BROKER]);
+    snprintf(l2, sizeof(l2), "%s %s", f[CF_ACTION], f[CF_SYMBOL]);
+    snprintf(l3, sizeof(l3), "%s sh $%.0f", f[CF_SHARES], strtod(f[CF_NOTIONAL], NULL));
     snprintf(l4, sizeof(l4), "%.20s", thesis ? thesis : "");
 
     lcd_clear();
@@ -466,37 +521,50 @@ static void sign_and_respond(const char *intent_id, const char *canonical,
 static void handle_prompt(cJSON *p) {
     const char *id     = cJSON_GetStringValue(cJSON_GetObjectItem(p, "intent_id"));
     const char *canon  = cJSON_GetStringValue(cJSON_GetObjectItem(p, "canonical"));
-    const char *broker = cJSON_GetStringValue(cJSON_GetObjectItem(p, "broker"));
-    const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(p, "action"));
-    const char *symbol = cJSON_GetStringValue(cJSON_GetObjectItem(p, "symbol"));
-    int shares = cJSON_GetObjectItem(p, "shares")->valueint;
-    double notional = cJSON_GetObjectItem(p, "notional_usd")->valuedouble;
+    const char *thesis = cJSON_GetStringValue(cJSON_GetObjectItem(p, "thesis"));
     if (!id || !canon) return;
 
-    render_prompt(p);
+    char canon_buf[CANON_MAX];
+    char *f[CANON_FIELDS];
+    int ok = strlen(canon) < sizeof(canon_buf);
+    if (ok) {
+        strcpy(canon_buf, canon);
+        ok = parse_canonical(canon_buf, f) && strcmp(f[CF_INTENT_ID], id) == 0;
+    }
+    if (!ok) {
+        ESP_LOGW(TAG, "refusing %s: canonical malformed or bound to another intent", id);
+        lcd_clear();
+        lcd_puts(0, "!! REFUSED !!");
+        lcd_puts(1, "bad prompt");
+        lcd_flush();
+        wait_key(2000);
+        passbook_append('R', "?", "malformed canonical");
+        return;
+    }
 
-    /* TTL: parse expires_at against NTP-synced clock; skeleton uses 60s. */
-    int seconds_left = 60;
+    render_prompt(f, thesis);
 
+    int ttl_ms = prompt_ttl_seconds(p) * 1000;
     key_t k;
-    while ((k = wait_key(seconds_left * 1000)) != KEY_NONE) {
+    while ((k = wait_key(ttl_ms)) != KEY_NONE) {
         if (k == KEY_RIGHT || k == KEY_LEFT) break;
         /* KEY_CENTER = detail view (TODO); UP/DOWN ignored in prompt mode. */
     }
 
     char pb_line[PASSBOOK_LINE_LEN];
-    snprintf(pb_line, sizeof(pb_line), "%s %s %dsh $%.0f",
-             action ? action : "?", symbol ? symbol : "?", shares, notional);
+    snprintf(pb_line, sizeof(pb_line), "%s %s %ssh $%.0f",
+             f[CF_ACTION], f[CF_SYMBOL], f[CF_SHARES], strtod(f[CF_NOTIONAL], NULL));
 
+    /* canon (the untouched JSON string) is signed; f[] points into a copy of it. */
     if (k == KEY_RIGHT) {
         sign_and_respond(id, canon, 1);
-        passbook_append('A', broker ? broker : "?", pb_line);
+        passbook_append('A', f[CF_BROKER], pb_line);
     } else if (k == KEY_LEFT) {
         sign_and_respond(id, canon, 0);
-        passbook_append('D', broker ? broker : "?", pb_line);
+        passbook_append('D', f[CF_BROKER], pb_line);
     } else {
         ESP_LOGI(TAG, "no tap; letting %s expire", id);
-        passbook_append('X', broker ? broker : "?", pb_line);
+        passbook_append('X', f[CF_BROKER], pb_line);
     }
 }
 
@@ -520,7 +588,11 @@ static void poll_loop(void) {
         int status = http_get(url, &rx);
         int handled_any = 0;
 
-        if (status == 200) {
+        if (status == 401) {
+            ESP_LOGE(TAG, "shim rejected auth — set TRADECARD_SHIM_TOKEN in menuconfig");
+        } else if (status == 200 && rx.truncated) {
+            ESP_LOGE(TAG, "pending list exceeded %d bytes; prompts dropped", HTTP_RX_BUF);
+        } else if (status == 200) {
             cJSON *root = cJSON_Parse(rxbuf);
             if (root) {
                 cJSON *prompts = cJSON_GetObjectItem(root, "prompts");

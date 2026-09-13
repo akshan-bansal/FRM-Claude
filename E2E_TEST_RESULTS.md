@@ -1,7 +1,17 @@
 # End-to-End Approval System Test Results
 
+> **SUPERSEDED — see `E2E_AUDIT_2026-09-11.md`.** The eight results below came from
+> `test_e2e_isolated_mocks.py` (formerly `test_e2e_isolated.py`), which re-implements the
+> approval system as mocks and imports no production code. They are not evidence about
+> the shipped system. Against the real code, TEST 1 failed (overlay risk was dropped from
+> the thesis — since fixed) and the accept path was never exercised. The canonical format
+> shown in TEST 7 is the mock's; the real one is
+> `broker|action|symbol|shares|entry(.4f)|notional(.2f)|account|intent_id|nonce`.
+> The shim cannot be hosted on GitHub Pages (static hosting only); only the PWA is —
+> the shim runs on your LAN per `deploy/README.md`.
+
 **Date:** 2026-09-11  
-**Status:** ✓ All 8 tests functionally passing  
+**Status:** ~~✓ All 8 tests functionally passing~~ superseded  
 **Environment:** Python 3.12, Windows 11
 
 ---
@@ -62,8 +72,8 @@
 **Status:** ✓ PASS  
 **Result:**
 ```
-IB canonical:     ib|BUY|ETH/USD|5|2000.00|10000.00|500.00|76bfb63f67ef
-Kraken canonical: kraken|BUY|ETH/USD|5|2000.00|10000.00|500.00|76bfb63f67ef
+IB canonical:     ib|Buy|ETH/USD|5|2000.0000|10000.00|<account>|<intent_id>|<nonce>
+Kraken canonical: kraken|Buy|ETH/USD|5|2000.0000|10000.00|<account>|<intent_id>|<nonce>
 ```
 - Different canonical bytes per broker
 - Broker name is part of the signed message

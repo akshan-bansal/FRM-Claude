@@ -420,12 +420,15 @@ class SqliteApprovalStore:
 
         with self._lock:
             now = datetime.now(UTC).isoformat()
-            self._conn.execute(
+            cur = self._conn.execute(
                 "UPDATE intents SET verdict = ?, consumed = 1, "
                 "resolved_at = ?, signer_card_id = ? "
                 "WHERE intent_id = ? AND verdict IS NULL",
                 (decision, now, card_id, intent_id),
             )
+            if cur.rowcount != 1:
+                log.warning("approval.response_replay", intent_id=intent_id)
+                return False
             ev = self._events.pop(intent_id, None)
             if ev is not None:
                 ev.set()

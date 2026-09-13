@@ -146,6 +146,32 @@ def test_place_order_still_refuses_without_credentials_even_when_enabled() -> No
         b.place_order(order)
 
 
+@pytest.mark.parametrize(("qty", "wire"), [
+    (0.00000005, "0.00000005"),   # 5 sats — str(float) would send "5e-08"
+    (0.000000005, "0.000000005"),
+    (0.05, "0.05"),
+    (2.0, "2"),
+])
+def test_place_order_sends_plain_decimal_volume(
+    qty: float, wire: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_live_claude.brokers.kraken as kraken_mod
+
+    sent: dict = {}
+
+    def fake_private_post(path, *, key, secret, data, client):
+        sent.update(data)
+        return {"txid": []}
+
+    monkeypatch.setattr(kraken_mod, "private_post", fake_private_post)
+    order = Order(symbol="BTC/USD", symbolId=0, action=OrderAction.BUY,
+                  orderType=OrderType.LIMIT, totalQuantity=qty, limitPrice=0.00004)
+    with KrakenBroker(api_key="k", api_secret="s", enable_live_orders=True) as b:
+        b.place_order(order)
+    assert sent["volume"] == wire
+    assert sent["price"] == "0.00004"
+
+
 def test_cancel_order_is_also_gated_off_by_default() -> None:
     """Cancels are only meaningful when there is something to cancel; the gate applies to both."""
     from trading_live_claude.brokers.base import BrokerError
