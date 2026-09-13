@@ -37,6 +37,7 @@ from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
 from trading_live_claude.brokers.kraken import KrakenBroker
 from trading_live_claude.brokers.fresh import guard_feed
 from trading_live_claude.brokers.paper import PaperBroker
+from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.kraken_ohlc import kraken_ohlc
@@ -170,6 +171,7 @@ def main() -> None:
               "Authorization: Bearer <token> on every request.", flush=True)
 
     market = MarketData(exec_broker, cache=CandleCache(settings.data_cache_dir))
+    getattr(router, "inner", router).position_cap_pct_for = position_cap_for(settings, market)
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
 
     # Build the per-symbol strategy map from CRYPTO_SLEEVE. The MAIN strategy is a fallback for any

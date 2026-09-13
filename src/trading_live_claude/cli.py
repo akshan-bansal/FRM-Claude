@@ -19,6 +19,7 @@ from .backtest import BacktestEngine
 from .brokers import PaperBroker, QuestradeBroker
 from .venues import market_open
 from .brokers.fresh import guard_feed
+from .risk.position_cap import position_cap_for
 from .brokers.base import Broker
 from .config import get_settings
 from .daemon import AutonomousDaemon
@@ -296,6 +297,7 @@ def signal(
         daily_loss_limit_pct=settings.daily_loss_limit_pct,
         max_open_positions=settings.max_open_positions,
         min_ticket_usd=settings.min_ticket_usd,
+        position_cap_pct_for=position_cap_for(settings, market) if paper else None,
     )
 
     alerter = Alerter(
@@ -481,6 +483,7 @@ def paper(
         daily_loss_limit_pct=settings.daily_loss_limit_pct,
         max_open_positions=settings.max_open_positions,
         min_ticket_usd=settings.min_ticket_usd,
+        position_cap_pct_for=position_cap_for(settings, market),
     )
     monitor = LiveMonitor(
         broker=pb,

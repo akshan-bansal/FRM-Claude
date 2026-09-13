@@ -58,6 +58,7 @@ from trading_live_claude.venues import currency_of, market_open
 from trading_live_claude.brokers.fresh import guard_feed
 from trading_live_claude.brokers.fx import CurrencyNormalizingBroker, ib_spot_rates
 from trading_live_claude.brokers.paper import PaperBroker
+from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.market import MarketData
@@ -387,6 +388,7 @@ def main() -> None:
               "Authorization: Bearer <token> on every request.", flush=True)
 
     market = MarketData(exec_broker, cache=CandleCache(cache_dir))
+    getattr(router, "inner", router).position_cap_pct_for = position_cap_for(settings, market)
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
 
     sym_list = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]

@@ -100,16 +100,19 @@ class CurrencyNormalizingBroker:
         rates: FxRates,
         *,
         currency_for: Callable[[str], str] = currency_of,
+        multiplier_for: Callable[[str], float] = lambda _s: 1.0,
     ) -> None:
         self.inner = inner
         self.rates = rates
         self.name = inner.name
         self.venue: str = getattr(inner, "venue", inner.name)
         self._currency_for = currency_for
+        self._multiplier_for = multiplier_for
 
     def _factor(self, symbol: str) -> float:
+        """FX rate x contract multiplier: price of one tradeable unit in the numeraire."""
         try:
-            return self.rates.rate(self._currency_for(symbol))
+            return self.rates.rate(self._currency_for(symbol)) * self._multiplier_for(symbol)
         except FxUnavailable as e:
             raise StaleQuote(symbol, (str(e),)) from e
 

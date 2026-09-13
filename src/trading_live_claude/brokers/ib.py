@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -170,6 +170,9 @@ class IBBroker(Broker):
         self._account = account
         self._enable_live_orders = enable_live_orders
         self._readonly = readonly_market_data
+        # "/ROOT" symbols resolve to (conId, root, exchange, currency) of the contract currently in
+        # play; set by the caller from a FuturesBook.
+        self.futures_contract_for: Callable[[str], tuple[int, str, str, str] | None] | None = None
         self._ib: Any = None                    # lazy-imported ib_insync.IB() instance
         self._connected = False
         # News feed state (see subscribe_news / drain_news). Bounded so a burst can't grow
@@ -273,7 +276,8 @@ class IBBroker(Broker):
         """Live stock tickers routed to each symbol's listing venue; ``quote_contract`` for other types."""
         ib = self._require_ib()
         from ib_insync import Stock              # local import so module import stays lightweight
-        contracts = [Stock(*_infer_stock_venue(s)) for s in symbols]
+        contracts = [self._futures_contract(s) if s.startswith("/") else Stock(*_infer_stock_venue(s))
+                     for s in symbols]
         tickers = ib.reqTickers(*contracts)
         out: list[Quote] = []
         for sym, t in zip(symbols, tickers, strict=True):
@@ -284,6 +288,23 @@ class IBBroker(Broker):
                 lastTradePrice=float(t.last) if t.last and t.last > 0 else None,
             ))
         return out
+
+    def _futures_resolution(self, symbol: str) -> tuple[int, str, str, str]:
+        resolved = self.futures_contract_for(symbol) if self.futures_contract_for else None
+        if resolved is None:
+            raise BrokerError(f"IBBroker: no active futures contract registered for {symbol}")
+        return resolved
+
+    def _futures_contract(self, symbol: str) -> Any:
+        from ib_insync import Contract
+        con_id, _root, exchange, currency = self._futures_resolution(symbol)
+        return Contract(conId=con_id, exchange=exchange, currency=currency)
+
+    def futures_contract_details(self, root: str, exchange: str, currency: str = "") -> list[Any]:
+        """Listed (unexpired) contracts for ``root`` on ``exchange`` — read-only discovery."""
+        ib = self._require_ib()
+        from ib_insync import Future
+        return list(ib.reqContractDetails(Future(root, exchange=exchange, currency=currency)))
 
     def quote_contract(self, contract: IBContract) -> Quote:
         """Full-fidelity quote for a specific IBContract — bonds, futures, options, forex."""
@@ -305,7 +326,12 @@ class IBBroker(Broker):
         from ib_insync import Stock
         duration_days = max(1, (end - start).days)
         bar_size = _interval_to_ib_bar_size(interval)
-        contract = Stock(*_infer_stock_venue(symbol))
+        if symbol.startswith("/"):
+            from ib_insync import ContFuture
+            _con_id, root, exchange, currency = self._futures_resolution(symbol)
+            contract: Any = ContFuture(root, exchange, currency=currency)
+        else:
+            contract = Stock(*_infer_stock_venue(symbol))
         bars = ib.reqHistoricalData(
             contract, endDateTime=end.strftime("%Y%m%d %H:%M:%S"),
             durationStr=f"{duration_days} D", barSizeSetting=bar_size,
@@ -548,6 +574,8 @@ class IBBroker(Broker):
                 "for simulated fills, or construct with enable_live_orders=True after the human "
                 "go-live confirmation."
             )
+        if order.symbol.startswith("/"):
+            raise OrderRejected("IBBroker: live futures orders are not implemented; paper only.")
         ib = self._require_ib()
         from ib_insync import LimitOrder, MarketOrder, Stock
 

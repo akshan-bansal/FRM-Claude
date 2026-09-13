@@ -113,6 +113,15 @@ class Settings(BaseSettings):
     # equity. Weighted variant (by inverse relative vol) deferred to a follow-up.
     max_position_notional_pct: float = Field(default=0.50, ge=0.01, le=1.0)
 
+    # Dynamic per-name cap (risk/position_cap.py), paper paths only. 'vol_scaled': cap =
+    # max_position_notional_pct x position_cap_ref_vol / realised vol (higher of 20d/60d),
+    # clipped to [floor, ceiling]; unknown vol gets the floor. 'static': the flat cap above.
+    # The cap also counts notional already held in the name.
+    position_cap_mode: Literal["static", "vol_scaled"] = "vol_scaled"
+    position_cap_ref_vol: float = Field(default=0.20, gt=0.0, le=2.0)
+    position_cap_floor_pct: float = Field(default=0.05, gt=0.0, le=1.0)
+    position_cap_ceiling_pct: float = Field(default=0.75, gt=0.0, le=1.0)
+
     # Router-level intra-day forced-exit trigger (2026-09-08). Independent of the
     # strategy's own exit bar. When a position's unrealized loss exceeds N × ATR_at_entry,
     # Router.check_forced_exits emits a close intent on the next monitor poll. Runs on
@@ -158,6 +167,8 @@ class Settings(BaseSettings):
     max_spread_bps_crypto: float = Field(default=30.0, gt=0.0)
     board_lots: dict[str, int] = Field(default_factory=dict)
     corr_lead_lag: int = Field(default=1, ge=0, le=5)
+    # Futures roll: business days before the earlier of last trade and contract-month start.
+    futures_roll_bdays: int = Field(default=5, ge=1, le=30)
 
     default_strategy: str = "ema_crossover"
     default_symbols: str = "AAPL,MSFT,SHOP.TO,XIC.TO"
@@ -219,6 +230,10 @@ _TRADING_KNOB_FIELDS: tuple[str, ...] = (
     "min_ticket_usd",
     "max_gross_leverage",
     "max_position_notional_pct",
+    "position_cap_mode",
+    "position_cap_ref_vol",
+    "position_cap_floor_pct",
+    "position_cap_ceiling_pct",
     "force_exit_atr_mult",
     "on_size_cap_breach",
     "stale_quote_frozen_s",
@@ -234,6 +249,7 @@ _TRADING_KNOB_FIELDS: tuple[str, ...] = (
     "max_spread_bps_crypto",
     "board_lots",
     "corr_lead_lag",
+    "futures_roll_bdays",
     "default_strategy",
     "default_symbols",
     "timezone",

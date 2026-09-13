@@ -119,7 +119,7 @@ class SessionRouter:
         equity: float,
         existing_risk: float,
         open_positions: int,
-        current_open_notional: float = 0.0,
+        current_open_notional: float | None = None,
     ) -> Order | None:
         now = self._clock()
         venue, _ = venue_for(intent.symbol)
@@ -132,8 +132,12 @@ class SessionRouter:
                            current_open_notional=current_open_notional)
 
     def _enqueue(self, intent: OrderIntent, venue: Venue, is_exit: bool, now: datetime) -> None:
-        release_at = venue.next_tradeable_start(now, open_buffer_min=self.cfg.open_buffer_min,
-                                                close_buffer_min=self.cfg.close_buffer_min)
+        try:
+            release_at = venue.next_tradeable_start(now, open_buffer_min=self.cfg.open_buffer_min,
+                                                    close_buffer_min=self.cfg.close_buffer_min)
+        except ValueError as e:
+            self._reject(intent, [f"no upcoming session: {e}"])
+            return
         key = (intent.symbol, intent.action.value)
         replaced = key in self.queue
         self.queue[key] = QueuedIntent(intent, is_exit, now, release_at,
@@ -143,7 +147,7 @@ class SessionRouter:
 
     def _route(self, intent: OrderIntent, venue: Venue, is_exit: bool, *, equity: float,
                existing_risk: float, open_positions: int,
-               current_open_notional: float) -> Order | None:
+               current_open_notional: float | None) -> Order | None:
         if not is_exit:
             try:
                 q = self.broker.quote(intent.symbol)
@@ -179,7 +183,7 @@ class SessionRouter:
     # ----- release ---------------------------------------------------------
 
     def release_due(self, *, equity: float, existing_risk: float, open_positions: int,
-                    current_open_notional: float = 0.0) -> list[Order]:
+                    current_open_notional: float | None = None) -> list[Order]:
         now = self._clock()
         placed: list[Order] = []
         for key, item in list(self.queue.items()):
@@ -228,9 +232,13 @@ class SessionRouter:
         wakes = [q.release_at for q in self.queue.values()]
         venues = {venue_for(s)[0] for s in symbols}
         if not any(self._tradeable(v, now) for v in venues):
-            wakes += [v.next_tradeable_start(now, open_buffer_min=self.cfg.open_buffer_min,
-                                             close_buffer_min=self.cfg.close_buffer_min)
-                      for v in venues]
+            for v in venues:
+                try:
+                    wakes.append(v.next_tradeable_start(
+                        now, open_buffer_min=self.cfg.open_buffer_min,
+                        close_buffer_min=self.cfg.close_buffer_min))
+                except ValueError:
+                    continue
         future = [w for w in wakes if w > now]
         if not future:
             return None

@@ -83,9 +83,11 @@ class LiveMonitor:
         strategy_risk: bool = False,
         market_open_for: Callable[[str], bool] | None = None,
         corr_lead_lag: int = 0,
+        roll_futures: Callable[..., None] | None = None,
     ) -> None:
         self.market_open_for = market_open_for
         self.corr_lead_lag = corr_lead_lag
+        self.roll_futures = roll_futures
         self.broker = broker
         self.market = market
         self.strategy = strategy
@@ -266,6 +268,13 @@ class LiveMonitor:
             pos_risk[sym] = per_trade_risk(qty, px, stop_distance=px * 0.02, returns=rets, model=self.risk_model)
         existing_risk = portfolio_risk(pos_risk, pos_rets, method=self.heat_aggregation,
                                        lead_lag=self.corr_lead_lag)
+
+        if self.roll_futures is not None:
+            try:
+                self.roll_futures(equity=equity, existing_risk=existing_risk,
+                                  open_positions=len(open_positions))
+            except Exception as e:                         # pragma: no cover — never break the poll
+                log.warning("monitor.futures_roll.failed", error=str(e))
 
         release_due = getattr(self.router, "release_due", None)
         if release_due is not None:

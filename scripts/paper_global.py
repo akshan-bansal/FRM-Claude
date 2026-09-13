@@ -11,7 +11,9 @@ Nothing touches a real account.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -38,7 +40,9 @@ from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.market import MarketData
 from trading_live_claude.execution.router import Router
 from trading_live_claude.execution.scheduler import MicrostructureConfig, SessionRouter
+from trading_live_claude.futures import FuturesBook, make_roller, spec_from_ib_details
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
+from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.risk.sizing import PositionSizer
 from trading_live_claude.strategies import STRATEGIES
 from trading_live_claude.venues import market_open, venue_for
@@ -64,6 +68,8 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=300)
     ap.add_argument("--paper-equity", type=float, default=100_000.0)
     ap.add_argument("--iterations", type=int, default=0)
+    ap.add_argument("--futures", default="",
+                    help="Path to config/futures_universe.json from discover_futures.py; enabled rows trade.")
     ap.add_argument("--fill-model", dest="fill_model", choices=("touch", "mid"), default="touch",
                     help="touch = buys at ask / sells at bid (default); mid = legacy mid-price fills.")
     args = ap.parse_args()
@@ -79,8 +85,8 @@ def main() -> None:
     if any("/" in s for s in equities) or any("/" not in s for s in crypto):
         raise SystemExit("--equities takes stock symbols and --crypto takes BASE/QUOTE pairs.")
     symbols = equities + crypto
-    if not symbols:
-        raise SystemExit("Nothing to trade: pass --equities and/or --crypto.")
+    if not symbols and not args.futures:
+        raise SystemExit("Nothing to trade: pass --equities, --crypto and/or --futures.")
 
     port = settings.ib_paper_port if settings.ib_use_paper else settings.ib_live_port
     ib = IBBroker(host=settings.ib_host, port=port, client_id=settings.ib_client_id,
@@ -89,13 +95,38 @@ def main() -> None:
     kraken = KrakenBroker(enable_live_orders=False)
     routed = VenueRoutedFeed({"CRYPTO": kraken}, default=ib)
 
+    book = FuturesBook(roll_bdays=settings.futures_roll_bdays)
+    futures_rows: list[dict] = []
+    if args.futures:
+        accounts = ib._require_ib().managedAccounts()
+        if not accounts or not all(a.startswith("DU") for a in accounts):
+            raise SystemExit("[global-paper] refusing futures: TWS is not a paper (DU*) login.")
+        futures_rows = [r for r in json.loads(Path(args.futures).read_text(encoding="utf-8"))["contracts"]
+                        if r.get("enabled")]
+
+    def refresh_futures() -> None:
+        for row in futures_rows:
+            spec = spec_from_ib_details(
+                ib.futures_contract_details(row["root"], row["exchange"], row["currency"]),
+                symbol=row["symbol"])
+            if spec is None:
+                print(f"[global-paper] {row['symbol']}: no listed contracts; skipped", flush=True)
+                continue
+            book.add(spec)
+
+    refresh_futures()
+    ib.futures_contract_for = book.contract_for
+    futures = sorted(book.specs)
+    symbols = symbols + futures
+
     validations = validate_sleeve(routed, symbols)
     print(format_validation_banner(validations), flush=True)
     refuse_launch_on_hard_failures(validations)
 
     rates = ib_spot_rates(ib, numeraire, ttl_s=settings.fx_rate_ttl_s,
                           max_age_s=settings.fx_max_rate_age_s)
-    price_feed = CurrencyNormalizingBroker(guard_feed(routed, settings), rates)
+    price_feed = CurrencyNormalizingBroker(guard_feed(routed, settings), rates,
+                                           multiplier_for=book.multiplier_for)
     exec_broker = PaperBroker(feed=price_feed, starting_equity=args.paper_equity,
                               journal_dir=Path(settings.state_dir), fill_model=args.fill_model)
     exec_account = exec_broker.accounts()[0].number
@@ -135,6 +166,7 @@ def main() -> None:
 
     market = MarketData(exec_broker,
                         cache=CandleCache(Path(settings.data_cache_dir) / f"numeraire_{numeraire}"))
+    inner.position_cap_pct_for = position_cap_for(settings, market)
     venues = sorted({venue_for(s)[0].code for s in symbols})
     print(f"[global-paper] PAPER. session_id={exec_broker.session_id} "
           f"equity={args.paper_equity:,.0f} {numeraire} fills={args.fill_model} venues={venues}",
@@ -142,6 +174,24 @@ def main() -> None:
     print(f"[global-paper] {len(equities)} equities via IB {settings.ib_host}:{port}, "
           f"{len(crypto)} crypto pairs via Kraken; FX via IB spot. Real accounts untouched.",
           flush=True)
+
+    roller = make_roller(
+        book, exec_broker, router, account_number=exec_account,
+        is_tradeable=lambda s: venue_for(s)[0].tradeable(
+            open_buffer_min=settings.scheduler_open_buffer_min,
+            close_buffer_min=settings.scheduler_close_buffer_min))
+    last_refresh = [time.monotonic()]
+
+    def roll(**gates: float) -> None:
+        # IB liquidHours only cover about a week ahead; re-pull specs twice a day.
+        if time.monotonic() - last_refresh[0] > 12 * 3600:
+            refresh_futures()
+            last_refresh[0] = time.monotonic()
+        roller(**gates)
+
+    if futures:
+        print(f"[global-paper] futures: {', '.join(f'{s}={book.current[s].local_symbol}' for s in futures if s in book.current)}",
+              flush=True)
 
     def _emit(ev: MonitorEvent) -> None:
         state = "NEW" if ev.is_transition else f"persisting ({ev.poll_count})"
@@ -164,6 +214,7 @@ def main() -> None:
         heat_aggregation=settings.heat_aggregation,
         market_open_for=market_open,
         corr_lead_lag=settings.corr_lead_lag,
+        roll_futures=roll if futures else None,
     )
     try:
         monitor.run_forever(max_iterations=args.iterations or None)

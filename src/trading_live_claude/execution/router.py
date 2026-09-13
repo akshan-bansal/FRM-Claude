@@ -18,6 +18,7 @@ Constructing ``Router(mode="live"|"autonomous", ...)`` directly raises
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,8 +86,12 @@ class Router:
         max_position_notional_pct: float = 0.50,
         force_exit_atr_mult: float = 3.0,
         on_size_cap_breach: Literal["trim", "reject"] = "trim",
+        position_cap_pct_for: Callable[[str], float] | None = None,
         _confirmed: bool = False,
     ) -> None:
+        # Per-name notional cap as a function of the symbol (e.g. volatility-scaled); falls back
+        # to the flat max_position_notional_pct when not supplied.
+        self.position_cap_pct_for = position_cap_pct_for
         if mode in {"live", "autonomous"} and not _confirmed:
             raise LiveModeNotConfirmed(
                 f"Construct Router for mode={mode!r} via Router.confirm_live(...) or "
@@ -200,6 +205,27 @@ class Router:
 
     # ----- risk gates ---------------------------------------------------------
 
+    def _position_cap_pct(self, symbol: str) -> float:
+        if self.position_cap_pct_for is None:
+            return self.max_position_notional_pct
+        return float(self.position_cap_pct_for(symbol))
+
+    def _book_notional(self, account: str, symbol: str) -> tuple[float, float] | None:
+        """``(open notional, notional already held in symbol)`` from the broker's positions."""
+        try:
+            positions = self.broker.positions(account)
+        except Exception as e:
+            log.warning("router.positions_unavailable", error=str(e))
+            return None
+        total = held = 0.0
+        for p in positions:
+            price = float(getattr(p, "currentPrice", 0.0) or getattr(p, "averageEntryPrice", 0.0) or 0.0)
+            n = abs(float(p.openQuantity)) * price
+            total += n
+            if p.symbol == symbol:
+                held += n
+        return total, held
+
     def _gate(
         self,
         intent: OrderIntent,
@@ -207,7 +233,7 @@ class Router:
         equity: float,
         existing_risk: float,
         open_positions: int,
-        current_open_notional: float = 0.0,
+        current_open_notional: float | None = None,
     ) -> GateDecision:
         reasons: list[str] = []
 
@@ -265,16 +291,24 @@ class Router:
         # In 'reject' mode, the old behavior of appending a rejection reason. Kept as
         # an option for cases where any breach of the cap is a genuine "don't trade"
         # signal (e.g., misconfigured allocator) rather than a "trim to fit" one.
+        book = self._book_notional(intent.account_number, intent.symbol)
+        if intent.action == OrderAction.BUY and book is None and current_open_notional is None:
+            reasons.append("open notional unavailable: positions could not be read")
+            book = (0.0, 0.0)
+        book_open, held_in_symbol = book or (0.0, 0.0)
+        if current_open_notional is None:
+            current_open_notional = book_open
         if intent.action == OrderAction.BUY and equity > 0 and intent.entry > 0:
-            symbol_pct = notional / equity
+            cap_pct = self._position_cap_pct(intent.symbol)
+            symbol_pct = (held_in_symbol + notional) / equity
             gross_leverage = (current_open_notional + notional) / equity
-            symbol_over = symbol_pct > self.max_position_notional_pct
+            symbol_over = symbol_pct > cap_pct
             leverage_over = gross_leverage > self.max_gross_leverage
 
             if symbol_over or leverage_over:
                 if self.on_size_cap_breach == "trim":
                     # Compute the max notional that fits BOTH caps. Take the tighter.
-                    symbol_max_notional = equity * self.max_position_notional_pct
+                    symbol_max_notional = max(0.0, equity * cap_pct - held_in_symbol)
                     leverage_max_notional = max(
                         0.0, equity * self.max_gross_leverage - current_open_notional
                     )
@@ -304,7 +338,7 @@ class Router:
                                      original_notional=notional,
                                      trimmed_notional=trimmed_shares * intent.entry,
                                      reason=(
-                                         f"symbol_cap={symbol_pct:.1%}>{self.max_position_notional_pct:.1%}"
+                                         f"symbol_cap={symbol_pct:.1%}>{cap_pct:.1%}"
                                          if symbol_over else
                                          f"leverage={gross_leverage:.2f}x>{self.max_gross_leverage:.2f}x"
                                      ))
@@ -321,7 +355,7 @@ class Router:
                     # Reject mode — preserve the pre-2026-09-09 gate behavior.
                     if symbol_over:
                         reasons.append(
-                            f"single-name notional {symbol_pct:.1%} > cap {self.max_position_notional_pct:.1%}"
+                            f"single-name notional {symbol_pct:.1%} > cap {cap_pct:.1%}"
                         )
                     if leverage_over:
                         reasons.append(
@@ -406,7 +440,7 @@ class Router:
         equity: float,
         existing_risk: float,
         open_positions: int,
-        current_open_notional: float = 0.0,
+        current_open_notional: float | None = None,
     ) -> Order | None:
         decision = self._gate(
             intent, equity=equity, existing_risk=existing_risk, open_positions=open_positions,
@@ -488,6 +522,7 @@ class Router:
         max_position_notional_pct: float = 0.50,
         force_exit_atr_mult: float = 3.0,
         on_size_cap_breach: Literal["trim", "reject"] = "trim",
+        position_cap_pct_for: Callable[[str], float] | None = None,
     ) -> "Router":
         journal = OrderJournal(state_dir)
         ks = KillSwitch(state_dir, max_drawdown_pct=max_drawdown_pct, daily_loss_limit_pct=daily_loss_limit_pct)
@@ -531,5 +566,6 @@ class Router:
             journal=journal,
             kill_switch=ks,
             heat=heat,
+            position_cap_pct_for=position_cap_pct_for,
             **gate_kwargs,
         )

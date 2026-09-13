@@ -60,10 +60,11 @@ class Venue:
         now = ts or datetime.now(UTC)
         if self.always_open:
             return now
-        for start, end in self._windows(now - timedelta(days=1), open_buffer_min, close_buffer_min):
+        for start, end in sorted(self._windows(now - timedelta(days=1), open_buffer_min,
+                                               close_buffer_min)):
             if now < end:
                 return max(start, now)
-        raise ValueError(f"{self.code}: no session in the next 8 days")
+        raise ValueError(f"{self.code}: no known upcoming session")
 
 
 @cache
@@ -101,8 +102,32 @@ _SUFFIXES: tuple[tuple[str, str], ...] = (
 )
 
 
+@dataclass(frozen=True)
+class DatedVenue(Venue):
+    """A venue whose sessions are explicit UTC windows (e.g. a futures contract's IB liquidHours)."""
+
+    windows: tuple[tuple[datetime, datetime], ...] = ()
+
+    def _windows(self, ts: datetime, open_buffer_min: float, close_buffer_min: float,
+                 ) -> list[tuple[datetime, datetime]]:
+        ob, cb = timedelta(minutes=open_buffer_min), timedelta(minutes=close_buffer_min)
+        return [(s + ob, e - cb) for s, e in self.windows if e - cb > s + ob]
+
+
+_FUTURES: dict[str, Venue] = {}
+# An unregistered /ROOT has no sessions, so it can never trade: fail closed rather than guess.
+_UNREGISTERED_FUTURE = Venue("FUT", "", "USD", "UTC", lot_size=None)
+
+
+def register_futures_venue(symbol: str, venue: Venue) -> None:
+    _FUTURES[symbol.upper()] = venue
+
+
 def venue_for(symbol: str) -> tuple[Venue, str]:
-    """``(venue, ib_symbol)``. Unsuffixed tickers are US; ``BASE/QUOTE`` pairs are 24/7 crypto."""
+    """``(venue, ib_symbol)``. ``/ROOT`` = registered future; ``BASE/QUOTE`` = 24/7 crypto;
+    unsuffixed tickers = US stocks."""
+    if symbol.startswith("/"):
+        return _FUTURES.get(symbol.upper(), _UNREGISTERED_FUTURE), symbol[1:]
     if "/" in symbol:
         return VENUES["CRYPTO"], symbol
     up = symbol.upper()
@@ -116,7 +141,7 @@ def venue_for(symbol: str) -> tuple[Venue, str]:
 
 
 def currency_of(symbol: str) -> str:
-    if "/" in symbol:
+    if "/" in symbol and not symbol.startswith("/"):
         return symbol.split("/", 1)[1].upper()
     return venue_for(symbol)[0].currency
 
