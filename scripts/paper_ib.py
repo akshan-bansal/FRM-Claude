@@ -54,6 +54,7 @@ if sys.platform == "win32":
 from trading_live_claude.brokers.base import Broker
 from trading_live_claude.brokers.ib import IBBroker
 from trading_live_claude.brokers.ib_web import CPGatewayAuth, IBWebBroker
+from trading_live_claude.brokers.fresh import guard_feed
 from trading_live_claude.brokers.paper import PaperBroker
 from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
@@ -317,7 +318,7 @@ def main() -> None:
     settings = get_settings()
     feed, tickle = _build_ib_feed(args, settings)
 
-    exec_broker = PaperBroker(feed=feed, starting_equity=args.paper_equity,
+    exec_broker = PaperBroker(feed=guard_feed(feed, settings), starting_equity=args.paper_equity,
                               journal_dir=Path(settings.state_dir))
     exec_account = exec_broker.accounts()[0].number
     print(f"[ib-paper] PAPER mode. session_id={exec_broker.session_id} "

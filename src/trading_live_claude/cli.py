@@ -17,6 +17,7 @@ from rich.table import Table
 from .analysis import build_signal_matrix, render_matrix_markdown
 from .backtest import BacktestEngine
 from .brokers import PaperBroker, QuestradeBroker
+from .brokers.fresh import guard_feed
 from .brokers.base import Broker
 from .config import get_settings
 from .daemon import AutonomousDaemon
@@ -264,7 +265,7 @@ def signal(
     exec_broker: Broker = broker
     exec_account = account_number
     if paper:
-        exec_broker = PaperBroker(feed=broker, starting_equity=paper_equity,
+        exec_broker = PaperBroker(feed=guard_feed(broker, settings), starting_equity=paper_equity,
                                   journal_dir=settings.state_dir)
         exec_account = exec_broker.accounts()[0].number
         console.print(f"[cyan]PAPER mode[/cyan] simulated broker, starting equity "
@@ -464,7 +465,8 @@ def paper(
     """Paper-trade against an in-memory broker fed by Questrade quotes."""
     settings = get_settings()
     feed = _make_questrade(settings)
-    pb = PaperBroker(feed=feed, starting_equity=starting_equity, journal_dir=settings.state_dir)
+    pb = PaperBroker(feed=guard_feed(feed, settings), starting_equity=starting_equity,
+                     journal_dir=settings.state_dir)
     market = MarketData(feed, cache=CandleCache(settings.data_cache_dir))
     strat = _strategy_or_die(strategy)
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
@@ -1525,7 +1527,8 @@ def place_order(
     feed = _make_questrade(settings)
     broker = feed
     if chosen_mode == "paper":
-        broker = PaperBroker(feed=feed, starting_equity=100_000.0, journal_dir=settings.state_dir)
+        broker = PaperBroker(feed=guard_feed(feed, settings), starting_equity=100_000.0,
+                             journal_dir=settings.state_dir)
 
     accounts = broker.accounts()
     if not accounts:

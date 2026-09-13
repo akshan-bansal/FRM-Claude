@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..logging_setup import get_logger
-from .base import Broker, OrderRejected
+from .base import Broker, OrderRejected, StaleQuote
 from .models import Account, Candle, Fill, Order, OrderAction, Position, Quote
 
 log = get_logger(__name__)
@@ -118,7 +118,12 @@ class PaperBroker(Broker):
         # order id as the (eventual) attempt. The alternative — only journaling successes — makes
         # a poll where the strategy fired but the broker declined invisible.
         order.id = next(self._order_counter)
-        quote = self._feed.quote(order.symbol)
+        try:
+            quote = self._feed.quote(order.symbol)
+        except StaleQuote as e:
+            self._journal_order(order, ref_price=None, accepted=False,
+                                rejected_reasons=[f"stale_quote: {'; '.join(e.reasons)}"])
+            raise OrderRejected(str(e)) from e
         ref_price = quote.mid or quote.lastTradePrice or order.limitPrice
         if ref_price is None or ref_price <= 0:
             self._journal_order(order, ref_price=None, accepted=False,
@@ -215,6 +220,8 @@ class PaperBroker(Broker):
                 try:
                     q = self._feed.quote(pos.symbol)
                     px = q.mid or q.lastTradePrice
+                except StaleQuote:
+                    continue    # keep the last good mark; the feed wrapper logs the episode once
                 except Exception as e:
                     log.warning("paper.mtm.quote_failed",
                                 symbol=pos.symbol, error=str(e))

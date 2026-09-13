@@ -26,9 +26,14 @@ heat_aggregation: corr              # how open positions combine for the heat ga
                                     #   corr = covariance-aware, credits diversification (default)
                                     #   sum  = naive total, correlation-blind
 daily_loss_limit_pct: 0.03          # -3% halts new entries today
-max_drawdown_kill_switch: 0.08      # -8% trips kill-switch automatically
+max_drawdown_kill_switch: 0.03      # -3% trips kill-switch automatically (tightened 2026-09-08)
 max_open_positions: 3
 min_ticket_usd: 100.0
+
+# === Stale-quote guard (paper feeds) ===
+stale_quote_frozen_s: 900           # quote unchanged this long = stale (0 disables)
+stale_quote_max_trade_age_s: 0      # last trade older than this = stale (0 disables; Questrade only)
+on_stale_quote: raise               # raise = skip symbol + reject paper fill | warn = log only
 
 # === Questrade target ===
 # practice | live. 'practice' = Questrade's free practice account; 'live' = real money.

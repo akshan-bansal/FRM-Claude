@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     # polls in a row — while a 50%-cap position would have been perfectly tradeable.
     on_size_cap_breach: Literal["trim", "reject"] = "trim"
 
+    # Stale-quote guard on paper feeds (brokers/fresh.py). A quote is stale when halted,
+    # delayed, priceless, crossed, unchanged for stale_quote_frozen_s, or (when set) its last
+    # trade is older than stale_quote_max_trade_age_s. 'raise' skips that symbol's entries/
+    # exits and rejects its paper fills; 'warn' only logs. 0 disables a check. 900s = three
+    # unchanged polls at the 300s cadence; equities read stale outside market hours by design.
+    stale_quote_frozen_s: float = Field(default=900.0, ge=0.0)
+    stale_quote_max_trade_age_s: float = Field(default=0.0, ge=0.0)
+    on_stale_quote: Literal["warn", "raise"] = "raise"
+
     default_strategy: str = "ema_crossover"
     default_symbols: str = "AAPL,MSFT,SHOP.TO,XIC.TO"
     timezone: str = "America/Toronto"
@@ -190,6 +199,9 @@ _TRADING_KNOB_FIELDS: tuple[str, ...] = (
     "max_position_notional_pct",
     "force_exit_atr_mult",
     "on_size_cap_breach",
+    "stale_quote_frozen_s",
+    "stale_quote_max_trade_age_s",
+    "on_stale_quote",
     "default_strategy",
     "default_symbols",
     "timezone",

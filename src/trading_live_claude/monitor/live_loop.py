@@ -18,7 +18,7 @@ from typing import cast
 
 import pandas as pd
 
-from ..brokers.base import Broker
+from ..brokers.base import Broker, StaleQuote
 from ..brokers.models import OrderAction
 from ..data.market import MarketData
 from ..execution.router import OrderIntent, Router
@@ -195,6 +195,12 @@ class LiveMonitor:
         positions = self.broker.positions(self.account_number)
         return {p.symbol: p.openQuantity for p in positions if p.openQuantity != 0}
 
+    def _last_mark(self, symbol: str) -> float:
+        for p in self.broker.positions(self.account_number):
+            if p.symbol == symbol:
+                return float(getattr(p, "currentPrice", 0.0) or getattr(p, "averageEntryPrice", 0.0) or 0.0)
+        return 0.0
+
     def step(self) -> list[MonitorEvent]:
         events: list[MonitorEvent] = []
         # If the broker supports live mark-to-market (PaperBroker does; QuestradeBroker gets fresh
@@ -215,8 +221,12 @@ class LiveMonitor:
         pos_risk: dict[str, float] = {}
         pos_rets: dict[str, pd.Series | None] = {}
         for sym, qty in open_positions.items():
-            q = self.broker.quote(sym)
-            px = q.mid or q.lastTradePrice or 0.0
+            try:
+                q = self.broker.quote(sym)
+                px = q.mid or q.lastTradePrice or 0.0
+            except StaleQuote:
+                # A zero price would drop this position out of the heat gate; count it at its last mark.
+                px = self._last_mark(sym)
             rets: pd.Series | None = None
             if self.risk_model != "atr" or self.heat_aggregation == "corr":
                 try:
@@ -237,7 +247,10 @@ class LiveMonitor:
             ctx = StrategyContext(symbol=symbol, timeframe="1d")
             signals = strat.generate_signals(df, ctx)
             last = signals.iloc[-1]
-            quote = self.broker.quote(symbol)
+            try:
+                quote = self.broker.quote(symbol)
+            except StaleQuote:
+                continue    # no entry or exit on a price that isn't moving; other symbols still run
             price = quote.mid or quote.lastTradePrice or float(last["close"])
 
             # Both entry-trigger channels (2026-09-09). ``entry`` is event-triggered —

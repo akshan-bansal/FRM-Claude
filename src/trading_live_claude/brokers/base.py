@@ -19,6 +19,15 @@ class OrderRejected(BrokerError):
     """Broker rejected the order (validation, insufficient funds, halted, etc.)."""
 
 
+class StaleQuote(BrokerError):
+    """A quote is frozen, halted, delayed, priceless or too old to fill or mark against."""
+
+    def __init__(self, symbol: str, reasons: tuple[str, ...]) -> None:
+        super().__init__(f"stale quote {symbol}: {'; '.join(reasons)}")
+        self.symbol = symbol
+        self.reasons = reasons
+
+
 @runtime_checkable
 class Broker(Protocol):
     """Minimal broker surface for strategies/router."""
