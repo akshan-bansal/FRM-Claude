@@ -4,15 +4,18 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from .quantity import WHOLE_UNITS, QuantityRule
+
 
 @dataclass(frozen=True)
 class SizingResult:
-    shares: int
+    shares: float                    # tradeable quantity after the venue's quantity rule
     entry: float
     stop: float
     target: float | None
     dollar_risk: float
     r_multiple_target: float | None
+    raw_shares: float = 0.0          # quantity before rounding, for the sizing journal
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,7 @@ class PositionSizer:
         annual_vol: float | None = None,
         target_vol: float = 0.15,
         max_leverage: float = 1.0,
+        qty_rule: QuantityRule = WHOLE_UNITS,
     ) -> SizingResult:
         """Position size with the ATR stop/target always defined for the risk gate.
 
@@ -99,9 +103,10 @@ class PositionSizer:
             target = entry - self.target_r * stop_distance
 
         if annual_vol is not None and annual_vol > 0:
-            shares = max(math.floor(equity * _vol_scale(annual_vol, target_vol, conviction, max_leverage) / entry), 0)
+            raw = equity * _vol_scale(annual_vol, target_vol, conviction, max_leverage) / entry
         else:
-            shares = max(math.floor(equity * self.risk_pct * _clip_conviction(conviction) / stop_distance), 0)
+            raw = equity * self.risk_pct * _clip_conviction(conviction) / stop_distance
+        shares = qty_rule.floor(raw, entry)
         return SizingResult(
             shares=shares,
             entry=entry,
@@ -109,6 +114,7 @@ class PositionSizer:
             target=target,
             dollar_risk=shares * stop_distance,
             r_multiple_target=self.target_r,
+            raw_shares=max(raw, 0.0),
         )
 
     def size_vol_target(

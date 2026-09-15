@@ -336,7 +336,7 @@ def signal(
             alerter.send(title, body)
         elif ev.kind == "exit":
             sname = smap[ev.symbol].name if ev.symbol in smap else strat.name
-            shares = int(ev.detail.get("shares", 0)) if isinstance(ev.detail, dict) else 0
+            shares = float(ev.detail.get("shares", 0)) if isinstance(ev.detail, dict) else 0.0
             title, body = _fmt_exit(strategy_name=sname, symbol=ev.symbol,
                                      price=ev.price, shares=shares)
             alerter.send(title, body)
@@ -1164,6 +1164,112 @@ def qc_ingest(
             pool.add_row(c.source, c.name[:24], c.family, c.objective, f"{c.objective_value:.3f}")
         console.print(pool)
         console.print(f"[green]Combined pool written:[/green] {out}")
+
+
+def _make_quantpedia(settings):
+    from .integrations.quantpedia import QuantpediaClient, QuantpediaError
+    try:
+        return QuantpediaClient(settings.quantpedia_username, settings.quantpedia_api_key)
+    except QuantpediaError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from e
+
+
+@app.command(name="quantpedia-search")
+def quantpedia_search(
+    terms: str = typer.Argument("", help="Space-separated terms, e.g. 'commodity futures momentum'"),
+    deep: bool = typer.Option(False, help="Match against full metadata (one request per strategy) instead of names"),
+    limit: int = typer.Option(40, help="Max rows to show"),
+) -> None:
+    """Search the Quantpedia strategies visible to your account (read-only)."""
+    from .integrations.quantpedia import QuantpediaError, matches
+
+    words = [t for t in terms.split() if t]
+    with _make_quantpedia(get_settings()) as qp:
+        try:
+            listed = qp.list_strategies()
+            rows: list[dict] = []
+            for s in listed:
+                if not deep:
+                    if all(w.lower() in str(s.get("name", "")).lower() for w in words):
+                        rows.append(s)
+                else:
+                    detail = qp.strategy(str(s["id"]))
+                    if matches(detail, words):
+                        rows.append(detail)
+                if len(rows) >= limit:
+                    break
+        except QuantpediaError as e:
+            console.print(f"[red]Quantpedia: {e}[/red]")
+            raise typer.Exit(code=1) from e
+    table = Table(title=f"Quantpedia — {len(rows)} of {len(listed)} strategies match {words or 'all'}")
+    for col in ("id", "name", "sharpe (paper)", "instruments", "rebalancing"):
+        table.add_column(col)
+    for r in rows:
+        pm = r.get("paperMetrics") or {}
+        table.add_row(str(r.get("id")), str(r.get("name", ""))[:70], str(pm.get("sharpeRatio", "-")),
+                      ", ".join(map(str, r.get("instruments") or []))[:30] or "-",
+                      str(r.get("rebalancingPeriod", "-")))
+    console.print(table)
+
+
+@app.command(name="quantpedia-show")
+def quantpedia_show(strategy_id: str = typer.Argument(..., help="Quantpedia strategy id")) -> None:
+    """Show one Quantpedia strategy's metadata, paper metrics and calculated metrics."""
+    from .integrations.quantpedia import QuantpediaError
+
+    with _make_quantpedia(get_settings()) as qp:
+        try:
+            d = qp.strategy(strategy_id)
+        except QuantpediaError as e:
+            console.print(f"[red]Quantpedia: {e}[/red]")
+            raise typer.Exit(code=1) from e
+    console.print(f"[bold]{d.get('name')}[/bold]  (id {d.get('id')})")
+    console.print(str(d.get("description", ""))[:1200])
+    for label in ("instruments", "marketFactors", "regions", "keywords"):
+        console.print(f"[cyan]{label}[/cyan]: {', '.join(map(str, d.get(label) or [])) or '-'}")
+    for label in ("complexity", "confidence", "crisisHedge", "rebalancingPeriod"):
+        console.print(f"[cyan]{label}[/cyan]: {d.get(label, '-')}")
+    for group in ("paperMetrics", "calculatedMetrics"):
+        table = Table(title=group)
+        table.add_column("metric")
+        table.add_column("value", justify="right")
+        for k, v in (d.get(group) or {}).items():
+            table.add_row(str(k), str(v))
+        console.print(table)
+    paper = d.get("sourcePaper") or {}
+    if paper:
+        console.print(f"[cyan]source paper[/cyan]: {paper.get('name')} (fileId {paper.get('fileId')})")
+
+
+@app.command(name="quantpedia-pull")
+def quantpedia_pull(
+    strategy_id: str = typer.Argument(..., help="Quantpedia strategy id"),
+    out: str = typer.Option("reports/quantpedia", help="Output directory"),
+) -> None:
+    """Save a strategy's metadata, performance curve and backtest source files locally."""
+    import json as _json
+
+    from .integrations.quantpedia import QuantpediaError
+
+    target = Path(out) / strategy_id
+    with _make_quantpedia(get_settings()) as qp:
+        try:
+            detail = qp.strategy(strategy_id)
+            perf = qp.performance(strategy_id)
+            files = qp.source_code(strategy_id)
+        except QuantpediaError as e:
+            console.print(f"[red]Quantpedia: {e}[/red]")
+            raise typer.Exit(code=1) from e
+    (target / "source").mkdir(parents=True, exist_ok=True)
+    (target / "strategy.json").write_text(_json.dumps(detail, indent=2), encoding="utf-8")
+    perf.rename("performance").to_csv(target / "performance.csv", index_label="date")
+    for f in files:
+        name = Path(str(f.get("file_name", "file.txt"))).name
+        (target / "source" / name).write_text(str(f.get("content", "")), encoding="utf-8")
+    span = f"{perf.index.min().date()} → {perf.index.max().date()}" if len(perf) else "empty"
+    console.print(f"[green]Saved[/green] {target}: metadata, {len(perf)} performance points ({span}), "
+                  f"{len(files)} source file(s).")
 
 
 @app.command(name="qc-rank")

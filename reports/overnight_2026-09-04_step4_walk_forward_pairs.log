@@ -1,0 +1,22 @@
+[fx WF] reading shortlist from reports\fx_pairs_scan_2026-09-04.csv
+[fx WF] WF'ing 10 pairs against FX protocol (train=504, test=126)
+  fetched AUD/USD: 721 bars
+  fetched EUR/CAD: 721 bars
+  fetched EUR/CHF: 721 bars
+  fetched EUR/GBP: 721 bars
+  fetched EUR/JPY: 721 bars
+  fetched EUR/USD: 721 bars
+  fetched GBP/USD: 721 bars
+  fetched USD/CAD: 721 bars
+  fetched USD/JPY: 721 bars
+  EUR/GBP~EUR/CAD: OOS 0.00 WFE 0.00 trades 0 -> watch
+  EUR/CHF~EUR/JPY: OOS 0.00 WFE 0.00 trades 0 -> watch
+  EUR/CHF~AUD/USD: OOS 1.32 WFE 0.00 trades 1 -> watch
+  USD/JPY~AUD/USD: OOS 1.26 WFE 0.91 trades 1 -> watch
+  EUR/JPY~AUD/USD: OOS 1.81 WFE 0.07 trades 2 -> watch
+  USD/CAD~GBP/USD: OOS 0.00 WFE 0.00 trades 0 -> watch
+  EUR/CHF~EUR/GBP: OOS 0.00 WFE 0.00 trades 0 -> watch
+  EUR/GBP~EUR/USD: OOS 0.00 WFE 0.00 trades 0 -> watch
+  EUR/CAD~EUR/USD: OOS -1.41 WFE -1.02 trades 1 -> watch
+  GBP/USD~EUR/USD: OOS 0.00 WFE 0.00 trades 0 -> watch
+[fx WF] wrote reports\fx_pairs_wf_2026-09-04.csv and reports\fx_pairs_wf_2026-09-04.md  (0 robust of 10 walked)

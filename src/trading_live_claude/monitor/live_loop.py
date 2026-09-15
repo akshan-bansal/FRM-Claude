@@ -28,8 +28,10 @@ from ..logging_setup import get_logger
 from ..models.risk_mitigation import combine
 from ..models.strategy_risk import scalar_from_signals
 from ..risk.hedge import HedgePolicy, hedge_shares, hedge_weight, rebalance_delta
+from ..risk.quantity import WHOLE_UNITS
 from ..risk.risk_model import HeatAggregation, RiskModel, per_trade_risk, portfolio_risk
 from ..risk.sizing import PositionSizer
+from ..risk.sizing_policy import TRADING_DAYS, SizingPolicy
 from ..strategies.base import Strategy, StrategyContext
 
 # Interpret-bias floor. Multi-thesis stacking cannot pull conviction below this multiplier — the
@@ -84,7 +86,11 @@ class LiveMonitor:
         market_open_for: Callable[[str], bool] | None = None,
         corr_lead_lag: int = 0,
         roll_futures: Callable[..., None] | None = None,
+        sizing_policy: SizingPolicy | None = None,
     ) -> None:
+        # Sizing v2 (opt-in): venue quantity rules, calendar-aware annualization, enforced stops
+        # and a sizing decision journal. None keeps the original sizing behaviour exactly.
+        self.sizing_policy = sizing_policy
         self.market_open_for = market_open_for
         self.corr_lead_lag = corr_lead_lag
         self.roll_futures = roll_futures
@@ -222,6 +228,12 @@ class LiveMonitor:
     def _is_open(self, symbol: str) -> bool:
         return self.market_open_for is None or self.market_open_for(symbol)
 
+    def _avg_entry(self, symbol: str) -> float:
+        for p in self.broker.positions(self.account_number):
+            if p.symbol == symbol:
+                return float(getattr(p, "averageEntryPrice", 0.0) or 0.0)
+        return 0.0
+
     def _last_mark(self, symbol: str) -> float:
         for p in self.broker.positions(self.account_number):
             if p.symbol == symbol:
@@ -334,12 +346,24 @@ class LiveMonitor:
             # ``holds`` guards re-entry from level-triggered re-fires: while a position
             # is open, subsequent level-eligible polls fall through to the HOLD branch.
             holds = open_positions.get(symbol, 0.0) > 0
+            policy = self.sizing_policy
+
+            # Sizing v2: the vol-target size assumes the ATR stop is honoured, so exit when a live
+            # price trades through it. Queued (closed-venue) evaluations use the last close and
+            # never trigger a stop.
+            stop_hit = False
+            stop_level: float | None = None
+            if policy is not None and policy.enforce_stops and holds and open_now:
+                stop_level = policy.stop_for(symbol, avg_entry=self._avg_entry(symbol), atr_value=atr_value,
+                                             atr_multiple=self.sizer.atr_multiple)
+                stop_hit = stop_level is not None and price <= stop_level
 
             if entry and not holds:
                 # Volatility targeting (annualized daily vol) + conviction from the strategy's
                 # graded signal_strength; the ATR still defines the protective stop.
                 rets = df["close"].pct_change().dropna()
-                annual_vol = float(rets.tail(63).std(ddof=0) * (252.0 ** 0.5)) if len(rets) >= 20 else None
+                periods = policy.periods_per_year_for(symbol) if policy is not None else TRADING_DAYS
+                annual_vol = float(rets.tail(63).std(ddof=0) * (periods ** 0.5)) if len(rets) >= 20 else None
                 ss = last.get("signal_strength", 1.0)
                 conviction = 1.0 if (ss is None or pd.isna(ss)) else float(ss)
                 # Live intelligence overlay: trim conviction by the asset-class risk scalar, and note
@@ -377,9 +401,11 @@ class LiveMonitor:
                     if weight_bias != 1.0:
                         conviction *= weight_bias
                         self._weight_bias_last[symbol] = weight_bias
+                qty_rule = policy.quantity_rule_for(symbol) if policy is not None else None
                 sized = self.sizer.size(
                     equity=equity, entry=price, atr_value=atr_value, side="long",
                     annual_vol=annual_vol, conviction=conviction,
+                    qty_rule=qty_rule or WHOLE_UNITS,
                 )
                 # Cross-path tier 3: persistence-driven halt. Queries the intel graph via the
                 # injected ``persistence_for`` callable; blocks the router submit (but not the
@@ -419,6 +445,23 @@ class LiveMonitor:
                         existing_risk=existing_risk,
                         open_positions=len(open_positions),
                     )
+                    if policy is not None:
+                        policy.record_stop(symbol, sized.stop)
+                if policy is not None:
+                    policy.journal({
+                        "symbol": symbol, "strategy": strat.name, "price": price, "equity": equity,
+                        "signal_strength": None if (ss is None or pd.isna(ss)) else float(ss),
+                        "mitigation": mitigation.scalar, "interpret": interp_bias, "weight_bias": weight_bias,
+                        "conviction": conviction, "annual_vol": annual_vol, "periods": periods,
+                        "qty_raw": sized.raw_shares, "step": qty_rule.step if qty_rule else None,
+                        "min_qty": qty_rule.min_qty if qty_rule else None,
+                        "min_notional": qty_rule.min_notional if qty_rule else None,
+                        "qty": sized.shares, "stop": sized.stop,
+                        "routed": bool(sized.shares > 0 and not overlay_halt and not persistence_halt),
+                        "reason": ("overlay halt" if overlay_halt else "persistence halt" if persistence_halt
+                                   else qty_rule.why_zero(sized.raw_shares, price) if (qty_rule and sized.shares <= 0)
+                                   else ""),
+                    })
                 # Alert on the entry SIGNAL regardless of sizeability — the monitor is an
                 # alerter, so a real signal must surface even when the account is too small
                 # to size a position (0 shares); only the order routing is gated by shares.
@@ -445,12 +488,14 @@ class LiveMonitor:
                 if persistence_halt:
                     entry_detail["persistence"] = {"halt": True, "reason": persistence_reason}
                 events.append(MonitorEvent(datetime.now(UTC), symbol, "entry", price, entry_detail))
-            elif exit_ and holds:
-                qty = open_positions[symbol]
+            elif holds and (exit_ or stop_hit):
+                # Close the exact held quantity — truncating to whole units would strand a fractional
+                # crypto position (0.36 PAXG -> 0) with no way out.
+                qty = abs(open_positions[symbol])
                 intent = OrderIntent(
                     symbol=symbol,
                     action=OrderAction.SELL,
-                    shares=int(abs(qty)),
+                    shares=qty,
                     entry=price,
                     stop=price * 1.10,  # protective; exits are market in v1
                     target=None,
@@ -464,7 +509,13 @@ class LiveMonitor:
                     existing_risk=existing_risk,
                     open_positions=len(open_positions),
                 )
-                events.append(MonitorEvent(datetime.now(UTC), symbol, "exit", price, {"shares": int(abs(qty))}))
+                exit_detail: dict[str, object] = {"shares": qty}
+                if stop_hit and not exit_:
+                    exit_detail["reason"] = "stop"
+                    exit_detail["stop"] = stop_level
+                if policy is not None:
+                    policy.clear_stop(symbol)
+                events.append(MonitorEvent(datetime.now(UTC), symbol, "exit", price, exit_detail))
             else:
                 events.append(MonitorEvent(datetime.now(UTC), symbol, "hold", price, {}))
 

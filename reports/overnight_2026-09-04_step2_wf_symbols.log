@@ -1,0 +1,26 @@
+  DIA      bars=1262 OOS 1.05 WFE 0.04 trades 2 -> watch
+  IAU      bars=1254 OOS 0.06 WFE 0.00 trades 6 -> watch
+  SGOL     bars=1254 OOS 1.52 WFE 0.07 trades 6 -> watch
+  PSLV     bars=1254 OOS 0.05 WFE 0.01 trades 6 -> watch
+  TLT      bars=1439 OOS 3.75 WFE 0.27 trades 11 -> watch
+  IEF      bars=1439 OOS 1.08 WFE 0.14 trades 5 -> watch
+  SHY      bars=1439 OOS -2.10 WFE -0.22 trades 5 -> watch
+  IEI      bars=1254 OOS 5.81 WFE 0.45 trades 2 -> watch
+  LQD      bars=1254 OOS 6.95 WFE 0.57 trades 12 -> robust
+  HYG      bars=1254 OOS -0.43 WFE -0.02 trades 2 -> watch
+  JNK      bars=1254 OOS -1.58 WFE -0.09 trades 3 -> watch
+  EMB      bars=1254 OOS 13.08 WFE 0.87 trades 5 -> watch
+  MUB      bars=1254 OOS 12.08 WFE 0.66 trades 12 -> robust
+  TFI      bars=1254 OOS 4.45 WFE 0.20 trades 8 -> watch
+  GOVT     bars=1254 OOS 2.91 WFE 0.27 trades 5 -> watch
+  BND      bars=1254 OOS -1.34 WFE -0.09 trades 6 -> watch
+  AGG      bars=1254 OOS -0.65 WFE -0.04 trades 8 -> watch
+  MBB      bars=1254 OOS -4.31 WFE -0.32 trades 6 -> watch
+  TLH      bars=1254 OOS 0.49 WFE 0.12 trades 8 -> watch
+  GLD      bars=1541 OOS 4.56 WFE 0.10 trades 5 -> watch
+  SLV      bars=2034 OOS 1.39 WFE 0.14 trades 18 -> watch
+  USO      bars=1293 OOS 1.84 WFE 0.22 trades 6 -> watch
+  UNG      bars=1261 OOS 0.83 WFE 0.33 trades 8 -> watch
+  DBC      bars=1452 OOS 1.61 WFE 0.09 trades 7 -> watch
+  DBA      bars=1635 OOS 7.41 WFE 0.62 trades 15 -> robust
+[wf-symbols] wrote reports\wf_symbols_proxies_2026-09-04.csv and reports\wf_symbols_proxies_2026-09-04.md  (3 robust of 25)

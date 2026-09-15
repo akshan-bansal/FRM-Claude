@@ -170,9 +170,9 @@ class IBBroker(Broker):
         self._account = account
         self._enable_live_orders = enable_live_orders
         self._readonly = readonly_market_data
-        # "/ROOT" symbols resolve to (conId, root, exchange, currency) of the contract currently in
-        # play; set by the caller from a FuturesBook.
-        self.futures_contract_for: Callable[[str], tuple[int, str, str, str] | None] | None = None
+        # "/ROOT" symbols resolve to (conId, root, exchange, currency, trading class) of the contract
+        # currently in play; set by the caller from a FuturesBook.
+        self.futures_contract_for: Callable[[str], tuple[int, str, str, str, str] | None] | None = None
         self._ib: Any = None                    # lazy-imported ib_insync.IB() instance
         self._connected = False
         # News feed state (see subscribe_news / drain_news). Bounded so a burst can't grow
@@ -289,7 +289,7 @@ class IBBroker(Broker):
             ))
         return out
 
-    def _futures_resolution(self, symbol: str) -> tuple[int, str, str, str]:
+    def _futures_resolution(self, symbol: str) -> tuple[int, str, str, str, str]:
         resolved = self.futures_contract_for(symbol) if self.futures_contract_for else None
         if resolved is None:
             raise BrokerError(f"IBBroker: no active futures contract registered for {symbol}")
@@ -297,7 +297,7 @@ class IBBroker(Broker):
 
     def _futures_contract(self, symbol: str) -> Any:
         from ib_insync import Contract
-        con_id, _root, exchange, currency = self._futures_resolution(symbol)
+        con_id, _root, exchange, currency, _cls = self._futures_resolution(symbol)
         return Contract(conId=con_id, exchange=exchange, currency=currency)
 
     def futures_contract_details(self, root: str, exchange: str, currency: str = "") -> list[Any]:
@@ -328,8 +328,8 @@ class IBBroker(Broker):
         bar_size = _interval_to_ib_bar_size(interval)
         if symbol.startswith("/"):
             from ib_insync import ContFuture
-            _con_id, root, exchange, currency = self._futures_resolution(symbol)
-            contract: Any = ContFuture(root, exchange, currency=currency)
+            _con_id, root, exchange, currency, trading_class = self._futures_resolution(symbol)
+            contract: Any = ContFuture(root, exchange, currency=currency, tradingClass=trading_class)
         else:
             contract = Stock(*_infer_stock_venue(symbol))
         bars = ib.reqHistoricalData(
@@ -698,6 +698,20 @@ def _to_ib_contract(spec: IBContract) -> Any:
     # Escape hatch: raw Contract for any type not enumerated above.
     return Contract(secType=spec.sec_type.upper(), symbol=spec.symbol,
                      exchange=spec.exchange, currency=spec.currency)
+
+
+def require_paper_or_data_only(accounts: Sequence[str], *, live_data_only: bool) -> str:
+    """Return ``"paper"`` for an all-DU login, ``"live-data-only"`` for a live login explicitly accepted as a
+    market-data feed, and raise otherwise. Callers must never route orders to IB in the second case."""
+    if accounts and all(a.startswith("DU") for a in accounts):
+        return "paper"
+    if not accounts:
+        raise BrokerError("IB login exposes no accounts; cannot tell paper from live.")
+    if not live_data_only:
+        raise BrokerError(
+            "IB login is a LIVE account. Log in to paper, or pass --live-data-only to use it purely as a "
+            "read-only market-data feed (tick 'Read-Only API' in TWS first).")
+    return "live-data-only"
 
 
 def _infer_stock_venue(symbol: str) -> tuple[str, str, str]:

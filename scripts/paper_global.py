@@ -11,6 +11,7 @@ Nothing touches a real account.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import time
@@ -29,9 +30,10 @@ from trading_live_claude.analysis.symbol_validation import (
     validate_sleeve,
 )
 from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
+from trading_live_claude.brokers.base import BrokerError
 from trading_live_claude.brokers.fresh import guard_feed
 from trading_live_claude.brokers.fx import CurrencyNormalizingBroker, ib_spot_rates
-from trading_live_claude.brokers.ib import IBBroker
+from trading_live_claude.brokers.ib import IBBroker, require_paper_or_data_only
 from trading_live_claude.brokers.kraken import KrakenBroker
 from trading_live_claude.brokers.paper import PaperBroker
 from trading_live_claude.brokers.routed import VenueRoutedFeed
@@ -40,7 +42,16 @@ from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.market import MarketData
 from trading_live_claude.execution.router import Router
 from trading_live_claude.execution.scheduler import MicrostructureConfig, SessionRouter
-from trading_live_claude.futures import FuturesBook, make_roller, spec_from_ib_details
+from trading_live_claude.futures import (
+    FuturesBook,
+    make_roller,
+    overlay_class_for,
+    spec_from_ib_details,
+)
+from trading_live_claude.intel.graph_interpret import GraphInterpreter
+from trading_live_claude.intel.overlay import IntelSnapshot
+from trading_live_claude.intel.routing import OverlayProvider, PersistenceGate
+from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
 from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.risk.sizing import PositionSizer
@@ -70,6 +81,14 @@ def main() -> None:
     ap.add_argument("--iterations", type=int, default=0)
     ap.add_argument("--futures", default="",
                     help="Path to config/futures_universe.json from discover_futures.py; enabled rows trade.")
+    ap.add_argument("--ib-port", dest="ib_port", type=int, default=None,
+                    help="TWS/Gateway API port; defaults to ib_paper_port (or ib_live_port) from settings.")
+    ap.add_argument("--live-data-only", dest="live_data_only", action="store_true",
+                    help="Allow a live IB login as a read-only data feed (tick Read-Only API in TWS).")
+    ap.add_argument("--intel", action=argparse.BooleanOptionalAction, default=True,
+                    help="Overlay + graph persistence gate + graph-weighted interpret (needs WORLDMONITOR_API_KEY).")
+    ap.add_argument("--persistence-polls", dest="persistence_polls", type=int, default=5)
+    ap.add_argument("--graph-polls", dest="graph_polls", type=int, default=3)
     ap.add_argument("--fill-model", dest="fill_model", choices=("touch", "mid"), default="touch",
                     help="touch = buys at ask / sells at bid (default); mid = legacy mid-price fills.")
     args = ap.parse_args()
@@ -88,19 +107,25 @@ def main() -> None:
     if not symbols and not args.futures:
         raise SystemExit("Nothing to trade: pass --equities, --crypto and/or --futures.")
 
-    port = settings.ib_paper_port if settings.ib_use_paper else settings.ib_live_port
+    port = args.ib_port or (settings.ib_paper_port if settings.ib_use_paper else settings.ib_live_port)
     ib = IBBroker(host=settings.ib_host, port=port, client_id=settings.ib_client_id,
                   account=settings.ib_account or "", enable_live_orders=False,
                   readonly_market_data=True)
+    try:
+        ib_mode = require_paper_or_data_only(ib._require_ib().managedAccounts(),
+                                             live_data_only=args.live_data_only)
+    except BrokerError as e:
+        ib.close()
+        raise SystemExit(f"[global-paper] refusing: {e}") from e
+    if ib_mode == "live-data-only":
+        print("[global-paper] LIVE IB login used as a READ-ONLY data feed. Every fill is simulated in "
+              "PaperBroker; IB order routing is disabled in code.", flush=True)
     kraken = KrakenBroker(enable_live_orders=False)
     routed = VenueRoutedFeed({"CRYPTO": kraken}, default=ib)
 
     book = FuturesBook(roll_bdays=settings.futures_roll_bdays)
     futures_rows: list[dict] = []
     if args.futures:
-        accounts = ib._require_ib().managedAccounts()
-        if not accounts or not all(a.startswith("DU") for a in accounts):
-            raise SystemExit("[global-paper] refusing futures: TWS is not a paper (DU*) login.")
         futures_rows = [r for r in json.loads(Path(args.futures).read_text(encoding="utf-8"))["contracts"]
                         if r.get("enabled")]
 
@@ -108,7 +133,7 @@ def main() -> None:
         for row in futures_rows:
             spec = spec_from_ib_details(
                 ib.futures_contract_details(row["root"], row["exchange"], row["currency"]),
-                symbol=row["symbol"])
+                symbol=row["symbol"], trading_class=row.get("trading_class"))
             if spec is None:
                 print(f"[global-paper] {row['symbol']}: no listed contracts; skipped", flush=True)
                 continue
@@ -167,6 +192,30 @@ def main() -> None:
     market = MarketData(exec_broker,
                         cache=CandleCache(Path(settings.data_cache_dir) / f"numeraire_{numeraire}"))
     inner.position_cap_pct_for = position_cap_for(settings, market)
+
+    # Intel: the overlay provider writes every WorldMonitor read into state/intel_graph.jsonl (fills
+    # already land there via PaperBroker); the persistence gate and the interpreter read it back.
+    overlay_for = persistence_for = interpret_for = None
+    if args.intel and settings.worldmonitor_api_key:
+        classes = {s: overlay_class_for(book.specs[s]) for s in futures}
+
+        def _snapshot() -> IntelSnapshot:
+            async def _fetch() -> IntelSnapshot:
+                async with WorldMonitorClient(settings.worldmonitor_api_key) as wm:
+                    return await wm.snapshot()
+            return asyncio.run(_fetch())
+
+        provider = OverlayProvider(_snapshot, refresh_seconds=900.0, class_overrides=classes)
+        overlay_for = provider
+        persistence_for = PersistenceGate(min_polls=args.persistence_polls, refresh_seconds=300.0,
+                                          class_overrides=classes)
+        interpret_for = GraphInterpreter(lambda: provider.last_snapshot, min_polls=args.graph_polls)
+        print(f"[global-paper] intel ON: overlay -> graph, persistence gate ({args.persistence_polls} polls), "
+              f"graph-weighted interpret ({args.graph_polls} polls); futures classes "
+              f"{sorted(set(classes.values()))}", flush=True)
+    else:
+        print("[global-paper] intel OFF" + ("" if args.intel else " (--no-intel)") +
+              ("" if settings.worldmonitor_api_key else " (no WORLDMONITOR_API_KEY)"), flush=True)
     venues = sorted({venue_for(s)[0].code for s in symbols})
     print(f"[global-paper] PAPER. session_id={exec_broker.session_id} "
           f"equity={args.paper_equity:,.0f} {numeraire} fills={args.fill_model} venues={venues}",
@@ -215,6 +264,9 @@ def main() -> None:
         market_open_for=market_open,
         corr_lead_lag=settings.corr_lead_lag,
         roll_futures=roll if futures else None,
+        overlay_for=overlay_for,
+        interpret_for=interpret_for,
+        persistence_for=persistence_for,
     )
     try:
         monitor.run_forever(max_iterations=args.iterations or None)

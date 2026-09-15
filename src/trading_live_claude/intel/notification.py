@@ -139,10 +139,10 @@ def format_entry(
 
 
 def format_exit(
-    *, strategy_name: str, symbol: str, price: float, shares: int,
+    *, strategy_name: str, symbol: str, price: float, shares: float,
 ) -> tuple[str, str]:
     title = f"EXIT  {symbol}  {strategy_name}"
-    body = (f"Signal: exit at {price:.4f}. Closing {shares} shares.\n\n"
+    body = (f"Signal: exit at {price:.4f}. Closing {shares:g} units.\n\n"
             f"Reason: strategy generated an exit signal on the latest bar. "
             f"Realized P&L will land in the session's paper_equity.csv row for this fill.")
     return title, body

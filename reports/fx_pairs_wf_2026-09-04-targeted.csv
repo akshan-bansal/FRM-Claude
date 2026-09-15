@@ -1,0 +1,3 @@
+sym_y,sym_x,n_folds,oos_score,is_score,wfe,oos_trades,oos_win_rate,oos_return,oos_max_dd,best_params,tier
+EUR/GBP,EUR/CAD,13,-0.826,2.04,-0.405,1,1.0,-0.0011,-0.0014,"{'window': 180, 'entry_z': 1.5, 'exit_z': 0.25}",watch
+EUR/CHF,EUR/JPY,14,-4.595,0.354,-12.969,0,0.0,-0.0012,-0.0012,"{'window': 180, 'entry_z': 2.5, 'exit_z': 0.75}",watch

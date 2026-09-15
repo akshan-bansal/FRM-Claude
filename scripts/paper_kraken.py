@@ -17,10 +17,9 @@ that is next-session item 2.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
-
-import asyncio
 
 # Windows console defaults to cp1252, which crashes on structlog's unicode output when an
 # exception message contains non-latin-1 chars — the resulting UnicodeEncodeError propagates
@@ -34,10 +33,9 @@ if sys.platform == "win32":
         pass
 
 from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
-from trading_live_claude.brokers.kraken import KrakenBroker
 from trading_live_claude.brokers.fresh import guard_feed
+from trading_live_claude.brokers.kraken import KrakenBroker
 from trading_live_claude.brokers.paper import PaperBroker
-from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.kraken_ohlc import kraken_ohlc
@@ -51,7 +49,9 @@ from trading_live_claude.intel.vs_engine import MarketContext, VSInvestmentEngin
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
 from trading_live_claude.portfolio.allocator import PortfolioAllocator
+from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.risk.sizing import PositionSizer
+from trading_live_claude.risk.sizing_policy import SizingPolicy, calendar_days
 from trading_live_claude.strategies import STRATEGIES
 
 
@@ -104,6 +104,9 @@ def main() -> None:
                     help="Seconds a card prompt stays live before it auto-EXPIRES.")
     ap.add_argument("--iterations", type=int, default=0,
                     help="0 = run forever; a positive N runs that many polls and stops.")
+    ap.add_argument("--sizing-v2", dest="sizing_v2", action="store_true",
+                    help="Kraken lot rules (fractional coins), 365-day annualization, enforced ATR "
+                         "stops and state/sizing_decisions.jsonl. Off by default.")
     args = ap.parse_args()
 
     sleeve = CRYPTO_SLEEVE
@@ -132,6 +135,8 @@ def main() -> None:
     from trading_live_claude.analysis.symbol_validation import (
         format_validation_banner,
         refuse_launch_on_hard_failures,
+    )
+    from trading_live_claude.analysis.symbol_validation import (
         validate_sleeve as _validate_sleeve,
     )
     _sleeve_syms = [e.symbol for e in CRYPTO_SLEEVE.values()]
@@ -173,6 +178,27 @@ def main() -> None:
     market = MarketData(exec_broker, cache=CandleCache(settings.data_cache_dir))
     getattr(router, "inner", router).position_cap_pct_for = position_cap_for(settings, market)
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
+
+    sizing_policy = None
+    if args.sizing_v2:
+        lot_rules = feed.lot_rules(list(sleeve))
+        missing = sorted(set(sleeve) - set(lot_rules))
+        if missing:
+            # Sizing a pair without its real lot rules would fall back to guesses; refuse instead.
+            raise SystemExit(f"[kraken-paper] --sizing-v2: no AssetPairs lot rules for {missing}; not launching.")
+        sizing_policy = SizingPolicy(
+            quantity_rule_for=lot_rules.__getitem__,
+            periods_per_year_for=calendar_days,
+            enforce_stops=True,
+            journal_path=Path(settings.state_dir) / "sizing_decisions.jsonl",
+            session_id=exec_broker.session_id,
+        )
+        # The router's size-cap trim must round to the same lots, or a trimmed 0.4 BTC floors to 0.
+        getattr(router, "inner", router).quantity_rule_for = lot_rules.__getitem__
+        print("[kraken-paper] sizing v2 ON — lot rules:", flush=True)
+        for sym, rule in lot_rules.items():
+            print(f"    {sym:>10}  step {rule.step:g}  min {rule.min_qty:g}  min value ${rule.min_notional:g}",
+                  flush=True)
 
     # Build the per-symbol strategy map from CRYPTO_SLEEVE. The MAIN strategy is a fallback for any
     # symbol not in the map; here every routed symbol IS in the map, so the fallback should never
@@ -226,12 +252,14 @@ def main() -> None:
 
     # Alerter — silent to phone without this. Mirrors the QT CLI wiring. Credentials from settings;
     # empty creds means stdout-only, so the venue works whether or not .env has keys.
-    from trading_live_claude.monitor import Alerter
-    from trading_live_claude.monitor.alerter import AlertConfig
     from trading_live_claude.intel.notification import (
         format_entry as _fmt_entry,
+    )
+    from trading_live_claude.intel.notification import (
         format_exit as _fmt_exit,
     )
+    from trading_live_claude.monitor import Alerter
+    from trading_live_claude.monitor.alerter import AlertConfig
     alerter = Alerter(AlertConfig(
         telegram_bot_token=settings.telegram_bot_token,
         telegram_chat_id=settings.telegram_chat_id,
@@ -255,7 +283,7 @@ def main() -> None:
             alerter.send(title, body)
         elif ev.kind == "exit":
             sname = strategy_name_for.get(ev.symbol, fallback_entry.strategy)
-            shares = int(ev.detail.get("shares", 0)) if isinstance(ev.detail, dict) else 0
+            shares = float(ev.detail.get("shares", 0)) if isinstance(ev.detail, dict) else 0.0
             title, body = _fmt_exit(strategy_name=sname, symbol=ev.symbol, price=ev.price,
                                       shares=shares)
             alerter.send(title, body)
@@ -276,6 +304,7 @@ def main() -> None:
         weight_bias_for=_weight_bias_for,
         overlay_for=overlay_for,
         interpret_for=interpret_for,
+        sizing_policy=sizing_policy,
     )
     monitor.run_forever(max_iterations=args.iterations or None)
 

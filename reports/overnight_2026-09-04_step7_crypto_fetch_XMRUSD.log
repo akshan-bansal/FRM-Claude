@@ -1,0 +1,19 @@
+[fetch] cache=data\cache  pairs=['XMRUSD']  since=0  max_pages=5000  sleep=1.05s
+[fetch] XMRUSD ...
+    XMRUSD: page     1, trades so far    1000
+    XMRUSD: page    10, trades so far   10000
+    XMRUSD: page    20, trades so far   20000
+    XMRUSD: page    30, trades so far   30000
+    XMRUSD: page    40, trades so far   40000
+    XMRUSD: page    50, trades so far   50000
+    XMRUSD: page    60, trades so far   60000
+    XMRUSD: page    70, trades so far   70000
+    XMRUSD: page    80, trades so far   80000
+    XMRUSD: page    90, trades so far   90000
+    XMRUSD: page   100, trades so far  100000
+    XMRUSD: page   110, trades so far  110000
+    XMRUSD: page   120, trades so far  120000
+    XMRUSD: page   130, trades so far  130000
+    XMRUSD: page   140, trades so far  140000
+    XMRUSD: page   150, trades so far  150000
+    XMRUSD: page   160, trades so far  160000

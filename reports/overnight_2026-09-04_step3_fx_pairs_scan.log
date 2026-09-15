@@ -1,0 +1,13 @@
+[fx-pairs] fetching 10 FX pairs via Kraken /public/OHLC...
+     EUR/USD: 721 bars
+     GBP/USD: 721 bars
+     USD/CAD: 721 bars
+     USD/JPY: 721 bars
+     AUD/USD: 721 bars
+     EUR/GBP: 721 bars
+     EUR/JPY: 721 bars
+     EUR/CAD: 721 bars
+     EUR/CHF: 721 bars
+  GBP/JPY: fetch failed (ValueError: Kraken OHLC error for 'GBP/JPY': ['EQuery:Unknown asset pair'])
+[fx-pairs] enumerating C(9,2) = 36 pair combinations at alpha=0.05, max_half_life=60.0d
+[fx-pairs] wrote reports\fx_pairs_scan_2026-09-04.csv and reports\fx_pairs_scan_2026-09-04.md  (23 tradeable of 36 enumerated)

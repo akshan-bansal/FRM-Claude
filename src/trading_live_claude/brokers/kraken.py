@@ -33,6 +33,7 @@ from typing import Any
 import httpx
 
 from ..logging_setup import get_logger
+from ..risk.quantity import QuantityRule
 from .base import Broker, BrokerError, OrderRejected
 from .kraken_auth import KRAKEN_REST, KrakenAuthError, private_post
 from .models import (
@@ -63,8 +64,12 @@ _KRAKEN_PAIRS: dict[str, str] = {
 
 
 def to_kraken_pair(symbol: str) -> str:
-    """Routed symbol (``BTC/USD``) → Kraken wire pair (``XBTUSD``). Pass through for unknowns."""
-    return _KRAKEN_PAIRS.get(symbol, symbol)
+    """Routed symbol (``BTC/USD``) → Kraken wire pair (``XBTUSD``).
+
+    Unlisted pairs drop the slash (``SOL/USD`` → ``SOLUSD``): Kraken's REST pair codes carry no
+    separator, and the slashed form made AssetPairs lookups for SOL/ADA/POL/UNI/AAVE/ZEC miss.
+    """
+    return _KRAKEN_PAIRS.get(symbol, symbol.replace("/", ""))
 
 
 class KrakenBroker(Broker):
@@ -98,7 +103,7 @@ class KrakenBroker(Broker):
         if self._owns_client:
             self._client.close()
 
-    def __enter__(self) -> "KrakenBroker":
+    def __enter__(self) -> KrakenBroker:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -288,6 +293,24 @@ class KrakenBroker(Broker):
         except KrakenAuthError as e:
             raise BrokerError(f"Kraken CancelOrder failed: {e}") from e
 
+    def lot_rules(self, symbols: list[str]) -> dict[str, QuantityRule]:
+        """Tradeable quantity rules per routed symbol from Kraken's public AssetPairs.
+
+        ``lot_decimals`` sets the step, ``ordermin`` the minimum size and ``costmin`` the minimum
+        order value. Symbols Kraken does not answer for are left out, so callers keep their default.
+        """
+        rules: dict[str, QuantityRule] = {}
+        for sym in symbols:
+            try:
+                result = self._get_public("/0/public/AssetPairs", {"pair": to_kraken_pair(sym)})["result"]
+            except (httpx.HTTPError, BrokerError, KeyError) as e:
+                log.warning("kraken.lot_rules.miss", symbol=sym, error=str(e))
+                continue
+            row = _find_ticker(result, to_kraken_pair(sym)) or (next(iter(result.values())) if len(result) == 1 else None)
+            if row is not None:
+                rules[sym] = lot_rule_from_asset_pair(row)
+        return rules
+
     # ---- helpers -------------------------------------------------------------
 
     def _get_public(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -335,6 +358,12 @@ _KRAKEN_ASSET_TO_ROUTED: dict[str, str] = {
 def _asset_to_routed_symbol(asset: str) -> str:
     """Kraken asset code (``XXBT``) → routed symbol (``BTC/USD``). Pass through unknown assets."""
     return _KRAKEN_ASSET_TO_ROUTED.get(asset, asset)
+
+
+def lot_rule_from_asset_pair(row: dict[str, Any]) -> QuantityRule:
+    decimals = int(row.get("lot_decimals", 8))
+    return QuantityRule(step=10.0 ** -decimals, min_qty=float(row.get("ordermin") or 0.0),
+                        min_notional=float(row.get("costmin") or 0.0))
 
 
 def _find_ticker(result: dict[str, Any], wire_pair: str) -> dict[str, Any] | None:

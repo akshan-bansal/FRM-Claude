@@ -89,6 +89,7 @@ class FuturesSpec:
     contracts: tuple[FuturesContract, ...]
     liquid_windows: tuple[tuple[datetime, datetime], ...]
     long_name: str = ""
+    trading_class: str = ""
 
     @property
     def scale(self) -> float:
@@ -112,9 +113,22 @@ def _parse_date(s: str) -> date | None:
     return None
 
 
-def spec_from_ib_details(details: Iterable[object], symbol: str | None = None) -> FuturesSpec | None:
-    """Build a spec from ib_insync ``ContractDetails`` for one root on one exchange."""
+def spec_from_ib_details(details: Iterable[object], symbol: str | None = None,
+                         trading_class: str | None = None) -> FuturesSpec | None:
+    """Build a spec from ib_insync ``ContractDetails`` for one root on one exchange and ONE trading class.
+
+    A root can list several contract sizes under different trading classes (COMEX ``SI`` returns
+    5,000 oz ``SI`` and 1,000 oz ``SIL``); mixing them would mis-scale sizing and roll between sizes.
+    The class defaults to the one named like the root, else the most common.
+    """
     rows = list(details)
+    if not rows:
+        return None
+    classes = [str(getattr(d.contract, "tradingClass", "") or "") for d in rows]  # type: ignore[attr-defined]
+    root = str(rows[0].contract.symbol)  # type: ignore[attr-defined]
+    chosen = trading_class if trading_class is not None else (
+        root if root in classes else max(set(classes), key=classes.count))
+    rows = [d for d, cls in zip(rows, classes, strict=True) if cls == chosen]
     if not rows:
         return None
     contracts: list[FuturesContract] = []
@@ -142,7 +156,17 @@ def spec_from_ib_details(details: Iterable[object], symbol: str | None = None) -
         contracts=tuple(sorted(contracts, key=lambda k: k.last_trade)),
         liquid_windows=parse_ib_hours(str(getattr(first, "liquidHours", "") or ""), tz_id),
         long_name=str(getattr(first, "longName", "") or ""),
+        trading_class=chosen,
     )
+
+
+_PRECIOUS = re.compile(r"gold|silver|platinum|palladium", re.IGNORECASE)
+
+
+def overlay_class_for(spec: FuturesSpec) -> str:
+    """Overlay class for a commodity future: precious metals by contract name, else commodity (never the
+    equity-index-oriented ``future`` bucket)."""
+    return "precious_metals" if _PRECIOUS.search(spec.long_name) else "commodity"
 
 
 def _utc_now() -> datetime:
@@ -168,12 +192,13 @@ class FuturesBook:
             if active is not None:
                 self.current[spec.symbol] = active
 
-    def contract_for(self, symbol: str) -> tuple[int, str, str, str] | None:
+    def contract_for(self, symbol: str) -> tuple[int, str, str, str, str] | None:
+        """``(conId, root, exchange, currency, trading class)`` of the contract ``symbol`` quotes now."""
         spec = self.specs.get(symbol.upper())
         con = self.current.get(symbol.upper())
         if spec is None or con is None:
             return None
-        return con.con_id, spec.root, spec.exchange, spec.currency
+        return con.con_id, spec.root, spec.exchange, spec.currency, spec.trading_class
 
     def multiplier_for(self, symbol: str) -> float:
         spec = self.specs.get(symbol.upper())

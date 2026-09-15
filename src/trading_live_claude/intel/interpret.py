@@ -28,11 +28,13 @@ from trading_live_claude.intel.overlay import IntelSnapshot
 # Themes an intel domain implicates, as ticker exemplars already present in this project's universe.
 # Deliberately small and explicit: these are starting points for research, not a sector database.
 THEME_EXEMPLARS: dict[str, tuple[str, ...]] = {
-    "energy": ("XLE", "USO", "UNG", "CNQ.TO", "ENB.TO", "GEI.TO", "TA.TO", "FRU.TO", "ARX.TO"),
+    "energy": ("XLE", "USO", "UNG", "CNQ.TO", "ENB.TO", "GEI.TO", "TA.TO", "FRU.TO", "ARX.TO",
+               "/CL", "/MCL", "/NG", "/COIL", "/GOIL"),
     "defense_geopolitical": ("ITA", "LMT", "RTX", "NOC", "GD"),
-    "safe_haven": ("GLD", "CGL.TO", "SLV", "PAXG/USD", "XLU"),
+    "safe_haven": ("GLD", "CGL.TO", "SLV", "PAXG/USD", "XLU", "/GC", "/MGC", "/SI", "/SIL"),
     "volatility_convexity": ("VIXY", "UVXY", "SPY puts"),
-    "materials": ("XLB", "FCX", "ABX.TO", "AEM.TO", "TECK.B.TO"),
+    "materials": ("XLB", "FCX", "ABX.TO", "AEM.TO", "TECK.B.TO",
+                  "/HG", "/MHG", "/FEF", "/PLT", "/PLTM", "/RSS3", "/TF"),
     "dollar": ("UUP", "USDCAD", "DX-Y.NYB"),
     # NEW keys for the added theses. ``insurance`` covers global-catastrophe-exposed lines rather
     # than everyone with an insurance ticker; ``emerging_markets`` seeds a research direction, not

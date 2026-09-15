@@ -111,8 +111,9 @@ def test_pair_translation_covers_the_sleeve_and_falls_through_unknowns() -> None
     assert to_kraken_pair("BTC/USD") == "XBTUSD"
     assert to_kraken_pair("ETH/USD") == "ETHUSD"
     assert to_kraken_pair("PAXG/USD") == "PAXGUSD"
-    # Anything not in the small mapping is passed through unchanged.
-    assert to_kraken_pair("DOGE/USD") == "DOGE/USD"
+    # Anything not in the small mapping drops the slash — Kraken REST pair codes have none.
+    assert to_kraken_pair("DOGE/USD") == "DOGEUSD"
+    assert to_kraken_pair("AAVE/USD") == "AAVEUSD"
 
 
 def test_accounts_synthesizes_a_stable_account_row() -> None:

@@ -1,0 +1,288 @@
+{
+  "auth": true,
+  "accounts": [
+    "U28453985"
+  ],
+  "stk": {
+    "equity_us": {
+      "SPY": {
+        "verdict": "OK",
+        "detail": "last=772.51 bid=None ask=None",
+        "conid": 756733
+      },
+      "QQQ": {
+        "verdict": "OK",
+        "detail": "last=716.68 bid=None ask=None",
+        "conid": 320227571
+      },
+      "AAPL": {
+        "verdict": "OK",
+        "detail": "last=327.97 bid=None ask=None",
+        "conid": 265598
+      }
+    },
+    "equity_intl": {
+      "ASML": {
+        "verdict": "OK",
+        "detail": "last=1647.40 bid=None ask=None",
+        "conid": 117902840
+      },
+      "TSM": {
+        "verdict": "OK",
+        "detail": "last=416.53 bid=None ask=None",
+        "conid": 6223250
+      },
+      "BABA": {
+        "verdict": "OK",
+        "detail": "last=111.82 bid=None ask=None",
+        "conid": 166090175
+      }
+    },
+    "fixed_income": {
+      "TLT": {
+        "verdict": "OK",
+        "detail": "last=82.12 bid=None ask=None",
+        "conid": 15547841
+      },
+      "IEF": {
+        "verdict": "OK",
+        "detail": "last=92.27 bid=None ask=None",
+        "conid": 15547844
+      },
+      "SHY": {
+        "verdict": "OK",
+        "detail": "last=81.72 bid=None ask=None",
+        "conid": 15547851
+      },
+      "LQD": {
+        "verdict": "OK",
+        "detail": "last=105.47 bid=None ask=None",
+        "conid": 15547816
+      },
+      "HYG": {
+        "verdict": "OK",
+        "detail": "last=79.21 bid=None ask=None",
+        "conid": 43652089
+      }
+    },
+    "precious_metals": {
+      "GLD": {
+        "verdict": "DELAYED",
+        "detail": "last=C0.00 bid=None ask=None (closed)",
+        "conid": 54927692
+      },
+      "SLV": {
+        "verdict": "OK",
+        "detail": "last=60.50 bid=None ask=None",
+        "conid": 39039301
+      },
+      "PSLV": {
+        "verdict": "OK",
+        "detail": "last=21.98 bid=None ask=None",
+        "conid": 80425147
+      }
+    },
+    "commodity": {
+      "USO": {
+        "verdict": "DELAYED",
+        "detail": "last=C0.00 bid=None ask=None (closed)",
+        "conid": 16322948
+      },
+      "UNG": {
+        "verdict": "OK",
+        "detail": "last=10.51 bid=None ask=None",
+        "conid": 676612559
+      },
+      "DBC": {
+        "verdict": "OK",
+        "detail": "last=32.01 bid=None ask=None",
+        "conid": 319355208
+      }
+    },
+    "canadian": {
+      "XIC.TO": {
+        "verdict": "OK",
+        "detail": "last=58.62 bid=None ask=None (warmed on attempt 2)",
+        "conid": 74580634
+      },
+      "ZAG.TO": {
+        "verdict": "OK",
+        "detail": "last=13.49 bid=13.48 ask=13.49 (warmed on attempt 3)",
+        "conid": 75015545
+      },
+      "CGL.TO": {
+        "verdict": "OK",
+        "detail": "last=33.88 bid=33.85 ask=33.97 (warmed on attempt 3)",
+        "conid": 105224201
+      }
+    }
+  },
+  "fut": {
+    "CME_equity": {
+      "ES": {
+        "conid": 649180671,
+        "front": "20260918",
+        "verdict": "OK",
+        "detail": "last=7751.75 bid=7751.75 ask=7752.00"
+      },
+      "NQ": {
+        "conid": 770561204,
+        "front": "20260918",
+        "verdict": "OK",
+        "detail": "last=29493.50 bid=29494.50 ask=29495.25"
+      },
+      "RTY": {
+        "conid": 793356259,
+        "front": "20260918",
+        "verdict": "OK",
+        "detail": "last=2967.90 bid=2967.90 ask=2968.10"
+      },
+      "YM": {
+        "conid": 815824220,
+        "front": "20260918",
+        "verdict": "OK",
+        "detail": "last=53742 bid=53740 ask=53742"
+      }
+    },
+    "NYMEX": {
+      "CL": {
+        "conid": 304037496,
+        "front": "20260922",
+        "verdict": "OK",
+        "detail": "last=91.74 bid=91.74 ask=91.76"
+      },
+      "NG": {
+        "conid": 269460151,
+        "front": "20260928",
+        "verdict": "OK",
+        "detail": "last=2.923 bid=2.922 ask=2.923"
+      },
+      "HO": {
+        "conid": 600696488,
+        "front": "20260930",
+        "verdict": "OK",
+        "detail": "last=4.5944 bid=4.5931 ask=4.5971"
+      }
+    },
+    "COMEX": {
+      "GC": {
+        "conid": 760200565,
+        "front": "20260928",
+        "verdict": "DELAYED",
+        "detail": "last=C4491.70 bid=4474.60 ask=4476.50 (closed)"
+      },
+      "SI": {
+        "conid": 738529133,
+        "front": "20260928",
+        "verdict": "DELAYED",
+        "detail": "last=C66.975 bid=66.865 ask=66.900 (closed)"
+      },
+      "HG": {
+        "conid": 499901736,
+        "front": "20260928",
+        "verdict": "DELAYED",
+        "detail": "last=C6.5770 bid=6.5875 ask=6.5885 (closed)"
+      }
+    },
+    "CBOT_rates": {
+      "ZN": {
+        "conid": 840227361,
+        "front": "20260921",
+        "verdict": "OK",
+        "detail": "last=107'290 bid=107'280 ask=107'290"
+      },
+      "ZB": {
+        "conid": 840227357,
+        "front": "20260921",
+        "verdict": "DELAYED",
+        "detail": "last=C109'070 bid=109'040 ask=109'060 (closed)"
+      },
+      "ZF": {
+        "conid": 842590380,
+        "front": "20260930",
+        "verdict": "DELAYED",
+        "detail": "last=C105'272 bid=105'262 ask=105'267 (closed)"
+      }
+    },
+    "CBOT_grains": {
+      "ZC": {
+        "conid": 671574019,
+        "front": "20260914",
+        "verdict": "OK",
+        "detail": "last=515 1/4 bid=513 1/4 ask=513 3/4"
+      },
+      "ZW": {
+        "conid": 715358274,
+        "front": "20260914",
+        "verdict": "OK",
+        "detail": "last=728 1/2 bid=733 ask=734 1/2"
+      },
+      "ZS": {
+        "conid": 665643572,
+        "front": "20260914",
+        "verdict": "OK",
+        "detail": "last=1300 1/4 bid=1298 3/4 ask=1305"
+      }
+    },
+    "CFE": {
+      "VIX": {
+        "conid": 906446492,
+        "front": "20260909",
+        "verdict": "DELAYED",
+        "detail": "last=C16.1500 bid=12.8000 ask=None (closed) (warmed on attempt 2)"
+      }
+    }
+  },
+  "history": {
+    "equity_us": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "equity_intl": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "fixed_income": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "precious_metals": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "commodity": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "canadian": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "CME_equity": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "NYMEX": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "CBOT_rates": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    },
+    "CBOT_grains": {
+      "verdict": "OK",
+      "detail": "4 daily bars"
+    }
+  },
+  "scanner": {
+    "verdict": "OK",
+    "scan_types": 547,
+    "instruments": 18
+  },
+  "news": {
+    "verdict": "EMPTY",
+    "http": -1
+  },
+  "net_liquidation": "0.0 CAD"
+}

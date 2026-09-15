@@ -103,7 +103,7 @@ class Prompt:
     broker: str            # "ib" | "kraken" | "questrade" — destination brokerage
     symbol: str
     action: str
-    shares: int
+    shares: float
     entry: float
     stop: float
     target: float | None
@@ -160,7 +160,7 @@ class PassbookEntry:
     broker: str
     symbol: str
     action: str
-    shares: int
+    shares: float
     notional_usd: float
     strategy: str
     thesis: str

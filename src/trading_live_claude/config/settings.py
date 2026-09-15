@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     alert_email_to: str = ""
     quantconnect_user_id: str = ""
     quantconnect_api_token: str = ""
+    # Quantpedia Pro API (research data only: strategy metadata, performance curves, source, papers).
+    quantpedia_username: str = ""
+    quantpedia_api_key: str = ""
     # Kraken private REST API (crypto sleeve execution). Public market data needs none of this;
     # only the future KrakenBroker's private endpoints (balances, orders) do.
     kraken_api_key: str = ""

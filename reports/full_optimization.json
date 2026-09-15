@@ -1,0 +1,155 @@
+{
+  "bollinger": {
+    "robust": {
+      "window": 30,
+      "n_std": 3.0
+    },
+    "robust_median": 2.52,
+    "coverage": 22,
+    "top_name": "BCE.TO",
+    "top_score": 0.2,
+    "top_params": {
+      "window": 20,
+      "n_std": 3.0
+    },
+    "top_sector": "Telecom",
+    "p0": "window",
+    "p1": "n_std"
+  },
+  "rsi_meanrevert": {
+    "robust": {
+      "window": 14,
+      "oversold": 35
+    },
+    "robust_median": 2.01,
+    "coverage": 22,
+    "top_name": "SHOP.TO",
+    "top_score": 0.59,
+    "top_params": {
+      "window": 7,
+      "oversold": 35
+    },
+    "top_sector": "Tech",
+    "p0": "window",
+    "p1": "oversold"
+  },
+  "ema_crossover": {
+    "robust": {
+      "fast": 50,
+      "slow": 200
+    },
+    "robust_median": 2.12,
+    "coverage": 22,
+    "top_name": "BCE.TO",
+    "top_score": -1.54,
+    "top_params": {
+      "fast": 10,
+      "slow": 50
+    },
+    "top_sector": "Telecom",
+    "p0": "fast",
+    "p1": "slow"
+  },
+  "macd": {
+    "robust": {
+      "fast": 16,
+      "slow": 26
+    },
+    "robust_median": 0.44,
+    "coverage": 22,
+    "top_name": "OTEX.TO",
+    "top_score": -0.97,
+    "top_params": {
+      "fast": 12,
+      "slow": 21
+    },
+    "top_sector": "Tech",
+    "p0": "fast",
+    "p1": "slow"
+  },
+  "momentum_breakout": {
+    "robust": {
+      "entry_window": 20,
+      "exit_window": 20
+    },
+    "robust_median": 0.68,
+    "coverage": 22,
+    "top_name": "T.TO",
+    "top_score": -0.99,
+    "top_params": {
+      "entry_window": 20,
+      "exit_window": 10
+    },
+    "top_sector": "Telecom",
+    "p0": "entry_window",
+    "p1": "exit_window"
+  },
+  "atr_channel": {
+    "robust": {
+      "ema_window": 30,
+      "k": 3.0
+    },
+    "robust_median": 0.3,
+    "coverage": 22,
+    "top_name": "BCE.TO",
+    "top_score": -0.91,
+    "top_params": {
+      "ema_window": 10,
+      "k": 1.5
+    },
+    "top_sector": "Telecom",
+    "p0": "ema_window",
+    "p1": "k"
+  },
+  "ts_momentum": {
+    "robust": {
+      "lookback": 189,
+      "threshold": 0.0
+    },
+    "robust_median": 1.7,
+    "coverage": 22,
+    "top_name": "T.TO",
+    "top_score": -0.88,
+    "top_params": {
+      "lookback": 63,
+      "threshold": 0.05
+    },
+    "top_sector": "Telecom",
+    "p0": "lookback",
+    "p1": "threshold"
+  },
+  "dual_ma": {
+    "robust": {
+      "fast": 20,
+      "slow": 150
+    },
+    "robust_median": 1.04,
+    "coverage": 22,
+    "top_name": "BCE.TO",
+    "top_score": -1.33,
+    "top_params": {
+      "fast": 50,
+      "slow": 150
+    },
+    "top_sector": "Telecom",
+    "p0": "fast",
+    "p1": "slow"
+  },
+  "high_52w_breakout": {
+    "robust": {
+      "high_window": 189,
+      "exit_window": 63
+    },
+    "robust_median": 2.72,
+    "coverage": 14,
+    "top_name": "ATD.TO",
+    "top_score": -0.17,
+    "top_params": {
+      "high_window": 252,
+      "exit_window": 42
+    },
+    "top_sector": "Consumer",
+    "p0": "high_window",
+    "p1": "exit_window"
+  }
+}

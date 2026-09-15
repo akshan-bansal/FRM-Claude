@@ -25,12 +25,12 @@ from trading_live_claude.venues import currency_of, market_open, venue_for
 
 def _detail(con_id: int, local: str, expiry: str, month: str, *, symbol: str = "COIL",
             exchange: str = "IPE", currency: str = "USD", multiplier: str = "1000",
-            magnifier: int = 1, tz: str = "GB-Eire",
+            magnifier: int = 1, tz: str = "GB-Eire", trading_class: str | None = None,
             hours: str = "20260914:0100-20260914:2300;20260915:0100-20260915:2300;"
                          "20260924:0100-20260924:2300") -> SimpleNamespace:
     return SimpleNamespace(
         contract=SimpleNamespace(conId=con_id, localSymbol=local, symbol=symbol, exchange=exchange,
-                                 currency=currency, multiplier=multiplier,
+                                 currency=currency, multiplier=multiplier, tradingClass=trading_class or symbol,
                                  lastTradeDateOrContractMonth=expiry),
         realExpirationDate=expiry, contractMonth=month, priceMagnifier=magnifier,
         timeZoneId=tz, liquidHours=hours, longName="Brent Crude")
@@ -67,13 +67,25 @@ def test_spec_from_ib_details_sorts_contracts_and_scales_by_magnifier() -> None:
 def test_book_registers_venue_and_picks_the_contract_before_its_roll() -> None:
     book = FuturesBook(roll_bdays=5, clock=lambda: datetime(2026, 9, 14, 12, tzinfo=UTC))
     book.add(spec_from_ib_details(BRENT))
-    assert book.contract_for("/COIL") == (1, "COIL", "IPE", "USD")
+    assert book.contract_for("/COIL") == (1, "COIL", "IPE", "USD", "COIL")
     assert venue_for("/COIL")[0].code == "FUT" and currency_of("/COIL") == "USD"
     assert market_open("/COIL", datetime(2026, 9, 14, 12, tzinfo=UTC))
     assert not market_open("/COIL", datetime(2026, 9, 14, 23, 30, tzinfo=UTC))
     assert classify_symbol("/COIL") == "future"
     book.clock = lambda: datetime(2026, 9, 24, tzinfo=UTC)   # within 5 bdays of Sep 30
     assert book.pending_rolls()["/COIL"].local_symbol == "COILZ6"
+
+
+def test_spec_keeps_one_trading_class_so_contract_sizes_never_mix() -> None:
+    rows = [_detail(1, "SIZ6", "20261229", "202612", symbol="SI", exchange="COMEX", multiplier="5000"),
+            _detail(2, "SILZ6", "20261229", "202612", symbol="SI", exchange="COMEX", multiplier="1000",
+                    trading_class="SIL"),
+            _detail(3, "SIH7", "20270329", "202703", symbol="SI", exchange="COMEX", multiplier="5000")]
+    spec = spec_from_ib_details(rows)
+    assert spec is not None and spec.trading_class == "SI" and spec.multiplier == 5000.0
+    assert [c.local_symbol for c in spec.contracts] == ["SIZ6", "SIH7"]
+    micro = spec_from_ib_details(rows, symbol="/SIL", trading_class="SIL")
+    assert micro is not None and micro.multiplier == 1000.0 and len(micro.contracts) == 1
 
 
 def test_unregistered_future_never_trades() -> None:

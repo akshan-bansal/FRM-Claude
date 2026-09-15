@@ -1,0 +1,11 @@
+sym_y,sym_x,n_folds,oos_score,is_score,wfe,oos_trades,oos_win_rate,oos_return,oos_max_dd,best_params,tier
+EUR/JPY,AUD/USD,1,1.811,25.905,0.07,2,0.5,0.0075,-0.027,"{'window': 20, 'entry_z': 1.5, 'exit_z': 0.25}",watch
+EUR/CHF,AUD/USD,1,1.32,-1.375,0.0,1,1.0,0.0082,-0.0149,"{'window': 30, 'entry_z': 2.5, 'exit_z': 0.25}",watch
+USD/JPY,AUD/USD,1,1.264,1.396,0.905,1,1.0,0.0112,-0.0144,"{'window': 20, 'entry_z': 2.0, 'exit_z': 0.5}",watch
+EUR/GBP,EUR/CAD,1,0.0,0.254,0.0,0,0.0,0.0,0.0,"{'window': 60, 'entry_z': 2.5, 'exit_z': 0.25}",watch
+EUR/CHF,EUR/JPY,1,0.0,-1.981,0.0,0,0.0,0.0,0.0,"{'window': 60, 'entry_z': 2.5, 'exit_z': 0.75}",watch
+USD/CAD,GBP/USD,1,0.0,2.961,0.0,0,0.0,0.0,0.0,"{'window': 60, 'entry_z': 2.0, 'exit_z': 0.5}",watch
+EUR/CHF,EUR/GBP,1,0.0,-1.729,0.0,0,0.0,0.0,0.0,"{'window': 45, 'entry_z': 2.5, 'exit_z': 0.5}",watch
+EUR/GBP,EUR/USD,1,0.0,0.518,0.0,0,0.0,0.0,0.0,"{'window': 60, 'entry_z': 2.5, 'exit_z': 0.25}",watch
+GBP/USD,EUR/USD,1,0.0,4.275,0.0,0,0.0,0.0,0.0,"{'window': 45, 'entry_z': 2.5, 'exit_z': 0.25}",watch
+EUR/CAD,EUR/USD,1,-1.405,1.375,-1.022,1,1.0,-0.0057,-0.0142,"{'window': 45, 'entry_z': 1.5, 'exit_z': 0.25}",watch

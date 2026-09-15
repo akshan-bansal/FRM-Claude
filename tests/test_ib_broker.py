@@ -247,6 +247,19 @@ def test_quotes_and_candles_route_to_the_listing_venue(monkeypatch: pytest.Monke
     assert built == [("XIC", "TSE", "CAD"), ("700", "SEHK", "HKD"), ("7203", "TSEJ", "JPY")]
 
 
+def test_live_login_is_refused_unless_explicitly_used_as_data_only() -> None:
+    from trading_live_claude.brokers.ib import require_paper_or_data_only
+
+    assert require_paper_or_data_only(["DU123", "DU456"], live_data_only=False) == "paper"
+    with pytest.raises(BrokerError, match="LIVE account"):
+        require_paper_or_data_only(["U123"], live_data_only=False)
+    with pytest.raises(BrokerError, match="LIVE account"):
+        require_paper_or_data_only(["DU123", "U123"], live_data_only=False)
+    assert require_paper_or_data_only(["U123"], live_data_only=True) == "live-data-only"
+    with pytest.raises(BrokerError, match="no accounts"):
+        require_paper_or_data_only([], live_data_only=True)
+
+
 def test_ib_broker_exports_from_package_namespace() -> None:
     """Registration check — IBBroker + its dataclasses must be importable from brokers/."""
     from trading_live_claude.brokers import (

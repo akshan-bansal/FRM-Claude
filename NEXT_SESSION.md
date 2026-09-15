@@ -1,8 +1,10 @@
 # Next-session backlog
 
 **Latest session (2026-09-11 → 09-13):** see `SESSION_REPORT_2026-09-13.md` and
-`E2E_AUDIT_2026-09-11.md`. Commits `400a6ae`, `8042c91`, `2dd2043`; suite 987 passed / 0 failed.
-Open decisions carried forward are in "Open decisions from 2026-09-13" below.
+`E2E_AUDIT_2026-09-11.md`. Commits `400a6ae`, `8042c91`, `2dd2043`, `668c300`, `4b5af35`; the later
+futures / intel / QC / Quantpedia work is UNCOMMITTED (list in the futures queue). Suite 1,019 passed
+/ 0 failed at last full run. Start with "Futures, QC and Quantpedia queue — 2026-09-13 (late)" and
+"Open decisions from 2026-09-13" below.
 
 **Status (2026-09-08): DATA-ACCRUAL PHASE.** Live paper venues (QT + Kraken) continue to fill
 journals on demand; graph journal poll running at 30-min cadence for intel corpus depth. All
@@ -23,8 +25,10 @@ Human-in-the-loop; sessions started + stopped as needed rather than persistent. 
 2. **QT paper** — `signal --paper --intel-overlay --level` over 15 equities (ARX.TO removed
    2026-09-08 for silent 404 on candles; RSI.TO + RIG.TO added — RIG.TO also 404'd and was
    removed 2026-09-09). Same wiring shape as Kraken paper.
-5. **2026-09-13:** Kraken paper session `d8a0eca4…` started 16:51 (log
-   `logs/paper_kraken_2026-09-13_1651.log`), running pre-`2dd2043` code.
+5. **2026-09-13:** Kraken paper session `63a00131…` started 18:00 (log
+   `logs/paper_kraken_2026-09-13_1800.log`), launched with env `POSITION_CAP_MODE=static` so the
+   currencies sleeve keeps the flat 50% cap while data accrues (user: accumulate data before
+   customizing the currencies strategy). The earlier `d8a0eca4…` session was stopped by the user.
 3. **Graph journal poller** — `graph_journal.py --iterations 48 --sleep 1800 --held-scope`
    (30-min cadence, 24h coverage per session). Persistence + wash + thesis alerts;
    held-scope filter restricts to WF-validated equities + CRYPTO_SLEEVE.
@@ -62,7 +66,75 @@ Human-in-the-loop; sessions started + stopped as needed rather than persistent. 
 Also: CI (`.github/workflows/test.yml`) runs a hardcoded file list missing the new approval, E2E,
 scheduler, FX and venue tests.
 
+## Futures, QC and Quantpedia queue — 2026-09-13 (late)  🟡 QUEUED
+
+**Uncommitted working tree** (tests green at last run; commit when the user says so):
+`scripts/discover_futures.py`, `scripts/paper_global.py`, `scripts/qc_futures_empirical.py`,
+`src/trading_live_claude/{brokers/ib.py, cli.py, config/settings.py, futures.py, intel/interpret.py,
+intel/graph_interpret.py, integrations/lean_futures.py, integrations/quantpedia.py}`, `.env.example`,
+`config/futures_universe.json`, tests `test_futures.py`, `test_ib_broker.py`, `test_graph_interpret.py`,
+`test_quantpedia.py`, report `reports/qc_futures_empirical_2026-09-13.{md,json}`.
+What it contains: futures specs split by IB trading class (SI 5,000 oz vs SIL 1,000 oz no longer
+mix); discovery fit judged by the vol-scaled cap with price source recorded; `--live-data-only`
+guard (live IB login allowed only as a read-only data feed); global book wired to the intel graph
+(overlay provider writes it, persistence gate + graph-weighted interpret read it; futures classed
+commodity / precious_metals; futures added to THEME_EXEMPLARS); LEAN mirror of the book rules +
+QC runner; Quantpedia API client + `quantpedia-search/show/pull`.
+
+### Blockers
+1. **No futures market data on the IB login.** Read-only probe of front-month MCL: error 354 for both
+   real-time (type 1) and delayed (type 3). Discovery prices were all historical closes. The futures
+   paper book would launch and never trade. Needs an IB market-data subscription (spend decision:
+   US futures bundle + any ICE Europe / SGX / OSE data). Paper login never reached the API (paper
+   username is a separate credential); live TWS with **Read-Only API** + `--live-data-only` is the
+   agreed workaround once data exists (`paper_global.py --futures config/futures_universe.json
+   --crypto "" --ib-port 7496 --live-data-only`).
+2. **Quantpedia credentials.** Client built against the public docs (`https://quantpedia.com/api/v1`,
+   Basic auth username + API key) but `.env` has none. Needs Quantpedia Pro + an API access request;
+   user adds `QUANTPEDIA_USERNAME` / `QUANTPEDIA_API_KEY` to `.env`.
+
+### Empirical results to act on (`reports/qc_futures_empirical_2026-09-13.md`)
+QC cloud, local default parameters, untuned, no intel/allocator:
+book-bollinger (MCL/MHG/ZC 2022→) CAGR 1.4% Sharpe −2.2 DD 2.2%; book-ts_momentum 1.9% / −0.9 / 8.8%;
+edge-bollinger (8 full-size, 2012→) −6.4% / −1.0 / **64%** DD, net −62%; edge-ts_momentum −1.2% /
+−0.4 / 37%. Neither strategy shows an edge on futures. **Do not tune on this single run** (data-first);
+**do not paper-trade these rules on futures expecting an edge.**
+
+### Fix before rerunning
+1. **Enforce the stop the sizer assumes.** Sizing risks 1% to a 2×ATR stop that no rule ever places
+   (Bollinger exits only at mid band / 15 bars) — how a 1%-per-trade book hit a 64% DD. Same gap in
+   the paper book (`Router.check_forced_exits` uncalled). Fix in both, then rerun
+   `scripts/qc_futures_empirical.py`.
+2. **Per-root P&L attribution in the LEAN mirror is broken** (mostly zeros — expired contracts leave
+   the portfolio before `on_end_of_algorithm`). Track realized P&L per root in `on_order_event`.
+3. **MHG never traded** in either book run — check QC micro-copper data coverage.
+4. **No slippage** in QC's default futures fills; add a slippage model so costs aren't understated.
+5. **Long-only.** Momentum lost through the 2012–19 commodity bear; a short leg is a strategy change —
+   research it (Quantpedia: commodity term structure / carry, time-series momentum with shorts), then
+   walk-forward, before touching the book.
+6. **International contracts untested on QC** (ICE Europe, SGX, Osaka, canola are outside the mirror's
+   universe).
+
+### Smaller items
+- **`qc-rank` ranks a tutorial template #1** ("Adaptable Light Brown Crocodile": buys 10 TSLA once and
+  holds 2020; tagged momentum because an SMA is computed). Add minimum trades / duration filters and
+  flag runtime-errored latest backtests.
+- **Graph-weighted interpret default** — unanswered: proposal was to keep it behind a flag, off by
+  default, until weeks of graph polls exist to test whether persistence predicts anything.
+- **Futures universe**: 8 enabled (`/MCL /MHG /ZC /PLTM /RSS3 /FEF /TF /RS`); `/PLTD` disabled
+  (rolling-spot-style, 100 multiplier labelled Standard). Full-size CL/GC/HG/SI and MGC exceed the
+  vol-scaled cap on a CAD 100k book.
+- **Client Portal Gateway** (`Downloads/clientportal.gw`) was authenticated to the LIVE account, then
+  logged out and stopped. Its `conf.yaml` has `origin.allowed: "*"` — never leave it authenticated
+  to live; it has no read-only mode.
+
 ## Recent shipments
+
+**2026-09-13 — commit `4b5af35`:** commodity futures paper book (`/ROOT` specs from IB contract
+details, notional scaling by multiplier ÷ price magnifier, pre-first-notice roll through the router,
+`discover_futures.py`, `paper_global.py --futures`); vol-scaled per-name cap (paper paths) that also
+counts notional already held; **gross-leverage fix** — the monitor never passed open notional, so the
+1.0× cap never bound; the router now reads it from positions and refuses entries if it can't.
 
 **2026-09-11 → 09-13 — commits `400a6ae`, `8042c91`, `2dd2043`:**
 - **E2E audit + TradeCard fixes** (`E2E_AUDIT_2026-09-11.md`). Mocked sign-off superseded

@@ -1,0 +1,12 @@
+[fetch] cache=data\cache  pairs=['EURGBP']  since=0  max_pages=5000  sleep=1.05s
+[fetch] EURGBP ...
+    EURGBP: page     1, trades so far    1000
+    EURGBP: page    10, trades so far   10000
+    EURGBP: page    20, trades so far   20000
+    EURGBP: page    30, trades so far   30000
+    EURGBP: page    40, trades so far   40000
+    EURGBP: page    50, trades so far   50000
+    EURGBP: page    60, trades so far   60000
+    EURGBP: page    70, trades so far   70000
+    EURGBP: page    80, trades so far   80000
+    EURGBP: page    90, trades so far   90000

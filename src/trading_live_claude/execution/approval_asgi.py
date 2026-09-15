@@ -90,7 +90,7 @@ class OrderIntentBody(BaseModel):
 
     symbol: str
     action: Literal["Buy", "Sell", "BTC", "SShort"]
-    shares: int = Field(ge=1)
+    shares: float = Field(gt=0)
     entry: float
     stop: float
     target: float | None = None
@@ -120,7 +120,7 @@ class PromptOut(BaseModel):
     broker: Broker
     symbol: str
     action: str
-    shares: int
+    shares: float
     entry: float
     stop: float
     target: float | None = None
@@ -173,7 +173,7 @@ class PassbookEntryOut(BaseModel):
     broker: Broker
     symbol: str
     action: str
-    shares: int
+    shares: float
     notional_usd: float
     strategy: str
     thesis: str

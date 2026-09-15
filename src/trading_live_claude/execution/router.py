@@ -29,6 +29,7 @@ from ..brokers.models import Order, OrderAction, OrderType
 from ..logging_setup import get_logger
 from ..risk.heat import PortfolioHeat
 from ..risk.kill_switch import KillSwitch
+from ..risk.quantity import QuantityRule, whole_units
 from .daily_budget import DailyBudget
 from .journal import OrderJournal
 
@@ -53,7 +54,7 @@ class OrderIntent:
 
     symbol: str
     action: OrderAction
-    shares: int
+    shares: float
     entry: float
     stop: float
     target: float | None
@@ -87,8 +88,11 @@ class Router:
         force_exit_atr_mult: float = 3.0,
         on_size_cap_breach: Literal["trim", "reject"] = "trim",
         position_cap_pct_for: Callable[[str], float] | None = None,
+        quantity_rule_for: Callable[[str], QuantityRule] | None = None,
         _confirmed: bool = False,
     ) -> None:
+        # Tradeable quantity per symbol for size-cap trims; whole units unless supplied.
+        self.quantity_rule_for = quantity_rule_for or whole_units
         # Per-name notional cap as a function of the symbol (e.g. volatility-scaled); falls back
         # to the flat max_position_notional_pct when not supplied.
         self.position_cap_pct_for = position_cap_pct_for
@@ -324,7 +328,8 @@ class Router:
                     else:
                         # Trim shares to fit. Recompute notional for downstream gates
                         # (min-ticket check must see the trimmed size, not the original).
-                        trimmed_shares = int(fit_notional // intent.entry)
+                        trimmed_shares = self.quantity_rule_for(intent.symbol).floor(
+                            fit_notional / intent.entry, intent.entry)
                         if trimmed_shares <= 0:
                             reasons.append(
                                 f"trim would round to 0 shares (fit ${fit_notional:,.0f} / "
