@@ -287,6 +287,56 @@ def _calibrate_candlestick(p: CalibrationProfile) -> dict[str, object]:
     return {"exit_ma": exit_ma, "atr_window": atr_window}
 
 
+# Class-specific signal-statistics winners from the 2026-09-15 walk-forward sweep — see
+# ``reports/calibration_sweep.{csv,md}`` for the surface and ``scripts/calibration_sweep.py``
+# for the harness. The heuristic formulas above still compute a value from vol/spread/regime;
+# these overrides simply replace the OUTPUT for the classes we swept. Time-scale kwargs
+# (``window``, ``exit_ma``, ``atr_window``) are untouched by the sweep and keep their formula.
+#
+# Fold policy: only cells with walk-forward efficiency (WFE = mean_OOS / mean_IS) >= 1.0 land
+# here. Cells with lower WFE — meaning the empirical winner shows OOS/IS degradation, or the
+# WFE ratio is degenerate (IS near zero) — stay on the heuristic and are documented below as
+# "SEEN, NOT FOLDED" so the sweep evidence is discoverable without silently trusting a shaky
+# median. Widen the basket and re-run the sweep before promoting them.
+_SWEEP_N_STD_BY_CLASS: dict[str, float] = {
+    "equity": 1.5,          # n=5, median OOS 6.66, WFE 1.24 — solid; replaces vol/0.20 scaling for equity
+    # SEEN, NOT FOLDED — crypto: sweep winner n_std=1.5 with median OOS 3.00 but WFE 0.35
+    # (~65% OOS/IS degradation on a 3-name basket). Keep the heuristic (vol/0.20 → ~2.5-3.0
+    # for crypto) until the basket grows past 3 names and WFE clears 1.0.
+}
+_SWEEP_OVERSOLD_BY_CLASS: dict[str, float] = {
+    "equity": 35.0,         # n=5, median OOS 3.67, WFE 1.00 — winner at the top of the {20,25,30,35} grid; extend grid on next sweep
+    "crypto": 35.0,         # n=3, median OOS 2.28, WFE 1.54 — solid
+}
+_SWEEP_ENTRY_Z_BY_CLASS: dict[str, float] = {
+    "equity": 1.5,          # n=5, median OOS 6.86, WFE 1.03 — solid; happens to match the current heuristic's output for equity
+    # SEEN, NOT FOLDED — crypto: sweep winner entry_z=0.5 with median OOS 6.16 but WFE 6.20
+    # (degenerate ratio — IS score near zero, so the WFE metric is meaningless as a confidence
+    # signal). Median OOS is high, but a 3-name basket with a broken WFE is not enough evidence
+    # to override the class-agnostic heuristic (~1.5-1.7 for crypto). Revisit.
+}
+
+
+def _apply_sweep_overrides(strategy_name: str, asset_class: str,
+                             kwargs: dict[str, object]) -> dict[str, object]:
+    """Replace signal-statistics kwargs with the walk-forward sweep's class-specific winner.
+
+    Called from ``calibrated_kwargs`` AFTER the strategy's calibrator runs, so the sweep only
+    overrides the numeric axes we swept (``n_std`` / ``oversold`` / ``entry_z``) — the
+    time-scale axes (``window``, ``exit_ma``, ``atr_window``) still come from the half-life-
+    driven heuristics that the calibration matrix already validated. Classes not covered in
+    the sweep (fx, fixed_income, commodity, precious_metals, future) keep the heuristic
+    output unchanged.
+    """
+    if strategy_name == "bollinger" and asset_class in _SWEEP_N_STD_BY_CLASS:
+        kwargs["n_std"] = _SWEEP_N_STD_BY_CLASS[asset_class]
+    elif strategy_name == "rsi_meanrevert" and asset_class in _SWEEP_OVERSOLD_BY_CLASS:
+        kwargs["oversold"] = _SWEEP_OVERSOLD_BY_CLASS[asset_class]
+    elif strategy_name == "zscore_ou" and asset_class in _SWEEP_ENTRY_Z_BY_CLASS:
+        kwargs["entry_z"] = _SWEEP_ENTRY_Z_BY_CLASS[asset_class]
+    return kwargs
+
+
 _CALIBRATORS: dict[str, Callable[[CalibrationProfile], dict[str, object]]] = {
     "bollinger": _calibrate_bollinger,
     "rsi_meanrevert": _calibrate_rsi_meanrevert,
@@ -319,7 +369,12 @@ def calibrated_kwargs(strategy_name: str, symbol: str) -> dict[str, object]:
     calibrator = _CALIBRATORS.get(strategy_name)
     if calibrator is None:
         return {}
-    return calibrator(profile_for(symbol))
+    kwargs = calibrator(profile_for(symbol))
+    # Empirical signal-statistics overrides from the 2026-09-15 walk-forward sweep. Only
+    # applied to strategy + class pairs actually covered by the sweep; every other cell
+    # keeps its heuristic value.
+    asset_class = spec_for(symbol).asset_class
+    return _apply_sweep_overrides(strategy_name, asset_class, kwargs)
 
 
 def calibrate_for(strategy_name: str, symbol: str):  # -> Strategy

@@ -1,5 +1,44 @@
 # Next-session backlog
 
+**Shelved 2026-09-15 — futures strategy research (both failed walk-forward, do NOT re-run as-is).**
+Reverse-engineered a momentum-trend + mean-reversion fit off /CL and /GC, then walk-forwarded it and a
+cross-sectional momentum book on QuantConnect (roll-adjusted continuous contracts, causal, params fixed
+a priori, stops enforced). Both had no out-of-sample edge: trend+reversion −1.6% CAGR / 2-of-20 positive
+years / 27% DD (`reports/qc_trend_zscore_wf_2026-09-15.md`); cross-sectional 12-1 momentum −9% CAGR /
+2-of-21 positive (`reports/qc_xsec_momentum_wf_2026-09-15.md`). Read: the edge is not in a commodity-only
+futures universe (published futures-momentum evidence needs rates/FX/equity-index too, which the venue
+split doesn't cover). The reusable LEAN renderers (`render_trend_zscore_wf`, `render_xsec_momentum_wf`)
+and their runners/tests are in **git stash@{0}** ("shelved: futures trend+reversion and cross-sectional
+momentum WF harness"), NOT committed — `git stash pop` to revive. Only unexplored commodity-specific
+factor left is carry/term-structure, which needs front-vs-deferred (futures-chain) data = the market-data
+subscription. Reports are kept as the record.
+
+
+**Latest session (2026-09-14):** Sizing correctness fixes committed as `a45cb79` (the 09-13 futures /
+intel / QC / Quantpedia work rode in on that commit too). New sizing behaviour is behind an opt-in
+`--sizing-v2` flag (off by default): venue lot rules (fractional crypto floored to the exchange step,
+whole shares/contracts otherwise), 365-day annualization on Kraken, enforced ATR stops (rebuilt from
+avg entry after a restart), and a `state/sizing_decisions.jsonl` journal. Exit closes the exact held
+quantity (always on — bug fix). Kraken was relaunched on `--sizing-v2` (session `b9e3295b…`, log
+`logs/paper_kraken_2026-09-14_2210.log`) and the fix is confirmed: PAXG now sizes ~0.57 coins and fills
+where it produced 0 before. Suite 1,040 passed.
+
+**UNCOMMITTED at session end (2026-09-14):** "foreign stocks + FX off IB" work — `src/trading_live_claude/
+desk_policy.py` (new: `assert_ib_futures_only`, `assert_single_currency`) plus `scripts/paper_ib.py` and
+`scripts/paper_global.py` rewired to refuse equities and mixed-currency baskets (FX is no longer sourced
+from IB; run one book per currency, `--numeraire`/`--account-currency`). `tests/test_desk_policy.py` added.
+Suite green. Commit when the user asks.
+
+**Futures data pull (2026-09-14):** ran `discover_futures.py --port 7496 --live-data-only` against live
+TWS read-only. All groups resolved; `/MCL /MHG /ZC /PLTM` fit the CAD-100k cap. Prices are historical
+closes — live futures ticks still need a market-data subscription (error 354 unresolved).
+
+**Empirical rerun (2026-09-14, `reports/qc_futures_empirical_2026-09-14.md`):** ran as-is at user request
+on the still-unfixed mirror (no stop enforcement, per-root P&L still mostly zeros). Reproduces the prior
+result — no edge: book-bollinger 1.4% CAGR / −2.2 Sharpe, book-ts_momentum 1.9% / −0.9; edge-bollinger
+−62% net / 64% DD, edge-ts_momentum −17%. MHG still 0 entries (QC micro-copper coverage). The informative
+run still needs the mirror's stop + per-root P&L fix FIRST (see "Fix before rerunning" below).
+
 **Latest session (2026-09-11 → 09-13):** see `SESSION_REPORT_2026-09-13.md` and
 `E2E_AUDIT_2026-09-11.md`. Commits `400a6ae`, `8042c91`, `2dd2043`, `668c300`, `4b5af35`; the later
 futures / intel / QC / Quantpedia work is UNCOMMITTED (list in the futures queue). Suite 1,019 passed
@@ -56,11 +95,14 @@ Human-in-the-loop; sessions started + stopped as needed rather than persistent. 
    `LiveMonitor` without overlay / interpret / allocator / persistence hooks, the stale-quote guard,
    or session routing (audit top-5 #1, still open).
 4. **`Router.check_forced_exits` has no caller** outside tests — item 3's "cheap path" never runs.
-5. **PAXG entry signal never sizes.** 2026-09-13 Kraken paper: 7 consecutive entry signals with
-   `sized: 0`, no orders, a Telegram alert every poll. Cause not diagnosed (candidate: whole-unit
-   flooring on a ~US$4,300 instrument); if so the ×3.90 BTC/PAXG allocator boost never applies.
+5. **PAXG entry signal never sizes.** ✅ FIXED 2026-09-14 via `--sizing-v2`. Cause was whole-unit
+   flooring on a ~US$4,300 instrument (confirmed). Kraken now runs on `--sizing-v2` and PAXG fills.
+   NOTE: the flag is opt-in — the default (v1) path still whole-unit-floors; decide whether to make
+   v2 the default once it has accrued data.
 6. **QT paper book mixes CAD and USD names** without conversion (QQQ, VALE, DBC beside `.TO`).
 7. **Leverage-cap trim floors crypto to 0** (`router.py` `int(fit_notional // entry)`).
+   ✅ FIXED 2026-09-14: router trim uses `quantity_rule_for(symbol).floor(...)`; under `--sizing-v2`
+   the Kraken launcher wires the real lot rules into the router so trims round to the venue step.
 8. **TradeCard signs neither thesis nor stop**, and the stop is not displayed.
 
 Also: CI (`.github/workflows/test.yml`) runs a hardcoded file list missing the new approval, E2E,
@@ -326,6 +368,44 @@ data-first sequencing section above.
     * Risk: only affects the intel graph, not Router / gates. Safe to prototype
       behind a `--emit-edges` flag on `deepen_kraken_trades.py` before promoting to
       always-on behavior.
+
+- **Runtime-exercise `composite` and `confirm_<base>` in a paper session.** Surfaced
+  during the 2026-09-15 architecture review of the candlestick-confirmation overlay.
+  All three pieces are code-shipped and unit-tested but have **never been exercised
+  in a paper session** — the QT paper strategy-map runs bare
+  `bollinger / ts_momentum / rsi_meanrevert / atr_channel`, and the Kraken sleeve
+  uses `bollinger / macd / atr_channel / ts_momentum / rsi_meanrevert`. As a
+  consequence there is **zero runtime evidence in `state/paper_fills.jsonl` or
+  `state/paper_orders.jsonl`** for any of these:
+    * `composite` (`DefaultComposite` — OR-union of BollingerMeanRevert +
+      RsiMeanRevert + EmaCrossover + DonchianBreakout) — recall stage.
+    * `confirm_bollinger` (BollingerMeanRevert w=30, n_std=3.0 gated by bullish
+      candlestick reversal) — precision stage.
+    * `confirm_rsi_meanrevert` (RsiMeanRevert w=14, oversold=35 gated by bullish
+      candlestick reversal) — precision stage.
+  The empirical case for confirmation (0.32→0.38 precision) is from Aug 22-23 reports
+  on the TSX basket only, pre-dates the Sep 5 asset-class-aware pattern filtering,
+  and pre-dates the Sep 15 calibration sweep. Steps to close the gap:
+    1. Pick 2-3 held symbols where `confirm_bollinger` and `confirm_rsi_meanrevert`
+       have base-strategy history (e.g. ENB.TO already runs bollinger, SRU.UN.TO
+       already runs rsi_meanrevert). Add them to the QT strategy-map with the
+       `confirm_` prefix so the same names run both variants in successive polls
+       (or split across two paper sessions to keep the strategy-map clean).
+    2. Add `composite` to the map for at least one symbol where the four member
+       detectors have known-tradeable base scores.
+    3. Run the paper session for ≥ 1 week so ≥ 3-5 fills accumulate per variant.
+       Compare fill count, average holding period, and OOS return per variant vs
+       the base strategy in the same window using `state/paper_fills.jsonl`.
+    4. If the confirm-overlay precision claim holds up (fills are noticeably fewer
+       AND OOS return per fill is higher on the same symbol), fold the recommendation
+       into the QT runbook in this file.
+  **Do NOT** promote any of these to `WALK_FORWARD_VALIDATED` on paper-session
+  evidence alone — the walk-forward gate stays the promotion path. This is about
+  gathering *any* runtime evidence at all before deciding whether a precision-stage
+  fold is worth cost.
+  Blocked by: nothing — the strategies are registered, calibrator handles them, and
+  the QT runbook command in this file can be extended in a one-line edit. No new
+  code needed.
 
 - **Cross-path Tiers 4 + 5** — Realized P&L → thesis calibration; prediction evaluation.
   Both need weeks of accrued paper fills + thesis history. 7 days accrued / ~30 days
@@ -1182,6 +1262,35 @@ solutions; call out and prioritize. Full agent report lives in the session trans
   `data/ib_futures_history.py`), `microstructure/{bitstamp_l2,coinbase_l2,simulator,arbitrage}.py`,
   `intel/{apply,chart,worldmonitor}.py`, `scripts/liquidity_heatmap.py`,
   `scripts/walk_forward_pairs.py`, `scripts/sweep_ib.py`.
+- 🟡 `intel/routing.py:78` — `classify_symbol` silently misroutes FX slash-notation to
+  `crypto`. The `"/"` check for crypto fires before the 6-letter FX check, so `EUR/USD`,
+  `GBP/USD`, `USD/CAD`, etc. all resolve to `crypto` (only the no-slash form `EURUSD` is
+  correctly classified as `fx`). Surfaced 2026-09-15 while verifying the calibration-sweep
+  overrides. Blast radius (all pre-existing, no live-path impact today because the live
+  sleeve carries no FX names):
+    * `analysis/asset_spec.py::spec_for` → returns `CryptoSpec` for `EUR/USD`, then
+    * `analysis/calibration.py::profile_for` → applies `_CLASS_DEFAULTS["crypto"]`
+      (~60% vol, tier1) instead of the FX profile (~9% vol, mean_reverting), yielding
+      wildly wrong `window` / `n_std` / `entry_z` for FX slash-notation callers.
+    * `intel/routing.py::OverlayProvider` → returns the crypto scalar for FX slash-notation.
+    * The new `_apply_sweep_overrides` in calibration.py (2026-09-15 fold) uses
+      `spec_for(symbol).asset_class`, so if a future sweep populates a `crypto` entry
+      for `n_std`, an FX slash-notation caller would silently pick it up.
+    * `scripts/fx_pairs_scan.py` and `scripts/single_fx_wf.py` default their inputs to
+      slash-notation (`"EUR/USD", "GBP/USD", ...`) — anything they compute that flows
+      through `classify_symbol`/`spec_for` is currently on the wrong branch.
+  Fix (small): reorder the checks so the FX-shape check on a slash-separated pair fires
+  first when both halves are in `_FX_CODES`. Roughly:
+  ```python
+  if "/" in s:
+      base, quote = s.split("/", 1)
+      if base in _FX_CODES and quote in _FX_CODES:
+          return "fx"
+  if "/" in s or s.split("-")[0] in _CRYPTO_BASES:
+      return "crypto"
+  ```
+  Add a regression test that both `EUR/USD` and `EURUSD` route to `fx` and that
+  `BTC/USD` still routes to `crypto` (and that a hypothetical `BTC-USD` still does too).
 
 ### 🟢 Minor (docs / cleanup / future risk)
 
