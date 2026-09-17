@@ -15,6 +15,54 @@ point-in-time history (see :mod:`trading_live_claude.intel.events`), so a thesis
 investigate, and anything traded on it must still clear the walk-forward like any other candidate.
 Each thesis therefore carries an explicit ``action`` framed as risk posture or research focus, never
 as an entry signal.
+
+Threshold calibration — 2026-09-16
+----------------------------------
+Thresholds were measured against the accrued snapshot corpus (``state/intel_overlay.jsonl``,
+280 reads spanning 2026-08-29 → 2026-09-16, zero degraded) by replaying :func:`interpret` over
+every snapshot and counting fires. Two gates were sited below their own input's 25th percentile
+and were therefore firing on ~3/4 of all reads — a thesis that fires 75% of the time carries
+almost no information, which is precisely the "inventing a thesis from noise" failure this module
+set out to avoid:
+
+===========================  =========  ==========  =========  ==========
+gate                         was        base rate   now        base rate
+===========================  =========  ==========  =========  ==========
+``strategic_risk``           >= 60.0        75.0%   >= 73.0        21.1%
+``conflict_events_active``   >= 3           71.4%   >= 6           17.1%
+===========================  =========  ==========  =========  ==========
+
+Post-calibration basket: ``No notable configuration`` 64.6%, ``Complacency divergence`` 21.1%,
+``Conflict escalation watch`` 17.1%, ``Energy event concentration`` 1.8%; mean 1.05 theses per
+snapshot (was 1.71). The quiet-tape null becoming the dominant read is the honest outcome for a
+corpus whose geopolitical index barely moves (``strategic_risk`` p25=65, p50=70, p90=73, p95=74).
+
+**Gates that have NEVER been satisfiable on observed data.** These are retained deliberately —
+18 days of one regime is not evidence that an input can never move — but do not expect them to
+fire, and do not treat their silence as a signal:
+
+* ``conflict_accel >= 2.0`` / ``>= 2.5`` (theses 1 and 3) — observed max 1.20.
+* ``fear_greed >= 70`` / ``<= 25`` (Sentiment stretch) — observed range 54-68. This thesis has
+  fired zero times in 280 reads.
+* ``natural_disasters_active >= 5`` (Disaster / insurance) — observed max 2. Zero fires.
+* ``disaster_accel`` — the ``disaster`` key is **absent** from every observed
+  ``event_acceleration`` payload (only ``conflict`` / ``energy`` / ``military`` appear), so this
+  leg cannot evaluate regardless of threshold.
+
+``energy_stress >= 0.3`` in thesis 2 is redundant on this corpus: every stress-triggered fire is
+already an ``energy_accel >= 2.0`` fire. Kept because it is not *logically* redundant.
+
+**Market-data inputs and their IB availability.** Of the four market fields read here, IB can
+serve one properly: ``equity_vol`` (VIX) via ``Index("VIX", "CBOE")`` — worth substituting to
+lift coverage from the OSINT-relayed 77% to ~100% and make the gate real-time. ``fear_greed`` has
+no IB product (it is a third-party composite). ``dxy_chg`` is only present on 1% of reads and IB
+FX was taken off-policy on 2026-09-14. ``crypto_chg`` (12% coverage) belongs to Kraken. Note that
+substituting IB VIX will NOT change any firing rate — both ``calm_market`` legs were already
+satisfied most of the time, so the saturation was never on the market side.
+
+**Caveat.** These cutoffs are fitted to one regime. If WorldMonitor recentres its strategic-risk
+index the constants go stale silently. A trailing-percentile gate would be regime-robust where a
+hard constant is not; that is a design change and is queued rather than done here.
 """
 from __future__ import annotations
 
@@ -24,6 +72,12 @@ from typing import Any
 import httpx
 
 from trading_live_claude.intel.overlay import IntelSnapshot
+
+# Calibrated 2026-09-16 against the 280-snapshot corpus — see the module header for the
+# measurement and the base rates these produce. Named rather than inline so the regression test
+# can assert on them directly and a future recalibration is a one-line change with a visible diff.
+STRATEGIC_RISK_STRESSED: float = 73.0     # was 60.0 (corpus p25=65 — the old gate never bound)
+CONFLICT_EVENTS_ELEVATED: int = 6         # was 3   (corpus median=4 — same problem)
 
 # Themes an intel domain implicates, as ticker exemplars already present in this project's universe.
 # Deliberately small and explicit: these are starting points for research, not a sector database.
@@ -81,8 +135,12 @@ def interpret(snap: IntelSnapshot) -> list[Thesis]:
     military_accel = accel.get("military", 1.0)
 
     # --- 1. Complacency divergence: exogenous risk building while the market prices calm ---------
+    # ``STRATEGIC_RISK_STRESSED`` was 60.0 until the 2026-09-16 threshold calibration (see the
+    # module header) showed it sitting below the corpus p25, which made ``stressed_world``
+    # ~always true and drove this thesis to a 75% base rate. 73.0 is the measured p90.
     calm_market = (vix is not None and vix < 18.0) or (fg is not None and fg >= 60.0)
-    stressed_world = snap.strategic_risk >= 60.0 or energy_accel >= 2.0 or conflict_accel >= 2.0
+    stressed_world = (snap.strategic_risk >= STRATEGIC_RISK_STRESSED
+                      or energy_accel >= 2.0 or conflict_accel >= 2.0)
     if calm_market and stressed_world:
         ev = []
         if snap.strategic_risk:
@@ -97,7 +155,12 @@ def interpret(snap: IntelSnapshot) -> list[Thesis]:
             ev.append(f"fear/greed {fg:.0f} (greed)")
         out.append(Thesis(
             name="Complacency divergence",
-            confidence="high" if (snap.strategic_risk >= 65 and energy_accel >= 3.0) else "moderate",
+            # ``high`` keyed on energy acceleration ALONE (was ``sr >= 65 and ea >= 3.0``). With
+            # the main gate now at sr>=73, an ``sr`` sub-condition is either redundant or — as
+            # measured 2026-09-16 — unreachable: sr and energy flow never spiked together in the
+            # 280-snapshot corpus, so the old conjunct produced 0 of 59 fires at high confidence.
+            # Energy accel is the leg with real dynamic range (0.62-6.33 observed).
+            confidence="high" if energy_accel >= 3.0 else "moderate",
             evidence=ev,
             inference="Exogenous risk is building while the market prices calm. The two readings are "
                       "independent — event flow comes from the OSINT archive, VIX and sentiment from "
@@ -175,10 +238,15 @@ def interpret(snap: IntelSnapshot) -> list[Thesis]:
         ))
 
     # --- 3. Conflict escalation --------------------------------------------------------------
-    if snap.conflict_events_active >= 3 or conflict_accel >= 2.5:
+    # Count gate was >=3 until the 2026-09-16 calibration: the corpus median is 4, so >=3 fired on
+    # 71% of reads. 6 is the measured p90. The ``conflict_accel`` leg is retained but has never
+    # been satisfiable on observed data (max 1.20 vs a 2.5 cutoff) — see the module header.
+    # ``moderate`` cutoff raised 5 -> 7 because with the gate at 6 every fire would otherwise be
+    # moderate, collapsing the tentative band entirely (measured: 48/48 moderate at >=5).
+    if snap.conflict_events_active >= CONFLICT_EVENTS_ELEVATED or conflict_accel >= 2.5:
         out.append(Thesis(
             name="Conflict escalation watch",
-            confidence="moderate" if snap.conflict_events_active >= 5 else "tentative",
+            confidence="moderate" if snap.conflict_events_active >= 7 else "tentative",
             evidence=[f"{snap.conflict_events_active} critical cross-source escalations",
                       f"conflict event flow {conflict_accel:.1f}x baseline",
                       f"{len(snap.country_alert_counts)} countries carrying advisories"],
