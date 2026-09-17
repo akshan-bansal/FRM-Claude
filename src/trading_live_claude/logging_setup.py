@@ -20,6 +20,11 @@ def configure_logging(level: str = "INFO", log_dir: Path | None = None) -> None:
         handlers=handlers,
         force=True,
     )
+    # httpx/httpcore log every request URL at INFO. Telegram puts the bot token in the URL path
+    # (api.telegram.org/bot<token>/sendMessage), so INFO request logging wrote the token into
+    # logs/trading.log and every captured session log. Keep them at WARNING.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(max(log_level, logging.WARNING))
 
     structlog.configure(
         processors=[
