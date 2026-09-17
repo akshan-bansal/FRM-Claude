@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import signal
 import sys
 from pathlib import Path
 
@@ -104,9 +106,29 @@ def main() -> None:
                     help="Seconds a card prompt stays live before it auto-EXPIRES.")
     ap.add_argument("--iterations", type=int, default=0,
                     help="0 = run forever; a positive N runs that many polls and stops.")
-    ap.add_argument("--sizing-v2", dest="sizing_v2", action="store_true",
+    ap.add_argument("--sizing-v2", dest="sizing_v2",
+                    default=True, action=argparse.BooleanOptionalAction,
                     help="Kraken lot rules (fractional coins), 365-day annualization, enforced ATR "
-                         "stops and state/sizing_decisions.jsonl. Off by default.")
+                         "stops and state/sizing_decisions.jsonl. ON by default since 2026-09-16 — "
+                         "v1 floors to whole units, which zero-sizes a ~US$4,300 PAXG coin. v2 "
+                         "refuses to launch if Kraken's AssetPairs lot rules can't be fetched; pass "
+                         "--no-sizing-v2 to fall back to v1 in that case.")
+    ap.add_argument("--flatten-on-exit", dest="flatten_on_exit",
+                    default=True, action=argparse.BooleanOptionalAction,
+                    help="Close every open position through the Router when the loop exits, so "
+                         "the session's final journal row is a flat book with realized P&L booked "
+                         "instead of an orphaned position. ON by default. To stop a background "
+                         "session cleanly, touch state/STOP_<session_id> (printed at boot) — a "
+                         "process-manager terminate is a HARD kill and skips the flatten. Ctrl-C "
+                         "in a foreground terminal also works. Exits pass the risk gate like any "
+                         "other intent, so a residual below min-ticket or a tripped kill-switch "
+                         "will refuse to close and is reported loudly.")
+    ap.add_argument("--warmup-interval", type=int, default=0,
+                    help="Poll every N seconds for the first --warmup-minutes after launch, then "
+                         "fall back to --interval in the same process (no restart, no flatten). "
+                         "0 = off.")
+    ap.add_argument("--warmup-minutes", type=float, default=60.0,
+                    help="Length of the warm-up window in minutes.")
     args = ap.parse_args()
 
     sleeve = CRYPTO_SLEEVE
@@ -305,7 +327,34 @@ def main() -> None:
         overlay_for=overlay_for,
         interpret_for=interpret_for,
         sizing_policy=sizing_policy,
+        flatten_on_exit=args.flatten_on_exit,
+        stop_sentinel_dir=Path(settings.state_dir),
+        warmup_interval_seconds=args.warmup_interval or None,
+        warmup_minutes=args.warmup_minutes,
     )
+    if args.warmup_interval:
+        print(f"[kraken-paper] warm-up: polling every {min(args.warmup_interval, args.interval)}s "
+              f"for {args.warmup_minutes:g} min, then every {args.interval}s.", flush=True)
+    print(f"[kraken-paper] graceful stop: touch {Path(settings.state_dir) / 'STOP'} "
+          f"(all sessions) or {Path(settings.state_dir) / ('STOP_' + exec_broker.session_id)} "
+          f"(this one). Exits within one poll and "
+          f"{'flattens' if args.flatten_on_exit else 'does NOT flatten'}.", flush=True)
+
+    # Cooperative shutdown so the loop leaves through its ``finally`` and the flatten runs.
+    # SIGINT (Ctrl-C) and SIGTERM are catchable; a hard task-kill is not, and on Windows a
+    # terminate delivered by the process manager may not arrive as either — so this improves
+    # the common cases without promising the book is always closed. `--flatten-on-exit`'s
+    # help text says as much.
+    def _on_signal(signum, _frame) -> None:
+        print(f"[kraken-paper] signal {signum} — finishing poll, then "
+              f"{'flattening' if args.flatten_on_exit else 'exiting'}.", flush=True)
+        monitor.request_stop()
+
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        # ValueError: not on the main thread. OSError: signal unsupported on this OS.
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(_sig, _on_signal)
+
     monitor.run_forever(max_iterations=args.iterations or None)
 
 

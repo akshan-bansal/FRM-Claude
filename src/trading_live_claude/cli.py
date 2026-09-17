@@ -5,7 +5,9 @@ across the board is ``paper``.
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import signal as _signal
 import sys
 from pathlib import Path
 
@@ -225,6 +227,23 @@ def signal(
              "the real account; it builds the fill history live mode requires.",
     ),
     paper_equity: float = typer.Option(100_000.0, help="Starting equity for the paper account."),
+    flatten_on_exit: bool = typer.Option(
+        True,
+        "--flatten-on-exit/--no-flatten-on-exit",
+        help="PAPER ONLY. Close every open position through the Router when the loop exits, so "
+             "the session's final journal row is a flat book with realized P&L booked instead of "
+             "an orphaned position. ON by default. Honours Ctrl-C and SIGTERM; a HARD kill cannot "
+             "be intercepted, so a force-terminated process still leaves the book open. Exits pass "
+             "the risk gate like any other intent, so a residual below min-ticket or a tripped "
+             "kill-switch will refuse to close and is reported loudly. Ignored without --paper.",
+    ),
+    warmup_interval: int = typer.Option(
+        0, help="Poll every N seconds for the first --warmup-minutes after launch, then fall back "
+                "to --interval in the same process (no restart, no flatten). 0 = off. Strategies "
+                "run on daily bars, so warm-up re-checks the forming bar and live quotes — it "
+                "re-establishes positions quickly, it does not create new daily signals.",
+    ),
+    warmup_minutes: float = typer.Option(60.0, help="Length of the warm-up window in minutes."),
 ) -> None:
     """Live-signal monitor. Never places real orders.
 
@@ -432,7 +451,37 @@ def signal(
         interpret_for=interpret_for if intel_overlay else None,
         weight_bias_for=weight_bias_for,
         market_open_for=market_open if paper and settings.skip_closed_venues else None,
+        # Paper sessions flatten on the way out so the journal's last row is a flat book with
+        # realized P&L booked, not an orphaned position. Deliberately NOT defaulted on for the
+        # live path — auto-liquidating a real book on process exit is a decision for the human.
+        flatten_on_exit=paper and flatten_on_exit,
+        stop_sentinel_dir=Path(settings.state_dir),
+        warmup_interval_seconds=warmup_interval or None,
+        warmup_minutes=warmup_minutes,
     )
+    if warmup_interval:
+        console.print(f"[dim]warm-up: polling every {min(warmup_interval, interval)}s for "
+                      f"{warmup_minutes:g} min, then every {interval}s.[/dim]")
+    if paper:
+        _sess = getattr(exec_broker, "session_id", "")
+        console.print(f"[dim]graceful stop: touch {Path(settings.state_dir) / 'STOP'} (all "
+                      f"sessions) or {Path(settings.state_dir) / ('STOP_' + _sess)} (this one). "
+                      f"Exits within one poll and "
+                      f"{'flattens' if flatten_on_exit else 'does NOT flatten'}.[/dim]")
+
+    # Cooperative shutdown so the loop leaves through its ``finally`` and the flatten runs.
+    # A hard kill cannot be intercepted; the flag's help text says so rather than implying
+    # the book is always closed.
+    def _on_signal(signum, _frame) -> None:
+        console.print(f"[yellow]signal {signum} — finishing poll, then "
+                      f"{'flattening' if monitor.flatten_on_exit else 'exiting'}.[/yellow]")
+        monitor.request_stop()
+
+    for _sig in (_signal.SIGINT, _signal.SIGTERM):
+        # ValueError: not on the main thread. OSError: signal unsupported on this OS.
+        with contextlib.suppress(ValueError, OSError):
+            _signal.signal(_sig, _on_signal)
+
     monitor.run_forever(max_iterations=iterations or None)
 
 

@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 
 import pandas as pd
@@ -87,7 +88,29 @@ class LiveMonitor:
         corr_lead_lag: int = 0,
         roll_futures: Callable[..., None] | None = None,
         sizing_policy: SizingPolicy | None = None,
+        flatten_on_exit: bool = False,
+        stop_sentinel_dir: Path | None = None,
+        warmup_interval_seconds: int | None = None,
+        warmup_minutes: float = 60.0,
     ) -> None:
+        # Warm-up cadence: poll faster for the first ``warmup_minutes`` after launch, then fall back
+        # to ``interval_seconds`` without a restart (a restart would flatten the book). Used to
+        # re-establish positions quickly after a flatten-on-exit. None/0 disables it.
+        self._started_monotonic = time.monotonic()
+        self.warmup_interval_seconds = (max(int(warmup_interval_seconds), 5)
+                                        if warmup_interval_seconds else None)
+        self.warmup_minutes = max(float(warmup_minutes), 0.0)
+        self._warmup_logged_end = False
+        # When True, ``run_forever`` closes every open position through the Router on the way out
+        # (normal return, exception, or a cooperative stop). Off by default so existing callers
+        # keep their current behaviour; the paper entry points opt in. See ``flatten``.
+        self.flatten_on_exit = flatten_on_exit
+        self._stop_requested = False
+        # Directory watched for a graceful-stop sentinel. See ``_check_stop_sentinel``: this is
+        # how an operator (or Claude) stops a background session cleanly, because a process
+        # manager's terminate is a HARD kill on Windows and never reaches a signal handler —
+        # measured 2026-09-16, the flatten did not run on TaskStop.
+        self.stop_sentinel_dir = stop_sentinel_dir
         # Sizing v2 (opt-in): venue quantity rules, calendar-aware annualization, enforced stops
         # and a sizing decision journal. None keeps the original sizing behaviour exactly.
         self.sizing_policy = sizing_policy
@@ -216,14 +239,31 @@ class LiveMonitor:
             closes = closes[~closes.index.duplicated(keep="last")]
         return closes.pct_change()
 
+    def _in_warmup(self) -> bool:
+        if not self.warmup_interval_seconds or self.warmup_minutes <= 0:
+            return False
+        return (time.monotonic() - self._started_monotonic) < self.warmup_minutes * 60.0
+
+    def _effective_interval(self) -> int:
+        """The poll interval right now: the warm-up cadence inside the window, else the base.
+        Warm-up only ever speeds polling up — it never slows the base interval."""
+        if self._in_warmup():
+            return min(self.interval_seconds, int(self.warmup_interval_seconds or 0))
+        if self.warmup_interval_seconds and not self._warmup_logged_end:
+            self._warmup_logged_end = True
+            log.info("monitor.warmup.ended", interval_seconds=self.interval_seconds,
+                     warmup_minutes=self.warmup_minutes)
+        return self.interval_seconds
+
     def _sleep_seconds(self) -> float:
+        interval = self._effective_interval()
         wake = getattr(self.router, "seconds_until_next_wake", None)
         next_wake = wake(self.symbols) if wake is not None else None
         if next_wake is None:
-            return float(self.interval_seconds)
+            return float(interval)
         if not any(self._is_open(s) for s in self.symbols):
             return float(min(max(next_wake, 5.0), 3600.0))    # all closed: sleep to next open
-        return float(min(max(next_wake, 5.0), self.interval_seconds))
+        return float(min(max(next_wake, 5.0), interval))
 
     def _is_open(self, symbol: str) -> bool:
         return self.market_open_for is None or self.market_open_for(symbol)
@@ -566,14 +606,189 @@ class LiveMonitor:
                          "drawdown": round(drawdown, 3)}))
         return events
 
+    def request_stop(self) -> None:
+        """Ask ``run_forever`` to leave the loop after the current poll.
+
+        Cooperative so the loop exits through its ``finally`` and the flatten runs. A hard
+        kill (SIGKILL, or a Windows task terminate that does not deliver a catchable signal)
+        bypasses this entirely — the caller installing a signal handler must not promise
+        otherwise. See ``flatten_on_exit``.
+        """
+        self._stop_requested = True
+
+    # Graceful-stop sentinels, watched under ``stop_sentinel_dir``.
+    #   ``STOP``               — stops every session watching this directory.
+    #   ``STOP_<session_id>``  — stops only the session with that PaperBroker session_id.
+    # These are a one-shot *request*, NOT a risk state, which is the whole difference from the
+    # kill-switch's ``HALTED``: a sentinel is consumed (deleted) once acted on, because a
+    # persistent STOP would immediately kill every subsequent launch. HALTED is deliberately
+    # persistent and Claude must never clear it — do not wire these two together.
+    STOP_SENTINEL = "STOP"
+
+    def _check_stop_sentinel(self) -> bool:
+        """True if a stop sentinel is present. Consumes it and requests a cooperative stop."""
+        if self.stop_sentinel_dir is None:
+            return False
+        candidates = [self.stop_sentinel_dir / self.STOP_SENTINEL]
+        session_id = getattr(self.broker, "session_id", None)
+        if session_id:
+            candidates.append(self.stop_sentinel_dir / f"{self.STOP_SENTINEL}_{session_id}")
+        for path in candidates:
+            try:
+                if not path.exists():
+                    continue
+            except OSError:                                # pragma: no cover — unreadable dir
+                continue
+            log.info("monitor.stop_sentinel.seen", path=str(path),
+                     flatten_on_exit=self.flatten_on_exit)
+            try:
+                path.unlink()
+            except OSError as e:                           # pragma: no cover
+                # Could not consume it. Still stop — but say so, because the next launch of a
+                # session watching this directory will stop immediately on the same file.
+                log.error("monitor.stop_sentinel.unlink_failed", path=str(path), error=str(e))
+            self.request_stop()
+            return True
+        return False
+
+    def flatten(self) -> list[str]:
+        """Close every open position through the Router. Returns symbols that FAILED to close.
+
+        Exits route through ``Router.submit`` exactly as a strategy-driven exit does — the risk
+        gate is never bypassed, including on the way out. That has a consequence worth knowing:
+        ``Router._gate`` applies the kill-switch, the min-ticket floor AND the portfolio-heat cap
+        to SELL intents (only max-open-positions, stop-side sanity and the notional cap are
+        BUY-guarded). So a flatten CAN be rejected — a tiny residual below min ticket, or a
+        tripped kill-switch, will refuse. Rejections are returned to the caller and logged at
+        error level rather than swallowed, because a silently half-flattened book is the exact
+        failure this method exists to prevent.
+        """
+        failed: list[str] = []
+        if hasattr(self.broker, "mark_to_market"):
+            try:
+                self.broker.mark_to_market()
+            except Exception as e:                         # pragma: no cover
+                log.warning("monitor.flatten.mtm_failed", error=str(e))
+
+        open_positions = self._open_positions()
+        if not open_positions:
+            log.info("monitor.flatten.already_flat")
+            return []
+
+        equity = self.broker.equity(self.account_number, currency=self.account_currency)
+        existing_risk = self._book_risk(open_positions)
+        log.info("monitor.flatten.start", positions=len(open_positions), equity=equity)
+
+        for symbol, qty in list(open_positions.items()):
+            price = self._exit_price(symbol)
+            if price <= 0:
+                failed.append(symbol)
+                log.error("monitor.flatten.no_price", symbol=symbol, qty=qty)
+                continue
+            intent = OrderIntent(
+                symbol=symbol,
+                action=OrderAction.SELL,
+                shares=abs(qty),
+                entry=price,
+                stop=price * 1.10,      # protective; exits are market — mirrors the step() exit
+                target=None,
+                strategy="flatten",
+                risk_dollars=0.0,
+                account_number=self.account_number,
+            )
+            try:
+                order = self.router.submit(
+                    intent,
+                    equity=equity,
+                    existing_risk=existing_risk,
+                    open_positions=len(open_positions),
+                )
+            except Exception as e:
+                failed.append(symbol)
+                log.error("monitor.flatten.submit_raised", symbol=symbol, qty=qty, error=str(e))
+                continue
+            if order is None:
+                # Gate rejection. The reason is already in the order journal via
+                # Router.submit's intent row (accepted=False, rejected_reasons=[...]).
+                failed.append(symbol)
+                log.error("monitor.flatten.rejected", symbol=symbol, qty=qty,
+                          notional=abs(qty) * price)
+                continue
+            self.on_event(MonitorEvent(datetime.now(UTC), symbol, "exit", price,
+                                       {"shares": abs(qty), "reason": "flatten"}))
+
+        # Re-mark so the session's final journalled equity row reflects the flat (or
+        # partially flat) book rather than the pre-flatten marks.
+        if hasattr(self.broker, "mark_to_market"):
+            try:
+                self.broker.mark_to_market()
+            except Exception as e:                         # pragma: no cover
+                log.warning("monitor.flatten.final_mtm_failed", error=str(e))
+
+        remaining = self._open_positions()
+        if remaining:
+            log.error("monitor.flatten.incomplete", remaining=sorted(remaining),
+                      failed=sorted(failed))
+        else:
+            log.info("monitor.flatten.complete", closed=len(open_positions))
+        return failed
+
+    def _book_risk(self, open_positions: dict[str, float]) -> float:
+        """Aggregate open risk for the heat gate, the same way ``step`` derives it.
+
+        Duplicates step()'s inline block rather than refactoring it — step is the hot path and
+        this is a shutdown-only caller. Unifying the two into one helper is a follow-up.
+        """
+        pos_risk: dict[str, float] = {}
+        pos_rets: dict[str, pd.Series | None] = {}
+        for sym, qty in open_positions.items():
+            px = self._last_mark(sym) if not self._is_open(sym) else self._exit_price(sym)
+            rets: pd.Series | None = None
+            if self.risk_model != "atr" or self.heat_aggregation == "corr":
+                try:
+                    rets = self._daily_returns(sym)
+                except Exception:
+                    rets = None
+            pos_rets[sym] = rets
+            pos_risk[sym] = per_trade_risk(qty, px, stop_distance=px * 0.02,
+                                           returns=rets, model=self.risk_model)
+        return portfolio_risk(pos_risk, pos_rets, method=self.heat_aggregation,
+                              lead_lag=self.corr_lead_lag)
+
+    def _exit_price(self, symbol: str) -> float:
+        """Best available price to exit at: live mid, else last trade, else the last good mark."""
+        try:
+            q = self.broker.quote(symbol)
+            px = q.mid or q.lastTradePrice or 0.0
+        except StaleQuote:
+            px = self._last_mark(symbol)
+        except Exception:
+            px = self._last_mark(symbol)
+        return float(px or 0.0)
+
     def run_forever(self, max_iterations: int | None = None) -> None:
         i = 0
-        while True:
-            try:
-                self.step()
-            except Exception as e:  # pragma: no cover
-                log.exception("monitor.step.error", error=str(e))
-            i += 1
-            if max_iterations is not None and i >= max_iterations:
+        try:
+            # Checked before the first poll too, so a sentinel dropped between launch and the
+            # first step still stops the session rather than opening a book first.
+            if self._check_stop_sentinel():
                 return
-            time.sleep(self._sleep_seconds())
+            while not self._stop_requested:
+                try:
+                    self.step()
+                except Exception as e:  # pragma: no cover
+                    log.exception("monitor.step.error", error=str(e))
+                i += 1
+                if max_iterations is not None and i >= max_iterations:
+                    return
+                if self._check_stop_sentinel():
+                    return
+                time.sleep(self._sleep_seconds())
+        finally:
+            # Runs on normal return, on a cooperative stop, and on an exception propagating out.
+            # Does NOT run on a hard kill — see request_stop's docstring.
+            if self.flatten_on_exit:
+                try:
+                    self.flatten()
+                except Exception as e:                     # pragma: no cover — never mask the exit
+                    log.exception("monitor.flatten.failed", error=str(e))

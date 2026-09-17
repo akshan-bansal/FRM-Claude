@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 
 import pandas as pd
@@ -416,3 +417,337 @@ def test_edge_mode_still_only_emits_transitions() -> None:
     mon.step()
     assert [e.kind for e in events] == ["exit", "hold"]
     assert all(e.is_transition for e in events)          # every edge emission is a transition
+
+
+# ---------------------------------------------------------------------------
+# flatten-on-exit — 2026-09-16
+#
+# Before this landed, terminating a session killed the process with positions still
+# open: the final paper_equity.csv row carried non-zero positions_value and unrealized
+# P&L that never resolved, and realized_pnl stayed 0.0 forever. Several sessions in the
+# journal history have that shape. These tests pin the close-then-stop contract.
+#
+# Every exit routes through Router.submit — the risk gate is never bypassed on the way
+# out — which means a flatten CAN be rejected (min-ticket on a residual, tripped
+# kill-switch). A rejection must surface, never be swallowed into a half-flat book.
+# ---------------------------------------------------------------------------
+
+
+class _MutableBroker:
+    """Broker whose position book can be emptied, so flatten's effect is observable."""
+
+    name = "fake-mutable"
+
+    def __init__(self, positions: list[_Position] | None = None) -> None:
+        self._positions = list(positions if positions is not None else [_Position("AAA", 5)])
+        self.mtm_calls = 0
+
+    def equity(self, account_number: str, currency: str = "CAD") -> float:
+        return 100_000.0
+
+    def positions(self, account_number: str) -> list[_Position]:
+        return [p for p in self._positions if p.openQuantity != 0]
+
+    def quote(self, symbol: str) -> _Quote:
+        return _Quote(mid=10.0, lastTradePrice=10.0)
+
+    def mark_to_market(self) -> None:
+        self.mtm_calls += 1
+
+    def close(self, symbol: str) -> None:
+        self._positions = [p for p in self._positions if p.symbol != symbol]
+
+
+class _FillingRouter:
+    """Router that accepts every intent and closes the position on the broker, the way a
+    real accepted SELL would once PaperBroker fills it."""
+
+    def __init__(self, broker: _MutableBroker) -> None:
+        self.broker = broker
+        self.intents: list[object] = []
+
+    def submit(self, intent, **kw):
+        self.intents.append(intent)
+        self.broker.close(intent.symbol)
+        return object()          # non-None == accepted, mirrors Router.submit -> Order
+
+
+class _RejectingRouter:
+    """Router whose gate refuses everything — Router.submit returns None on rejection."""
+
+    def __init__(self) -> None:
+        self.intents: list[object] = []
+
+    def submit(self, intent, **kw):
+        self.intents.append(intent)
+        return None
+
+
+class _AlwaysHold(Strategy):
+    """Never signals. Keeps step() from closing the book, so flatten is what closes it —
+    with _AlwaysExit the strategy exit fires first and flatten finds an already-flat book."""
+
+    name = "always_hold"
+
+    def required_history_bars(self) -> int:
+        return 3
+
+    def generate_signals(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
+        out = df.copy()
+        out["entry"] = 0
+        out["exit"] = 0
+        out["atr"] = 1.0
+        return out
+
+
+def _flatten_monitor(broker, router, **kw) -> LiveMonitor:
+    from trading_live_claude.risk.sizing import PositionSizer
+    base = dict(
+        broker=broker, market=_Market(), strategy=_AlwaysHold(),
+        sizer=PositionSizer(risk_pct=0.01), router=router,
+        account_number="ACC", symbols=["AAA"], interval_seconds=5,
+        risk_model="atr", heat_aggregation="sum",
+    )
+    base.update(kw)
+    return LiveMonitor(**base)
+
+
+def test_flatten_closes_every_position_through_the_router() -> None:
+    broker = _MutableBroker([_Position("AAA", 5), _Position("BBB", 3)])
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router)
+
+    failed = mon.flatten()
+
+    assert failed == []
+    assert broker.positions("ACC") == []            # book is flat
+    assert {i.symbol for i in router.intents} == {"AAA", "BBB"}
+    assert all(i.action.value == "Sell" for i in router.intents)
+
+
+def test_flatten_sells_the_exact_held_quantity() -> None:
+    """Truncating would strand a fractional crypto position with no way out."""
+    broker = _MutableBroker([_Position("PAXG/USD", 0.36)])
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router, symbols=["PAXG/USD"])
+
+    mon.flatten()
+
+    assert len(router.intents) == 1
+    assert router.intents[0].shares == 0.36
+
+
+def test_flatten_reports_gate_rejections_instead_of_swallowing_them() -> None:
+    """A rejected exit must be returned AND leave the position visibly open — a silently
+    half-flattened book is the exact failure this method exists to prevent."""
+    broker = _MutableBroker([_Position("AAA", 5), _Position("BBB", 3)])
+    router = _RejectingRouter()
+    mon = _flatten_monitor(broker, router)
+
+    failed = mon.flatten()
+
+    assert sorted(failed) == ["AAA", "BBB"]
+    assert len(broker.positions("ACC")) == 2        # nothing closed
+    assert len(router.intents) == 2                 # but both were attempted
+
+
+def test_flatten_on_an_already_flat_book_is_a_no_op() -> None:
+    broker = _MutableBroker([])
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router)
+
+    assert mon.flatten() == []
+    assert router.intents == []
+
+
+def test_flatten_remarks_the_book_so_the_final_equity_row_is_post_close() -> None:
+    """MTM runs before (fresh exit prices) and after (flat book in the journal)."""
+    broker = _MutableBroker([_Position("AAA", 5)])
+    mon = _flatten_monitor(broker, _FillingRouter(broker))
+
+    mon.flatten()
+
+    assert broker.mtm_calls >= 2
+
+
+def test_run_forever_flattens_on_exit_when_enabled() -> None:
+    broker = _MutableBroker([_Position("AAA", 5)])
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router, flatten_on_exit=True, interval_seconds=5)
+
+    mon.run_forever(max_iterations=1)
+
+    assert broker.positions("ACC") == []
+    assert any(getattr(i, "strategy", "") == "flatten" for i in router.intents)
+
+
+def test_run_forever_leaves_the_book_open_when_flatten_is_disabled() -> None:
+    """The pre-2026-09-16 behaviour must still be reachable — and must be opt-out, not silent."""
+    broker = _MutableBroker([_Position("AAA", 5)])
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router, flatten_on_exit=False, interval_seconds=5)
+
+    mon.run_forever(max_iterations=1)
+
+    assert not any(getattr(i, "strategy", "") == "flatten" for i in router.intents)
+
+
+def test_request_stop_exits_the_loop_through_the_finally() -> None:
+    """Cooperative stop must leave via the finally so the flatten still runs."""
+    broker = _MutableBroker([_Position("AAA", 5)])
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router, flatten_on_exit=True, interval_seconds=5)
+    mon.request_stop()
+
+    mon.run_forever()          # no max_iterations — only the stop flag ends this
+
+    assert broker.positions("ACC") == []
+    assert any(getattr(i, "strategy", "") == "flatten" for i in router.intents)
+
+
+def test_flatten_still_runs_when_the_loop_raises() -> None:
+    """An exception propagating out of run_forever must not skip the close."""
+    broker = _MutableBroker([_Position("AAA", 5)])
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router, flatten_on_exit=True, interval_seconds=5)
+
+    def _boom() -> None:
+        raise RuntimeError("sleep interrupted")
+    mon._sleep_seconds = _boom          # type: ignore[method-assign]
+
+    with contextlib.suppress(RuntimeError):
+        mon.run_forever()
+
+    assert broker.positions("ACC") == []
+
+
+# --- graceful-stop sentinel ------------------------------------------------
+# TaskStop / a process-manager terminate is a HARD kill on Windows and never reaches a
+# signal handler — measured 2026-09-16: the flatten did NOT run. The sentinel is the
+# path that actually works for background sessions, so these tests matter more than the
+# signal-handler ones.
+
+
+class _SessionBroker(_MutableBroker):
+    """MutableBroker with a PaperBroker-style session_id, for per-session sentinels."""
+
+    def __init__(self, session_id: str, positions=None) -> None:
+        super().__init__(positions)
+        self.session_id = session_id
+
+
+def test_global_stop_sentinel_ends_the_loop_and_flattens(tmp_path) -> None:
+    broker = _MutableBroker([_Position("AAA", 5)])
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router, flatten_on_exit=True,
+                           stop_sentinel_dir=tmp_path)
+    (tmp_path / "STOP").write_text("stop", encoding="utf-8")
+
+    mon.run_forever()          # no max_iterations — only the sentinel can end this
+
+    assert broker.positions("ACC") == []
+    assert any(getattr(i, "strategy", "") == "flatten" for i in router.intents)
+
+
+def test_stop_sentinel_is_consumed_so_the_next_launch_is_not_killed(tmp_path) -> None:
+    """A persistent STOP would immediately kill every subsequent session — unlike HALTED,
+    which is a risk state and stays put. The sentinel is a one-shot request."""
+    broker = _MutableBroker([_Position("AAA", 5)])
+    mon = _flatten_monitor(broker, _FillingRouter(broker), flatten_on_exit=True,
+                           stop_sentinel_dir=tmp_path)
+    sentinel = tmp_path / "STOP"
+    sentinel.write_text("stop", encoding="utf-8")
+
+    mon.run_forever()
+
+    assert not sentinel.exists()
+
+
+def test_per_session_sentinel_only_stops_that_session(tmp_path) -> None:
+    mine = _SessionBroker("aaaa1111", [_Position("AAA", 5)])
+    mon = _flatten_monitor(mine, _FillingRouter(mine), flatten_on_exit=True,
+                           stop_sentinel_dir=tmp_path)
+    (tmp_path / "STOP_aaaa1111").write_text("stop", encoding="utf-8")
+
+    mon.run_forever()
+
+    assert mine.positions("ACC") == []
+
+
+def test_another_sessions_sentinel_is_ignored(tmp_path) -> None:
+    """A sentinel naming a different session must not stop this one."""
+    mine = _SessionBroker("aaaa1111", [_Position("AAA", 5)])
+    mon = _flatten_monitor(mine, _FillingRouter(mine), flatten_on_exit=True,
+                           stop_sentinel_dir=tmp_path)
+    (tmp_path / "STOP_bbbb2222").write_text("stop", encoding="utf-8")
+
+    mon.run_forever(max_iterations=1)   # bounded, else this would never end
+
+    assert (tmp_path / "STOP_bbbb2222").exists()     # not consumed by the wrong session
+
+
+def test_sentinel_present_before_the_first_poll_opens_no_book(tmp_path) -> None:
+    """Dropped between launch and the first step, the sentinel must stop the session
+    rather than letting it open positions first."""
+    broker = _MutableBroker([])          # starts flat
+    router = _FillingRouter(broker)
+    mon = _flatten_monitor(broker, router, flatten_on_exit=True,
+                           stop_sentinel_dir=tmp_path)
+    (tmp_path / "STOP").write_text("stop", encoding="utf-8")
+
+    mon.run_forever()
+
+    assert router.intents == []          # step() never ran, so nothing was routed
+
+
+def test_no_sentinel_dir_means_the_feature_is_inert(tmp_path) -> None:
+    """Callers that don't opt in must be completely unaffected."""
+    broker = _MutableBroker([_Position("AAA", 5)])
+    mon = _flatten_monitor(broker, _FillingRouter(broker), flatten_on_exit=False)
+    (tmp_path / "STOP").write_text("stop", encoding="utf-8")
+
+    mon.run_forever(max_iterations=1)     # bounded: no sentinel watching, so this is the only exit
+
+    assert (tmp_path / "STOP").exists()
+
+
+# --- warm-up cadence -------------------------------------------------------
+# Faster polling for the first N minutes after launch, then the base interval, in the same
+# process. A restart to change cadence would flatten the book, so this has to be in-loop.
+
+
+def _warm_monitor(monkeypatch, *, base: int, warm: int | None, minutes: float, elapsed_s: float):
+    import trading_live_claude.monitor.live_loop as ll
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(ll.time, "monotonic", lambda: clock["t"])
+    broker = _MutableBroker([])
+    mon = _flatten_monitor(broker, _FillingRouter(broker), interval_seconds=base,
+                           warmup_interval_seconds=warm, warmup_minutes=minutes)
+    clock["t"] += elapsed_s
+    return mon
+
+
+def test_warmup_polls_faster_inside_the_window(monkeypatch) -> None:
+    mon = _warm_monitor(monkeypatch, base=300, warm=60, minutes=60, elapsed_s=30 * 60)
+    assert mon._sleep_seconds() == 60.0
+
+
+def test_warmup_falls_back_to_base_after_the_window(monkeypatch) -> None:
+    mon = _warm_monitor(monkeypatch, base=300, warm=60, minutes=60, elapsed_s=60 * 60 + 1)
+    assert mon._sleep_seconds() == 300.0
+
+
+def test_warmup_disabled_by_default(monkeypatch) -> None:
+    mon = _warm_monitor(monkeypatch, base=300, warm=None, minutes=60, elapsed_s=0)
+    assert mon._sleep_seconds() == 300.0
+
+
+def test_warmup_never_slows_the_base_interval(monkeypatch) -> None:
+    """A warm-up value larger than the base must not lengthen the sleep."""
+    mon = _warm_monitor(monkeypatch, base=60, warm=300, minutes=60, elapsed_s=0)
+    assert mon._sleep_seconds() == 60.0
+
+
+def test_warmup_interval_is_floored_at_five_seconds(monkeypatch) -> None:
+    mon = _warm_monitor(monkeypatch, base=300, warm=1, minutes=60, elapsed_s=0)
+    assert mon._sleep_seconds() == 5.0
