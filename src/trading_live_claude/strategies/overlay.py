@@ -110,13 +110,17 @@ class ConfirmOverlay(Strategy):
         # too; without gating, confirmed-strategy consumers would leak ungated level
         # triggers, defeating the overlay's precision-filter purpose. Apply the same
         # confirmation window to level so both trigger channels stay coherent.
+        survived = gated
         if "entry_level" in out.columns:
             base_level = out["entry_level"].fillna(0).astype(bool)
-            out["entry_level"] = (base_level & confirm_window).astype(int)
-        # Confirmation is a candidate feature: 1.0 where a gated entry survives, else
-        # carry the base strength (zeroed on suppressed bars so the scorer sees the gate).
+            gated_level = base_level & confirm_window
+            out["entry_level"] = gated_level.astype(int)
+            survived = gated | gated_level
+        # Keep the base strength wherever an entry survives on EITHER channel; zero it only on
+        # suppressed bars. Masking by the event channel alone zeroed strength on every
+        # level-triggered entry, so LiveMonitor sized those to 0 shares (2026-09-17).
         if "signal_strength" in out.columns:
-            out["signal_strength"] = out["signal_strength"].where(gated, 0.0)
+            out["signal_strength"] = out["signal_strength"].where(survived, 0.0)
         out["confirmed"] = gated.astype(int)
         return out
 

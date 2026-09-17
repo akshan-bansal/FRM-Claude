@@ -81,3 +81,31 @@ def test_reversal_pack_is_all_known_bullish_patterns() -> None:
     from trading_live_claude.signals.candlesticks import BULLISH_PATTERNS
 
     assert set(REVERSAL_CONFIRM) <= set(BULLISH_PATTERNS)
+
+
+def test_level_triggered_entry_keeps_its_strength(random_walk_df: pd.DataFrame) -> None:
+    """Regression (2026-09-17): strength was masked by the EVENT channel only, so every
+    level-triggered confirmed entry carried signal_strength=0 and LiveMonitor sized it to
+    0 shares. A bar that survives on either channel must keep the base strength."""
+    for name in CONFIRM_STRATEGIES:
+        strat = STRATEGIES[name]()
+        if "entry_level" not in strat.base.generate_signals(random_walk_df, CTX).columns:
+            continue
+        base = strat.base.generate_signals(random_walk_df, CTX)
+        out = strat.generate_signals(random_walk_df, CTX)
+        level_only = (out["entry_level"] == 1) & (out["entry"] == 0)
+        if not level_only.any():
+            continue
+        assert (out.loc[level_only, "signal_strength"]
+                == base.loc[level_only, "signal_strength"]).all(), name
+
+
+def test_strength_is_zero_where_nothing_survives(random_walk_df: pd.DataFrame) -> None:
+    """The gate still has to show on suppressed bars so the scorer sees it."""
+    for name in CONFIRM_STRATEGIES:
+        out = STRATEGIES[name]().generate_signals(random_walk_df, CTX)
+        if "signal_strength" not in out.columns:
+            continue
+        level = out["entry_level"] if "entry_level" in out.columns else 0
+        suppressed = (out["entry"] == 0) & (level == 0)
+        assert (out.loc[suppressed, "signal_strength"] == 0.0).all(), name
