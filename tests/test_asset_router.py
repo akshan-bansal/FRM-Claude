@@ -85,3 +85,45 @@ def test_candlestick_lean_generator_rejects_unmapped() -> None:
 
     with pytest.raises(KeyError):
         render_candlestick_lean_algorithm(pattern="tweezer_bottom", symbol="SPY")  # no LEAN equiv
+
+
+# --- drift guard (2026-09-17) ----------------------------------------------
+# AssetClass was its own 4-value Literal and silently drifted when fixed_income /
+# precious_metals joined OverlayClass on 2026-09-03, so routing those classes raised
+# "Unknown asset class". It is now an alias; these tests fail if the alias is undone or a
+# class is added without a mapping.
+
+
+def test_asset_classes_track_the_overlay_vocabulary() -> None:
+    from trading_live_claude.intel.overlay import OVERLAY_CLASSES
+    from trading_live_claude.execution.asset_router import ASSET_CLASSES
+    assert tuple(ASSET_CLASSES) == tuple(OVERLAY_CLASSES)
+
+
+def test_every_asset_class_has_a_brokerage_and_lean_spec() -> None:
+    from trading_live_claude.execution.asset_router import (  # noqa: I001
+        ASSET_CLASSES,
+        ASSET_LEAN_SPEC,
+        DEFAULT_ASSET_BROKERAGE,
+    )
+    for cls in ASSET_CLASSES:
+        assert cls in DEFAULT_ASSET_BROKERAGE, cls
+        assert cls in ASSET_LEAN_SPEC, cls
+        assert ASSET_LEAN_SPEC[cls]["add"].startswith("Add"), cls
+
+
+def test_every_asset_class_routes_without_raising() -> None:
+    from trading_live_claude.execution.asset_router import ASSET_CLASSES, AssetRouter
+    r = AssetRouter()
+    for cls in ASSET_CLASSES:
+        d = r.route(cls)
+        assert d.brokerage and d.add_method
+
+
+def test_bond_and_metal_classes_subscribe_as_equities() -> None:
+    """This repo holds bonds and metals as ETFs (TLT / XBB.TO, GLD / CGL.TO), which LEAN
+    subscribes with AddEquity — not AddFuture."""
+    from trading_live_claude.execution.asset_router import AssetRouter
+    r = AssetRouter()
+    assert r.route("fixed_income").add_method == "AddEquity"
+    assert r.route("precious_metals").add_method == "AddEquity"

@@ -184,7 +184,11 @@ class PaperBroker(Broker):
             price=fill_price,
             commission=self._commission,
             fill_time=datetime.now(UTC),
-            venue="paper",
+            # The resolved FEED venue, matching what _journal_fill writes. Was hardcoded "paper",
+            # which disagreed with the journal row for every non-Questrade feed. Note this is
+            # ``self._venue`` (resolved per instance), NOT the ``venue`` class attribute, which
+            # stays "paper".
+            venue=self._venue,    # type: ignore[arg-type]  # validated against models.Venue
         )
         self._fills.append(fill)
         log.info(

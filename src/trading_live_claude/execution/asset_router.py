@@ -11,11 +11,16 @@ gates — it only decides *which venue* a class deploys to.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
-AssetClass = Literal["equity", "future", "commodity", "crypto"]
+from ..intel.overlay import OVERLAY_CLASSES, OverlayClass
 
-ASSET_CLASSES: tuple[AssetClass, ...] = ("equity", "future", "commodity", "crypto")
+# Single source of truth: the overlay's class vocabulary. This used to be its own 4-value Literal
+# and drifted when `fixed_income` / `precious_metals` were added to OverlayClass on 2026-09-03 —
+# routing a bond-ETF or metals strategy raised "Unknown asset class". Aliasing prevents a repeat;
+# `test_asset_router.py` asserts the two stay in step and that every class has a mapping.
+AssetClass = OverlayClass
+
+ASSET_CLASSES: tuple[AssetClass, ...] = OVERLAY_CLASSES
 
 # Default asset-class → LEAN brokerage id. Override per deployment via config.
 # Crypto routes to Kraken: that is the venue the second (currency) sleeve is built on — the live
@@ -25,6 +30,12 @@ DEFAULT_ASSET_BROKERAGE: dict[str, str] = {
     "future": "InteractiveBrokersBrokerage",
     "commodity": "InteractiveBrokersBrokerage",
     "crypto": "KrakenBrokerage",
+    # Added 2026-09-17 to close the OverlayClass drift. These are the LEAN brokerage ids for a
+    # LEAN deployment; they are NOT this repo's runtime adapters and say nothing about the desk's
+    # venue policy (which currently keeps equities on Questrade and FX off IB).
+    "fixed_income": "InteractiveBrokersBrokerage",
+    "precious_metals": "InteractiveBrokersBrokerage",
+    "fx": "InteractiveBrokersBrokerage",
 }
 
 # LEAN subscription spec per class: the `self.Add*` method + optional market arg
@@ -34,6 +45,12 @@ ASSET_LEAN_SPEC: dict[str, dict[str, str]] = {
     "future": {"add": "AddFuture", "market": ""},
     "commodity": {"add": "AddFuture", "market": ""},
     "crypto": {"add": "AddCrypto", "market": "Market.Kraken"},
+    # Added 2026-09-17. This repo reaches bonds and metals through ETFs (TLT / XBB.TO, GLD /
+    # CGL.TO), which LEAN subscribes as equities — hence AddEquity rather than AddFuture. Revisit
+    # if native bond or metals futures are ever traded directly.
+    "fixed_income": {"add": "AddEquity", "market": ""},
+    "precious_metals": {"add": "AddEquity", "market": ""},
+    "fx": {"add": "AddForex", "market": ""},
 }
 
 

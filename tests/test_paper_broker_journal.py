@@ -289,3 +289,37 @@ def test_paper_broker_appends_a_traded_edge_to_the_intel_graph_on_fill(tmp_path:
     assert sell["weight"] == pytest.approx(-1 * 65_000.0)                        # signed -ve on sell
     assert buy["meta"]["session_id"] == pb.session_id
     assert buy["meta"]["qty"] == 2 and buy["meta"]["price"] == pytest.approx(65_000.0)
+
+
+# --- Fill.venue vs the journal (2026-09-17) --------------------------------
+# Fill.venue was Literal["paper","questrade-practice","questrade-live"], a pre-multi-venue
+# vocabulary: a Kraken/IB fill built with its real venue failed validation, and the model
+# disagreed with the journal, which already carried kraken / questrade / ib_web rows.
+
+
+def test_canonical_venues_cover_every_broker_venue_attribute() -> None:
+    """Fill.venue is an open str (test doubles and future feeds fall back to .name), so this is
+    the drift guard: every real adapter's venue tag must appear in CANONICAL_VENUES."""
+    from trading_live_claude.brokers.ib import IBBroker
+    from trading_live_claude.brokers.ib_web import IBWebBroker
+    from trading_live_claude.brokers.kraken import KrakenBroker
+    from trading_live_claude.brokers.models import CANONICAL_VENUES
+    from trading_live_claude.brokers.paper import PaperBroker
+    from trading_live_claude.brokers.questrade import QuestradeBroker
+    from trading_live_claude.brokers.routed import VenueRoutedFeed
+    for cls in (QuestradeBroker, KrakenBroker, IBBroker, IBWebBroker, PaperBroker,
+                VenueRoutedFeed):
+        assert cls.venue in CANONICAL_VENUES, f"{cls.__name__}.venue={cls.venue!r} not canonical"
+
+
+def test_fill_venue_matches_the_journalled_venue(tmp_path: Path) -> None:
+    """PaperBroker journals the FEED's venue; the Fill model must carry the same value.
+    It used to hardcode venue="paper" on the Fill while writing the feed's venue to the journal."""
+    broker = PaperBroker(feed=_StaticFeed({"BTC/USD": 100.0}), starting_equity=10_000.0,
+                         journal_dir=tmp_path, venue="kraken")
+    broker.place_order(_order("BTC/USD", OrderAction.BUY, 1))
+
+    row = json.loads((tmp_path / "paper_fills.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert broker._venue == "kraken"                       # resolved per instance
+    assert row["venue"] == "kraken"                        # journal
+    assert broker.fills[-1].venue == "kraken"              # model now agrees
