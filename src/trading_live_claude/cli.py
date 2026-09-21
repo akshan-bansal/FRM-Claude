@@ -244,6 +244,14 @@ def signal(
                 "re-establishes positions quickly, it does not create new daily signals.",
     ),
     warmup_minutes: float = typer.Option(60.0, help="Length of the warm-up window in minutes."),
+    resume_session: str = typer.Option(
+        "", "--resume-session",
+        help="PAPER ONLY. Continue an earlier paper session's book (positions, cash, realized P&L, "
+             "peak) from the state/ journals instead of starting flat, so a planned restart needn't "
+             "flatten and re-buy. Pass that session's id and the same --paper-equity. Refuses to "
+             "start if the journals disagree. Pair with --no-flatten-on-exit on the session you "
+             "stop for a restart.",
+    ),
 ) -> None:
     """Live-signal monitor. Never places real orders.
 
@@ -287,7 +295,18 @@ def signal(
     exec_account = account_number
     if paper:
         exec_broker = PaperBroker(feed=guard_feed(broker, settings), starting_equity=paper_equity,
-                                  journal_dir=settings.state_dir)
+                                  journal_dir=settings.state_dir,
+                                  session_id=resume_session or None)
+        if resume_session:
+            try:
+                restored = exec_broker.resume()
+            except PaperBroker.RehydrationMismatch as e:
+                console.print(f"[red]Cannot resume session {resume_session}: {e}[/red]")
+                raise typer.Exit(code=2) from e
+            console.print(f"[cyan]RESUMED[/cyan] session {resume_session}: "
+                          f"{restored['fills_replayed']} fills replayed, positions "
+                          f"{restored['positions'] or 'none'}, cash ${restored['cash']:,.2f}, "
+                          f"realized ${restored['realized_pnl']:,.2f}.")
         exec_account = exec_broker.accounts()[0].number
         console.print(f"[cyan]PAPER mode[/cyan] simulated broker, starting equity "
                       f"${paper_equity:,.0f}, account {exec_account}. "

@@ -97,6 +97,11 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=300,
                     help="Poll interval, seconds. Kraken is 24/7 so this is real all the time.")
     ap.add_argument("--paper-equity", type=float, default=100_000.0)
+    ap.add_argument("--resume-session", default="",
+                    help="Continue an earlier paper session's book from the state/ journals instead "
+                         "of starting flat (same --paper-equity as the original). Refuses to start "
+                         "if the journals disagree. Pair with --no-flatten-on-exit on the session "
+                         "you stop for a restart.")
     ap.add_argument("--require-card", dest="require_card", action="store_true",
                     help="Route every accepted intent through the ApprovalRouter — a physical "
                          "TradeCard (or scripts/approval_card_sim.py) must ACCEPT before the "
@@ -144,7 +149,17 @@ def main() -> None:
         enable_live_orders=False,
     )
     exec_broker = PaperBroker(feed=guard_feed(feed, settings), starting_equity=args.paper_equity,
-                              journal_dir=Path(settings.state_dir))
+                              journal_dir=Path(settings.state_dir),
+                              session_id=args.resume_session or None)
+    if args.resume_session:
+        try:
+            restored = exec_broker.resume()
+        except PaperBroker.RehydrationMismatch as e:
+            raise SystemExit(f"[kraken-paper] cannot resume session {args.resume_session}: {e}") from e
+        print(f"[kraken-paper] RESUMED session {args.resume_session}: "
+              f"{restored['fills_replayed']} fills replayed, positions "
+              f"{restored['positions'] or 'none'}, cash ${restored['cash']:,.2f}, "
+              f"realized ${restored['realized_pnl']:,.2f}.", flush=True)
     exec_account = exec_broker.accounts()[0].number
     print(f"[kraken-paper] PAPER mode. session_id={exec_broker.session_id} "
           f"starting_equity=${args.paper_equity:,.0f} account={exec_account}", flush=True)
