@@ -50,6 +50,11 @@ l2 = [
 ml = [
     "scikit-learn>=1.9.0",
 ]
+# LSTM-Transformer forecaster (models/lstm_transformer.py). CPU wheel is enough:
+# `uv pip install torch --index-url https://download.pytorch.org/whl/cpu`
+deep = [
+    "torch>=2.6",
+]
 # TradeCard approval shim, ASGI runtime. Install with `pip install .[shim]`
 # when running the shim as a standalone process or from paper_ib.py /
 # paper_kraken.py under --require-card. Not required for the trading
