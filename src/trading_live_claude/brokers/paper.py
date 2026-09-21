@@ -283,7 +283,10 @@ class PaperBroker(Broker):
                 order_id=fill.order_id if fill.order_id is not None else "",
                 as_of=fill.fill_time.isoformat(),
             )
-            append_edges([edge])
+            # Graph journal lives beside the fills journal, so a broker built on a tmp dir (tests)
+            # can never write the real state/intel_graph.jsonl. In production journal_dir is
+            # settings.state_dir (default "state"), i.e. the same file as DEFAULT_GRAPH_JOURNAL.
+            append_edges([edge], path=d / "intel_graph.jsonl")
         except Exception as e:                                      # pragma: no cover
             log.warning("paper.fill.intel_graph_failed",
                         symbol=fill.symbol, venue=self._venue, error=str(e))

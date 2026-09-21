@@ -267,9 +267,8 @@ def test_paper_broker_appends_a_traded_edge_to_the_intel_graph_on_fill(tmp_path:
     is what lets the dashboard and thesis calibration correlate trades with the news bridges the
     same graph journal carries.
     """
-    # PaperBroker calls ``append_edges([edge])`` with no explicit path so it lands at the module
-    # default ``state/intel_graph.jsonl`` — a relative path resolved against the working directory.
-    # Chdir to tmp_path so the file lands there and doesn't pollute the real state/ during tests.
+    # The edge lands in ``journal_dir / "intel_graph.jsonl"`` (in production journal_dir is
+    # settings.state_dir, i.e. ``state/``). chdir kept as belt-and-braces.
     monkeypatch.chdir(tmp_path)
 
     pb = PaperBroker(feed=_VenueFeed({"BTC/USD": 65_000.0}), starting_equity=100_000.0,
@@ -277,7 +276,7 @@ def test_paper_broker_appends_a_traded_edge_to_the_intel_graph_on_fill(tmp_path:
     pb.place_order(_order("BTC/USD", OrderAction.BUY, 2))
     pb.place_order(_order("BTC/USD", OrderAction.SELL, 1))
 
-    graph_path = tmp_path / "state" / "intel_graph.jsonl"
+    graph_path = tmp_path / "intel_graph.jsonl"
     assert graph_path.exists(), "fill should have appended an edge"
     lines = graph_path.read_text().splitlines()
     assert len(lines) == 2, "one edge per fill"
@@ -323,3 +322,26 @@ def test_fill_venue_matches_the_journalled_venue(tmp_path: Path) -> None:
     assert broker._venue == "kraken"                       # resolved per instance
     assert row["venue"] == "kraken"                        # journal
     assert broker.fills[-1].venue == "kraken"              # model now agrees
+
+
+_REAL_GRAPH_JOURNAL = Path(__file__).resolve().parents[1] / "state" / "intel_graph.jsonl"
+
+
+def _size(p: Path) -> int:
+    return p.stat().st_size if p.exists() else -1
+
+
+def test_fill_graph_edge_lands_in_journal_dir_not_the_real_state_graph(tmp_path: Path) -> None:
+    """Regression: fills used to append ``traded`` edges to the hard-coded default
+    ``state/intel_graph.jsonl`` regardless of journal_dir, so the test suite polluted the real
+    ground-truth graph (33 fake edges per full run, measured 2026-09-18)."""
+    before = _size(_REAL_GRAPH_JOURNAL)
+    pb = PaperBroker(feed=_StaticFeed({"EQB.TO": 100.0}), journal_dir=tmp_path,
+                     slippage_bps=0.0, commission_per_trade=0.0)
+    pb.place_order(_order("EQB.TO", OrderAction.BUY, 3))
+
+    edges = [json.loads(line) for line in
+             (tmp_path / "intel_graph.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(edges) == 1
+    assert edges[0]["predicate"] == "traded"
+    assert _size(_REAL_GRAPH_JOURNAL) == before
