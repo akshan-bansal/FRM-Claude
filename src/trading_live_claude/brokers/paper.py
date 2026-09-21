@@ -44,7 +44,8 @@ class PaperBroker(Broker):
     name = "paper"
     venue = "paper"                # overwritten below by the feed's declared venue
 
-    _order_counter: Iterator[int] = itertools.count(1)
+    class RehydrationMismatch(RuntimeError):
+        """The journals disagree with themselves; refusing to guess a book (see ``resume``)."""
 
     def __init__(
         self,
@@ -92,6 +93,9 @@ class PaperBroker(Broker):
         self._kill_switch = None                              # populated on first _journal_equity
         self._day_open_equity: float = starting_equity
         self._day_open_utc_date: str | None = None
+        # Per-instance order ids (2026-09-18: this was a class-level counter shared by every
+        # PaperBroker in the process). ``resume`` continues it from the journal's highest id.
+        self._order_counter: Iterator[int] = itertools.count(1)
 
     # ----- read-only data passes through feed -----------------------------
 
@@ -142,39 +146,8 @@ class PaperBroker(Broker):
         fill_price = ref_price + slippage if order.action == OrderAction.BUY else ref_price - slippage
 
         signed_qty = order.totalQuantity if order.action == OrderAction.BUY else -order.totalQuantity
-        notional = abs(signed_qty) * fill_price
-        self._cash -= signed_qty * fill_price + self._commission
-
-        pos = self._positions.get(order.symbol)
-        if pos is None:
-            self._positions[order.symbol] = Position(
-                symbol=order.symbol,
-                symbolId=order.symbolId or 0,
-                openQuantity=signed_qty,
-                averageEntryPrice=fill_price,
-                currentPrice=fill_price,
-                totalCost=notional,
-            )
-        else:
-            new_qty = pos.openQuantity + signed_qty
-            if new_qty == 0:
-                # Closing fill: realize P&L against the average entry price. Sign convention:
-                # if we're closing a long (pos.openQuantity > 0, signed_qty < 0), profit is
-                # (fill - avg) * closed_qty; symmetric for a short.
-                closed_qty = abs(pos.openQuantity)
-                if pos.openQuantity > 0:
-                    self._realized_pnl += (fill_price - pos.averageEntryPrice) * closed_qty
-                else:
-                    self._realized_pnl += (pos.averageEntryPrice - fill_price) * closed_qty
-                self._positions.pop(order.symbol)
-            else:
-                if (pos.openQuantity > 0) == (signed_qty > 0):
-                    # adding to existing direction -> recompute weighted avg
-                    pos.averageEntryPrice = (
-                        pos.averageEntryPrice * pos.openQuantity + fill_price * signed_qty
-                    ) / new_qty
-                pos.openQuantity = new_qty
-                pos.currentPrice = fill_price
+        self._apply_fill(order.symbol, signed_qty, fill_price, self._commission,
+                         symbol_id=order.symbolId or 0)
 
         fill = Fill(
             order_id=order.id,
@@ -204,6 +177,115 @@ class PaperBroker(Broker):
         self._journal_fill(fill)
         self._journal_equity()
         return order
+
+    def _apply_fill(self, symbol: str, signed_qty: float, fill_price: float, commission: float,
+                    *, symbol_id: int = 0) -> None:
+        """Book one fill: cash, position, average entry, realized P&L.
+
+        The single accounting path for both live fills (``place_order``) and journal replay
+        (``resume``), so a rehydrated book can't drift from one built fill by fill.
+        """
+        notional = abs(signed_qty) * fill_price
+        self._cash -= signed_qty * fill_price + commission
+        pos = self._positions.get(symbol)
+        if pos is None:
+            self._positions[symbol] = Position(
+                symbol=symbol,
+                symbolId=symbol_id,
+                openQuantity=signed_qty,
+                averageEntryPrice=fill_price,
+                currentPrice=fill_price,
+                totalCost=notional,
+            )
+            return
+        new_qty = pos.openQuantity + signed_qty
+        if new_qty == 0:
+            # Closing fill: realize P&L against the average entry price. Sign convention:
+            # if we're closing a long (pos.openQuantity > 0, signed_qty < 0), profit is
+            # (fill - avg) * closed_qty; symmetric for a short.
+            closed_qty = abs(pos.openQuantity)
+            if pos.openQuantity > 0:
+                self._realized_pnl += (fill_price - pos.averageEntryPrice) * closed_qty
+            else:
+                self._realized_pnl += (pos.averageEntryPrice - fill_price) * closed_qty
+            self._positions.pop(symbol)
+            return
+        if (pos.openQuantity > 0) == (signed_qty > 0):
+            # adding to existing direction -> recompute weighted avg
+            pos.averageEntryPrice = (
+                pos.averageEntryPrice * pos.openQuantity + fill_price * signed_qty
+            ) / new_qty
+        pos.openQuantity = new_qty
+        pos.currentPrice = fill_price
+
+    def resume(self, *, tolerance: float = 0.05) -> dict[str, object]:
+        """Rebuild this session's book from its own journals, so a restart continues it.
+
+        2026-09-18: every restart had to flatten and re-buy (25 same-name round trips in two days,
+        $9.90 each plus ~0.1% in price), and a crashed session's book could never be recovered.
+        ``state/`` is ground truth, so this replays the session's rows in ``paper_fills.jsonl``
+        through the same accounting as live fills and **cross-checks** the result against the
+        session's last ``paper_equity.csv`` row: cash and realized P&L must match within
+        ``tolerance`` dollars, and the fills' venue must be this broker's feed venue. On any
+        disagreement it raises ``RehydrationMismatch`` rather than guess. Construct the broker
+        with the original ``session_id`` and ``starting_equity``.
+
+        Also restores peak equity (so the drawdown kill-switch stays continuous) and continues
+        order ids from the journal's highest. Positions are marked at their last fill price
+        until the next ``mark_to_market``.
+        """
+        d = self._journal_dir
+        if d is None:
+            raise self.RehydrationMismatch("resume needs a journal_dir")
+        if self._fills or self._positions or self._realized_pnl:
+            raise self.RehydrationMismatch("resume must be called on a fresh broker")
+        fills: list[dict[str, object]] = []
+        fpath = d / "paper_fills.jsonl"
+        if fpath.exists():
+            for line in fpath.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("session_id") == self.session_id:
+                    fills.append(row)
+        last_eq: dict[str, str] | None = None
+        epath = d / "paper_equity.csv"
+        if epath.exists():
+            with epath.open(encoding="utf-8", newline="") as f:
+                for r in csv.DictReader(f):
+                    if r.get("session_id") == self.session_id:
+                        last_eq = r
+        if not fills and last_eq is None:
+            raise self.RehydrationMismatch(f"no journal rows for session {self.session_id}")
+        venues = {str(r.get("venue")) for r in fills if r.get("venue")}
+        if venues and venues != {self._venue}:
+            raise self.RehydrationMismatch(
+                f"session {self.session_id} traded on {sorted(venues)}, this feed is {self._venue!r}")
+        fills.sort(key=lambda r: (str(r.get("fill_time", "")), int(str(r.get("order_id") or 0))))
+        for r in fills:
+            qty = float(r["quantity"])                                        # type: ignore[arg-type]
+            signed = qty if str(r.get("side")) == OrderAction.BUY.value else -qty
+            self._apply_fill(str(r["symbol"]), signed, float(r["price"]),   # type: ignore[arg-type]
+                             float(r.get("commission") or 0.0))            # type: ignore[arg-type]
+        if last_eq is not None:
+            j_cash, j_real = float(last_eq["cash"]), float(last_eq["realized_pnl"])
+            if abs(self._cash - j_cash) > tolerance or abs(self._realized_pnl - j_real) > tolerance:
+                raise self.RehydrationMismatch(
+                    f"replayed cash {self._cash:.2f} / realized {self._realized_pnl:.2f} disagree with "
+                    f"the journal's {j_cash:.2f} / {j_real:.2f}; check --paper-equity matches the "
+                    f"original session's starting equity")
+            self._peak_equity = max(self._peak_equity, float(last_eq["peak_equity"]))
+        max_id = max((int(str(r.get("order_id") or 0)) for r in fills), default=0)
+        self._order_counter = itertools.count(max_id + 1)
+        summary: dict[str, object] = {
+            "session_id": self.session_id, "fills_replayed": len(fills),
+            "positions": {s: p.openQuantity for s, p in self._positions.items()},
+            "cash": round(self._cash, 2), "realized_pnl": round(self._realized_pnl, 2),
+            "peak_equity": round(self._peak_equity, 2), "next_order_id": max_id + 1,
+        }
+        log.info("paper.resumed", **summary)
+        return summary
 
     def cancel_order(self, account_number: str, order_id: int) -> None:
         # Paper orders fill immediately; nothing to cancel.
