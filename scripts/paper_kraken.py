@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # Windows console defaults to cp1252, which crashes on structlog's unicode output when an
@@ -44,20 +45,21 @@ from trading_live_claude.data.kraken_ohlc import kraken_ohlc
 from trading_live_claude.data.market import MarketData
 from trading_live_claude.execution.approval import wire_card_approval
 from trading_live_claude.execution.router import Router
+from trading_live_claude.intel.apply import OverlaidBias
 from trading_live_claude.intel.interpret import interpret
 from trading_live_claude.intel.overlay import IntelSnapshot
 from trading_live_claude.intel.routing import OverlayProvider
 from trading_live_claude.intel.vs_engine import MarketContext, VSInvestmentEngine
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
-from trading_live_claude.portfolio.allocator import PortfolioAllocator
+from trading_live_claude.portfolio.allocator import AllocationResult, PortfolioAllocator
 from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.risk.sizing import PositionSizer
 from trading_live_claude.risk.sizing_policy import SizingPolicy, calendar_days
 from trading_live_claude.strategies import STRATEGIES
 
 
-def _compute_allocator_bias(pairs: dict) -> dict[str, float]:
+def _compute_allocator_bias(pairs: dict) -> tuple[dict[str, float], AllocationResult | None, float]:
     """Run the correlation-aware allocator over the sleeve and return per-symbol conviction bias.
 
     Bias = allocator_weight / equal_weight_baseline. A pair the allocator concentrates on gets
@@ -67,6 +69,8 @@ def _compute_allocator_bias(pairs: dict) -> dict[str, float]:
     Fetches shallow Kraken daily OHLC (~720 bars/pair) once at startup — the cadence for a
     correlation matrix refresh is weekly at most, so a start-of-session compute is fine. If any
     pair's fetch fails, its bias is 1.0 (neutral) rather than dropping it from the sleeve.
+    Also returns the allocation and the equal-weight baseline so the live overlay can be applied
+    to the book through ``apply_overlay`` (None when the allocator had nothing to work with).
     """
     import pandas as pd
     returns: dict[str, pd.Series] = {}
@@ -79,17 +83,17 @@ def _compute_allocator_bias(pairs: dict) -> dict[str, float]:
         except Exception as e:
             print(f"[allocator] {routed}: fetch failed ({e}); bias defaults to 1.0", flush=True)
     if not returns:
-        return {r: 1.0 for r in pairs}
+        return {r: 1.0 for r in pairs}, None, 0.0
     # Cap per-name at 0.30 so no single pair dominates; sleeve-level is one sleeve so it doesn't
     # matter. min_score=0 so every positive-scoring pair gets a slot.
     allocator = PortfolioAllocator(max_weight=0.30, max_sleeve_weight=1.0, min_score=0.0)
     result = allocator.allocate(returns, scores, regime_scalar=1.0)
     if not result.weights:
-        return {r: 1.0 for r in pairs}
+        return {r: 1.0 for r in pairs}, None, 0.0
     equal_weight = 1.0 / len(returns)
     bias = {r: (result.weights.get(r, 0.0) / equal_weight) if equal_weight > 0 else 1.0
             for r in pairs}
-    return bias
+    return bias, result, equal_weight
 
 
 def main() -> None:
@@ -134,6 +138,15 @@ def main() -> None:
                          "0 = off.")
     ap.add_argument("--warmup-minutes", type=float, default=60.0,
                     help="Length of the warm-up window in minutes.")
+    ap.add_argument("--parallel-sizing", dest="parallel_sizing",
+                    default=True, action=argparse.BooleanOptionalAction,
+                    help="Allocate each poll's entries jointly (ranked position slots, pro-rata "
+                         "share of the leverage headroom, per-symbol cap) before routing any of "
+                         "them, instead of first-come in watchlist order. ON by default. The "
+                         "Router still gates every intent.")
+    ap.add_argument("--mute-alerts", default="",
+                    help="Comma-separated symbols whose alerts are muted (still traded and "
+                         "journaled).")
     args = ap.parse_args()
 
     sleeve = CRYPTO_SLEEVE
@@ -261,7 +274,10 @@ def main() -> None:
                 async with WorldMonitorClient(settings.worldmonitor_api_key) as wm:
                     return await wm.snapshot()
             return asyncio.run(_f())
-        overlay_provider = OverlayProvider(_snapshot, refresh_seconds=900.0)
+        # background=True: TTL refreshes happen off the trading loop; warm once here so the first
+        # poll's entry evaluation isn't the one that waits for the fetch.
+        overlay_provider = OverlayProvider(_snapshot, refresh_seconds=900.0, background=True)
+        overlay_provider.refresh()
         overlay_for = overlay_provider
 
         def _interpret_current():
@@ -278,14 +294,22 @@ def main() -> None:
     # score. Runs once at startup; the correlation matrix is stable enough at daily cadence
     # that a start-of-session compute is fine (weekly refresh cadence at most).
     print("[kraken-paper] computing correlation-aware allocator weights...", flush=True)
-    bias_map = _compute_allocator_bias(sleeve)
+    bias_map, allocation, equal_weight = _compute_allocator_bias(sleeve)
     print("[kraken-paper] allocator conviction bias (baseline = 1.0):", flush=True)
     for sym in sorted(bias_map, key=lambda s: -bias_map[s]):
         arrow = "boost" if bias_map[sym] > 1.05 else "trim" if bias_map[sym] < 0.95 else "neutral"
         print(f"    {sym:>10}  x{bias_map[sym]:.2f}  ({arrow})", flush=True)
 
-    def _weight_bias_for(symbol: str) -> float:
+    def _plain_bias_for(symbol: str) -> float:
         return bias_map.get(symbol, 1.0)
+
+    # With the overlay on, the class scalar is applied to the allocation through apply_overlay
+    # (and not again inside the loop); without it, or if the allocator had nothing, the plain map.
+    _weight_bias_for: Callable[[str], float] = _plain_bias_for
+    if overlay_for is not None and allocation is not None:
+        _weight_bias_for = OverlaidBias(allocation, equal_weight, bias_map, overlay_for)
+        print("[kraken-paper] live overlay applied to the allocation through apply_overlay",
+              flush=True)
 
     # Alerter — silent to phone without this. Mirrors the QT CLI wiring. Credentials from settings;
     # empty creds means stdout-only, so the venue works whether or not .env has keys.
@@ -346,7 +370,11 @@ def main() -> None:
         stop_sentinel_dir=Path(settings.state_dir),
         warmup_interval_seconds=args.warmup_interval or None,
         warmup_minutes=args.warmup_minutes,
+        parallel_sizing=args.parallel_sizing,
+        mute_symbols={s.strip().upper() for s in args.mute_alerts.split(",") if s.strip()},
     )
+    print(f"[kraken-paper] sizing: {'parallel (joint allocation per poll)' if args.parallel_sizing else 'sequential'}.",
+          flush=True)
     if args.warmup_interval:
         print(f"[kraken-paper] warm-up: polling every {min(args.warmup_interval, args.interval)}s "
               f"for {args.warmup_minutes:g} min, then every {args.interval}s.", flush=True)

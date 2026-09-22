@@ -63,6 +63,11 @@ from .scoring.selection import (
     render_combined_scoreboard,
     score_strategies,
 )
+from .analysis.params import PARAMS_MODES, build_strategy, running_params
+from .signals.candle_exit import CandleExit
+from .signals.overbought_exit import OverboughtExit
+from .signals.oversold_entry import OversoldEntry
+from .signals.profit_lock import ProfitLock
 from .strategies import STRATEGIES, Strategy
 from .tune import DEFAULT_TUNE_STRATEGIES, DEFAULT_TUNE_UNIVERSE, apply_tune, run_tune
 
@@ -244,6 +249,79 @@ def signal(
                 "re-establishes positions quickly, it does not create new daily signals.",
     ),
     warmup_minutes: float = typer.Option(60.0, help="Length of the warm-up window in minutes."),
+    profit_lock: bool = typer.Option(
+        False,
+        "--profit-lock/--no-profit-lock",
+        help="Profit-lock ratchet (OFF by default). Once a long is up 1 ATR, exit when price falls "
+             "back from its best polled price by more than an allowed giveback that shrinks on a "
+             "bounded log curve as the gain grows (3 ATR at +1 ATR to 1 ATR from +4 ATR), never "
+             "below entry. Exits route through the Router like any other. See signals/profit_lock.py.",
+    ),
+    profit_lock_exempt: str = typer.Option(
+        "ts_momentum",
+        help="Comma-separated strategy names the profit lock never applies to. Default exempts "
+             "ts_momentum: the 2026-09-18 backtest showed the lock cutting its trend winners. "
+             "Pass an empty string to lock every strategy.",
+    ),
+    candle_exit: bool = typer.Option(
+        False,
+        "--candle-exit/--no-candle-exit",
+        help="Exit Variant #2 (OFF by default). Sell a long that is up >= 1 ATR (and >= 2 round-trip "
+             "costs) when a bearish reversal candle completed on the previous daily bar (hanging man, "
+             "shooting star, gravestone doji, bearish engulfing/harami, dark cloud cover, tweezer top, "
+             "bear belt hold). See signals/candle_exit.py.",
+    ),
+    candle_exit_exempt: str = typer.Option(
+        "", help="Comma-separated strategy names the candle exit never applies to.",
+    ),
+    overbought_exit: bool = typer.Option(
+        False,
+        "--overbought-exit/--no-overbought-exit",
+        help="Exit Variant #3 (OFF by default). Sell a long that is up >= 1 ATR (and >= 2 round-trip "
+             "costs) when the last completed daily bar closed above the upper Bollinger band (20, 2 sd) "
+             "or RSI(14) >= 70. See signals/overbought_exit.py.",
+    ),
+    overbought_exit_exempt: str = typer.Option(
+        "", help="Comma-separated strategy names the overbought exit never applies to.",
+    ),
+    oversold_entry: bool = typer.Option(
+        False,
+        "--oversold-entry/--no-oversold-entry",
+        help="Variant #4 (OFF by default; not walk-forward calibrated). Add a tranche to a HELD trend "
+             "position when the last completed bar closed below the lower Bollinger band (20, 2 sd) or "
+             "RSI(14) <= 30 while the strategy's own trend signal is still on. Each tranche has its own "
+             "ATR stop; one V4 per symbol per 5 bars; sized normally and routed through the Router. "
+             "See signals/oversold_entry.py.",
+    ),
+    oversold_entry_only: str = typer.Option(
+        "ts_momentum", help="Comma-separated strategy names V4 applies to (trend family only).",
+    ),
+    parallel_sizing: bool = typer.Option(
+        True,
+        "--parallel-sizing/--sequential-sizing",
+        help="Allocate each poll's entries jointly (ranked position slots, pro-rata share of the "
+             "leverage headroom, per-symbol cap) before routing any of them, instead of first-come "
+             "in watchlist order. ON by default. The Router still gates every intent.",
+    ),
+    mute_alerts: str = typer.Option(
+        "", help="Comma-separated symbols whose alerts are muted. Signals, sizing, routing and "
+                 "journals are unchanged; only the notification is skipped.",
+    ),
+    max_positions: int = typer.Option(
+        0, "--max-positions",
+        help="Open-position cap for THIS process's Router, overriding max_open_positions in "
+             "trading.yaml (0 = use the config). Lets the QT equity book run a different cap from "
+             "the Kraken process, which keeps the config value.",
+    ),
+    trim_to_slots: bool = typer.Option(
+        False,
+        "--trim-to-slots/--no-trim-to-slots",
+        help="PAPER. Once at startup, trim every holding by the same factor so the gross book is "
+             "equity x held / max positions (pro rata: relative weights kept, room freed for the new "
+             "slots), through the Router, as fills in this session's own journal (so "
+             "--resume-session replays the trimmed book). One-shot: leave it off the standing "
+             "command. OFF by default.",
+    ),
     resume_session: str = typer.Option(
         "", "--resume-session",
         help="PAPER ONLY. Continue an earlier paper session's book (positions, cash, realized P&L, "
@@ -251,6 +329,13 @@ def signal(
              "flatten and re-buy. Pass that session's id and the same --paper-equity. Refuses to "
              "start if the journals disagree. Pair with --no-flatten-on-exit on the session you "
              "stop for a restart.",
+    ),
+    params: str = typer.Option(
+        "default", "--params",
+        help="Where each symbol's strategy params come from: 'default' (class defaults, the "
+             "historical behaviour), 'wf' (walk-forward registry when it covers this strategy on this "
+             "symbol, else calibrated, else defaults) or 'calibrated' (analysis.calibration, else "
+             "defaults). The boot banner prints the params each symbol actually runs.",
     ),
 ) -> None:
     """Live-signal monitor. Never places real orders.
@@ -265,7 +350,11 @@ def signal(
     strat = _strategy_or_die(strategy)
     sizer = PositionSizer(risk_pct=settings.risk_pct_per_trade)
 
+    if params not in PARAMS_MODES:
+        console.print(f"[red]--params must be one of {', '.join(PARAMS_MODES)}.[/red]")
+        raise typer.Exit(code=2)
     smap: dict[str, Strategy] = {}
+    smap_names: dict[str, str] = {}
     for pair in strategy_map.split(","):
         pair = pair.strip()
         if not pair:
@@ -275,11 +364,24 @@ def signal(
             raise typer.Exit(code=2)
         sym, sname = pair.split("=", 1)
         smap[sym.strip().upper()] = _strategy_or_die(sname.strip())
+        smap_names[sym.strip().upper()] = sname.strip()
 
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     for sym in smap:  # include map-only symbols in what we monitor
         if sym not in sym_list:
             sym_list.append(sym)
+
+    # Params precedence (2026-09-18): QT used to run class defaults while alerts claimed registry
+    # params. Build every symbol's instance through one resolver and print what actually runs.
+    if params != "default":
+        for sym in sym_list:
+            resolved = build_strategy(smap_names.get(sym, strategy), sym, params)
+            smap[sym] = resolved.strategy  # type: ignore[assignment]
+            note = f"  [{resolved.note}]" if resolved.note else ""
+            console.print(f"[dim]params {sym}: {smap_names.get(sym, strategy)} <- {resolved.source} "
+                          f"{running_params(resolved.strategy)}{note}[/dim]")
+    else:
+        console.print("[dim]params: class defaults for every symbol (--params default).[/dim]")
 
     accounts = broker.accounts()
     if not accounts:
@@ -333,10 +435,13 @@ def signal(
         cap_pct=settings.portfolio_heat_cap,
         max_drawdown_pct=settings.max_drawdown_kill_switch,
         daily_loss_limit_pct=settings.daily_loss_limit_pct,
-        max_open_positions=settings.max_open_positions,
+        max_open_positions=max_positions or settings.max_open_positions,
         min_ticket_usd=settings.min_ticket_usd,
         position_cap_pct_for=position_cap_for(settings, market) if paper else None,
     )
+    if max_positions:
+        console.print(f"[dim]max open positions: {max_positions} (CLI override; config says "
+                      f"{settings.max_open_positions}).[/dim]")
 
     alerter = Alerter(
         AlertConfig(
@@ -370,13 +475,15 @@ def signal(
                 is_transition=getattr(ev, "is_transition", True),
                 poll_count=getattr(ev, "poll_count", 1),
                 wf_record=wf_record,
+                live_params=running_params(smap.get(ev.symbol, strat)),
             )
             alerter.send(title, body)
         elif ev.kind == "exit":
             sname = smap[ev.symbol].name if ev.symbol in smap else strat.name
             shares = float(ev.detail.get("shares", 0)) if isinstance(ev.detail, dict) else 0.0
             title, body = _fmt_exit(strategy_name=sname, symbol=ev.symbol,
-                                     price=ev.price, shares=shares)
+                                     price=ev.price, shares=shares,
+                                     detail=ev.detail if isinstance(ev.detail, dict) else None)
             alerter.send(title, body)
 
     overlay_for = None
@@ -440,8 +547,12 @@ def signal(
             _bias_map = {s: (_res.weights.get(s, 0.0) / _eqw) if _eqw > 0 else 1.0
                          for s in sym_list}
             weight_bias_for = lambda sym, _m=_bias_map: _m.get(sym, 1.0)
+            if overlay_for is not None:
+                from .intel.apply import OverlaidBias as _OB
+                weight_bias_for = _OB(_res, _eqw, sym_list, overlay_for)
             console.print(f"[cyan]allocator bias ON[/cyan] over {_n} names "
-                          f"(equal-weight baseline = 1.0):")
+                          f"(equal-weight baseline = 1.0"
+                          f"{'; live overlay applied through apply_overlay' if overlay_for is not None else ''}):")
             for _s in sorted(_bias_map, key=lambda k: -_bias_map[k]):
                 if _s in _score_map:
                     _v = _bias_map[_s]
@@ -477,7 +588,43 @@ def signal(
         stop_sentinel_dir=Path(settings.state_dir),
         warmup_interval_seconds=warmup_interval or None,
         warmup_minutes=warmup_minutes,
+        profit_lock=ProfitLock() if profit_lock else None,
+        profit_lock_exempt={s.strip() for s in profit_lock_exempt.split(",") if s.strip()},
+        candle_exit=CandleExit() if candle_exit else None,
+        candle_exit_exempt={s.strip() for s in candle_exit_exempt.split(",") if s.strip()},
+        overbought_exit=OverboughtExit() if overbought_exit else None,
+        overbought_exit_exempt={s.strip() for s in overbought_exit_exempt.split(",") if s.strip()},
+        oversold_entry=OversoldEntry() if oversold_entry else None,
+        oversold_entry_only={s.strip() for s in oversold_entry_only.split(",") if s.strip()},
+        parallel_sizing=parallel_sizing,
+        mute_symbols={s.strip().upper() for s in mute_alerts.split(",") if s.strip()},
     )
+    if oversold_entry:
+        _ov = sorted(monitor.oversold_entry_only)
+        console.print("[dim]oversold entry ON (Variant #4): close < lower BB(20,2) or RSI(14) <= 30 on "
+                      "the last completed bar adds a tranche to a held position while its trend "
+                      f"signal is on; own ATR stop; 1 per 5 bars. Applies to: {', '.join(_ov) or 'none'}. "
+                      "Not walk-forward calibrated.[/dim]")
+    console.print(f"[dim]sizing: {'parallel (joint allocation per poll)' if parallel_sizing else 'sequential'}."
+                  "[/dim]")
+    if monitor.mute_symbols:
+        console.print(f"[dim]alerts muted for: {', '.join(sorted(monitor.mute_symbols))} "
+                      "(still traded and journaled).[/dim]")
+    if overbought_exit:
+        _ox = sorted(monitor.overbought_exit_exempt)
+        console.print("[dim]overbought exit ON (Variant #3): close > upper BB(20,2) or RSI(14) >= 70 "
+                      "on the last completed bar closes a long up >= 1 ATR and >= 2x round-trip cost; "
+                      f"re-entry lockout. Exempt: {', '.join(_ox) if _ox else 'none'}.[/dim]")
+    if candle_exit:
+        _cx = sorted(monitor.candle_exit_exempt)
+        console.print("[dim]candle exit ON (Variant #2): bearish reversal on the last completed bar "
+                      "closes a long up >= 1 ATR and >= 2x round-trip cost; re-entry lockout. "
+                      f"Exempt: {', '.join(_cx) if _cx else 'none'}.[/dim]")
+    if profit_lock:
+        _exempt = sorted(monitor.profit_lock_exempt)
+        console.print("[dim]profit lock ON (Variant #1): arms at +1 ATR, giveback 3 -> 1 ATR by "
+                      "+4 ATR, net-breakeven floor, arms after 2x round-trip cost, re-entry lockout. "
+                      f"Exempt: {', '.join(_exempt) if _exempt else 'none'}.[/dim]")
     if warmup_interval:
         console.print(f"[dim]warm-up: polling every {min(warmup_interval, interval)}s for "
                       f"{warmup_minutes:g} min, then every {interval}s.[/dim]")
@@ -501,6 +648,15 @@ def signal(
         with contextlib.suppress(ValueError, OSError):
             _signal.signal(_sig, _on_signal)
 
+    if trim_to_slots:
+        if not paper:
+            console.print("[yellow]--trim-to-slots is paper-only; skipped.[/yellow]")
+        else:
+            for _r in monitor.trim_to_slots():
+                console.print(f"[cyan]slot trim[/cyan] {_r['symbol']}: sold {_r['sold']:g} of "
+                              f"{_r['held']:g} @ {_r['price']:.4f}, kept {_r['kept']:g} "
+                              f"(scale x{_r['scale']}) "
+                              f"{'ACCEPTED' if _r['accepted'] else 'REJECTED by the Router'}")
     monitor.run_forever(max_iterations=iterations or None)
 
 
@@ -584,7 +740,13 @@ def live(
         console.print('[red]Set EXECUTION_MODE=live in .env before using `trading live`.[/red]')
         raise typer.Exit(code=2)
     if settings.questrade_env != "live":
-        console.print('[yellow]QUESTRADE_ENV is not "live"; routing through practice account.[/yellow]')
+        # Abort rather than warn (audit gap, 2026-09-18). The old warning claimed "routing through
+        # practice account", but QuestradeBroker never reads QUESTRADE_ENV: the account is whatever
+        # the refresh token belongs to. A mismatched label is a reason to stop and check, not to go on.
+        console.print('[red]QUESTRADE_ENV is not "live". Refusing `trading live` with a mismatched '
+                      "environment label. Note: the account traded is decided by the refresh token, "
+                      "not by QUESTRADE_ENV.[/red]")
+        raise typer.Exit(code=2)
 
     broker = _make_questrade(settings)
     accounts = broker.accounts()
@@ -1180,7 +1342,7 @@ def qc_ingest(
     client = _make_qc(settings)
     try:
         analyses = analyze_library(client)
-        qc_scores = rank_qc_library(client, objective="sharpe_over_dd")
+        qc_scores = rank_qc_library(client, objective="sortino_over_dd")
     except QuantConnectError as e:
         console.print(f"[red]QuantConnect error: {e}[/red]")
         raise typer.Exit(code=1) from e
@@ -1342,18 +1504,20 @@ def quantpedia_pull(
 
 @app.command(name="qc-rank")
 def qc_rank(
-    objective: str = typer.Option("sharpe_over_dd", help="Objective to rank by (scoring.objective registry)"),
+    objective: str = typer.Option("sortino_over_dd", help="Objective to rank by (scoring.objective registry)"),
+    min_orders: int = typer.Option(20, help="Skip backtests with fewer QC 'Total Orders' than this."),
 ) -> None:
     """Rank your QC-library strategies by their latest backtest, via the objective adapter.
 
-    Reads each project's most recent completed backtest and scores it (Sharpe / drawdown).
+    Reads each project's most recent completed backtest and scores it (Sortino / drawdown by
+    default), skipping errored backtests and those with fewer than --min-orders orders.
     Projects without a saved backtest are skipped. Family is detected from source code so
     these rank in the same taxonomy as native strategies.
     """
     settings = get_settings()
     client = _make_qc(settings)
     try:
-        scores = rank_qc_library(client, objective=objective)
+        scores = rank_qc_library(client, objective=objective, min_orders=min_orders)
     except QuantConnectError as e:
         console.print(f"[red]QuantConnect error: {e}[/red]")
         raise typer.Exit(code=1) from e
