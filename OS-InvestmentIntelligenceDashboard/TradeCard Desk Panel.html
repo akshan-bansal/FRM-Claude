@@ -1,4 +1,4 @@
-<title>QuantPort.io</title>
+<title>TradeCard Desk Panel</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" />
 <style>
   :root {
@@ -216,7 +216,7 @@
 
 <div class="panel">
   <div class="bar">
-    <div class="mark">QUANTPORT<span>.IO</span></div>
+    <div class="mark">TRADE<span>CARD</span> DESK</div>
     <div class="draft" id="mode-chip">—</div>
     <div class="grow"></div>
     <div class="stat" id="kill-chip">kill-switch <b>—</b></div>
@@ -227,14 +227,13 @@
   </div>
 
   <div class="tabs" role="tablist">
-    <button role="tab" id="tab-basket" aria-selected="true" aria-controls="v-basket">BASKET</button>
-    <button role="tab" id="tab-ib" aria-selected="false" aria-controls="v-ib">IB ACCESS</button>
-    <button role="tab" id="tab-approvals" aria-selected="false" aria-controls="v-approvals">APPROVALS</button>
+    <button role="tab" id="tab-approvals" aria-selected="true" aria-controls="v-approvals">APPROVALS</button>
     <button role="tab" id="tab-book" aria-selected="false" aria-controls="v-book">BOOK</button>
     <button role="tab" id="tab-integrity" aria-selected="false" aria-controls="v-integrity">INTEGRITY</button>
     <button role="tab" id="tab-atlas" aria-selected="false" aria-controls="v-atlas">ATLAS</button>
     <button role="tab" id="tab-graph" aria-selected="false" aria-controls="v-graph">GRAPH</button>
     <button role="tab" id="tab-oasis" aria-selected="false" aria-controls="v-oasis">OASIS</button>
+    <button role="tab" id="tab-ib" aria-selected="false" aria-controls="v-ib">IB ACCESS</button>
     <button class="link" id="show-prompt" style="align-self:center">▸ SHOW A PROMPT</button>
     <div class="grow"></div>
   </div>
@@ -242,29 +241,8 @@
   <div class="kpis" id="kpis"></div>
 
   <!-- ============================ OPS ============================ -->
-  <!-- ======================= 0 · BASKET ======================= -->
-  <div id="v-basket" role="tabpanel" aria-labelledby="tab-basket">
-    <div class="col">
-      <section aria-label="Basket selection">
-        <div class="head">BASKET <span class="n" id="bk-scope">&mdash;</span></div>
-        <div class="body">
-          <p class="gnote">Choose which symbols each brokerage may <b>open new positions</b> in, run the
-          repo's engines over them, and put the basket to the card. A session started with the basket
-          gate on takes no entry outside the card-signed basket, and none on a venue with no basket.
-          Exits are never blocked. This panel proposes and displays; it cannot approve. Sessions
-          started before baskets existed are not gated until they are restarted.</p>
-          <div id="bk-venues"></div>
-        </div>
-      </section>
-      <section aria-label="Basket analysis" id="bk-analysis-sec" hidden>
-        <div class="head">ANALYSIS <span class="n" id="bk-an-scope">&mdash;</span></div>
-        <div class="body" id="bk-analysis"></div>
-      </section>
-    </div>
-  </div>
-
   <!-- ======================= 1 · APPROVALS ======================= -->
-  <div id="v-approvals" role="tabpanel" aria-labelledby="tab-approvals" hidden>
+  <div id="v-approvals" role="tabpanel" aria-labelledby="tab-approvals">
     <section aria-label="Live session" id="live-strip" hidden style="margin-bottom:9px">
       <div class="head">CARD SHIM · LIVE <span class="n" id="live-src"></span></div>
       <div class="body"><div class="kpis" id="live-kpis"></div>
@@ -1509,12 +1487,11 @@ if (SHIM) {
 }   /* a reading goes stale on the clock, not on a click */
 
 /* ---------------- tabs ---------------- */
-const TABS = [["tab-basket", "v-basket"], ["tab-ib", "v-ib"], ["tab-approvals", "v-approvals"], ["tab-book", "v-book"],
+const TABS = [["tab-approvals", "v-approvals"], ["tab-book", "v-book"],
               ["tab-integrity", "v-integrity"], ["tab-atlas", "v-atlas"],
-              ["tab-graph", "v-graph"], ["tab-oasis", "v-oasis"]];
+              ["tab-graph", "v-graph"], ["tab-oasis", "v-oasis"], ["tab-ib", "v-ib"]];
 function selectTab(id) {
   if (id === "tab-ib") renderIbAccess();
-  if (id === "tab-basket") bkRefresh();
   for (const [btn, view] of TABS) {
     const on = btn === id;
     $(btn).setAttribute("aria-selected", String(on));
@@ -1532,114 +1509,6 @@ const G_POS = {
   poll:{x:285,y:120}, event:{x:495,y:60}, region:{x:495,y:190}, symbol:{x:495,y:340},
   domain:{x:700,y:150}
 };
-
-/* ---- BASKET tab: pick symbols per venue, analyse, propose. The card signs; nothing here approves. ---- */
-const BK_VENUES = [["kraken", "KRAKEN", "crypto pairs, e.g. BTC/USD"], ["qt", "QUESTRADE", "equities and ETFs, e.g. XIC.TO"],
-                   ["ib", "INTERACTIVE BROKERS", "futures roots only, e.g. GC, SI (equities are refused)"]];
-const BK = { state: null, report: {}, busy: "", msg: {}, showing: "" };
-async function shimPost(path, body) {
-  let token = null;
-  try { token = sessionStorage.getItem(SHIM_KEY); } catch { /* private mode */ }
-  const r = await fetch(path, { method: "POST", cache: "no-store",
-    headers: Object.assign({ "Content-Type": "application/json" }, token ? { Authorization: "Bearer " + token } : {}),
-    body: JSON.stringify(body) });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(typeof j.detail === "string" ? j.detail : "HTTP " + r.status), { status: r.status });
-  return j;
-}
-const bkSyms = (v) => ($("bk-in-" + v).value || "").split(/[\s,;]+/).map((x) => x.trim().toUpperCase()).filter(Boolean);
-async function bkRefresh() {
-  if (!SHIM) return;
-  try { BK.state = await shimGet("/v1/basket"); } catch (e) { BK.state = { error: e.message }; }
-  renderBasket();
-}
-async function bkRun(venue, propose) {
-  const symbols = bkSyms(venue);
-  if (!symbols.length) { BK.msg[venue] = "Enter at least one symbol."; return renderBasket(); }
-  BK.busy = venue + (propose ? ":propose" : ":analyze"); BK.msg[venue] = ""; renderBasket();
-  try {
-    if (propose) {
-      const p = await shimPost("/v1/basket/propose", { venue, symbols });
-      BK.msg[venue] = `Proposed. Fingerprint ${p.fingerprint} - compare it on the card, then sign: python scripts/basket.py sign-proposal ${p.id}`;
-    }
-    BK.report[venue] = await shimPost("/v1/basket/analyze", { venue, symbols });
-    BK.showing = venue;
-  } catch (e) { BK.msg[venue] = "Not done: " + e.message; }
-  BK.busy = ""; await bkRefresh();
-}
-function renderBasket() {
-  const box = $("bk-venues");
-  if (!SHIM) { $("bk-scope").textContent = "not connected"; box.innerHTML = `<p class="gnote">Basket selection works from a running
-    session's <span class="mono">/desk</span>, where the shim can run the engines. Opened as a file, this page has no shim.</p>`; return; }
-  const st = BK.state;
-  if (!st || st.error) { $("bk-scope").textContent = "no answer"; box.innerHTML = `<p class="gnote">${st ? "The shim did not answer: " + esc(st.error) + ". A shim started before baskets existed needs a restart." : "Reading..."}</p>`; return; }
-  const signed = BK_VENUES.filter(([v]) => st.venues[v]).length;
-  $("bk-scope").textContent = `${signed} of 3 venues have a card-signed basket · ${st.proposals.length} awaiting the card`
-    + (st.rejected_rows ? ` · ${st.rejected_rows} row(s) failed verification` : "");
-  const focus = document.activeElement && document.activeElement.id;
-  const keep = Object.fromEntries(BK_VENUES.map(([v]) => [v, $("bk-in-" + v) ? $("bk-in-" + v).value : ""]));
-  const btn = "min-height:34px;font-size:11px;padding:0 12px";
-  box.innerHTML = BK_VENUES.map(([v, label, hint]) => {
-    const ap = st.venues[v], pend = st.proposals.filter((p) => p.venue === v);
-    const busy = BK.busy.startsWith(v + ":");
-    return `<div class="tbl-wrap" style="margin-bottom:14px"><p class="gnote"><b>${label}</b> &middot; ${ap
-      ? `card-signed ${ap.symbols.length} symbols, ${esc(new Date(ap.issued_at).toLocaleString())} by ${esc(ap.card_id)}`
-      : "<b>no card-signed basket</b> &mdash; a gated session takes no entries here"}</p>
-      ${ap ? `<p class="gnote mono">${esc(ap.symbols.join(", "))}</p>` : ""}
-      <textarea id="bk-in-${v}" rows="3" placeholder="${esc(hint)}" style="width:100%;font-family:var(--mono);font-size:11px;
-        background:var(--surface);color:var(--ink);border:1px solid var(--line);padding:6px">${esc(keep[v])}</textarea>
-      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
-        <button class="big" style="${btn}" ${busy ? "disabled" : ""} data-bk="analyze" data-v="${v}">${
-          BK.busy === v + ":analyze" ? "RUNNING..." : "RUN ANALYSIS"}</button>
-        <button class="big ok" style="${btn}" ${busy ? "disabled" : ""} data-bk="propose" data-v="${v}">${
-          BK.busy === v + ":propose" ? "PROPOSING..." : "PROPOSE TO CARD"}</button>
-        ${ap ? `<button class="big" style="${btn}" data-bk="load" data-v="${v}">LOAD SIGNED</button>` : ""}
-      </div>
-      ${BK.msg[v] ? `<p class="gnote">${esc(BK.msg[v])}</p>` : ""}
-      ${pend.map((p) => `<p class="gnote">Awaiting the card: ${p.symbols.length} symbols, fingerprint <span class="mono">${esc(p.fingerprint)}</span>
-        &mdash; sign with <span class="mono">python scripts/basket.py sign-proposal ${esc(p.id)}</span></p>`).join("")}</div>`;
-  }).join("");
-  for (const [v] of BK_VENUES) if (keep[v]) $("bk-in-" + v).value = keep[v];
-  box.querySelectorAll("button[data-bk]").forEach((b) => b.addEventListener("click", () => {
-    const v = b.dataset.v;
-    if (b.dataset.bk === "load") { $("bk-in-" + v).value = st.venues[v].symbols.join(", "); return; }
-    bkRun(v, b.dataset.bk === "propose");
-  }));
-  if (focus && $(focus)) $(focus).focus();
-  renderBasketAnalysis();
-}
-const bkNum = (x, d = 2) => Number.isFinite(x) ? Number(x).toFixed(d) : "—";
-function renderBasketAnalysis() {
-  const v = BK.showing, rep = v && BK.report[v];
-  $("bk-analysis-sec").hidden = !rep;
-  if (!rep) return;
-  const sc = rep.scope;
-  $("bk-an-scope").textContent = `${v.toUpperCase()} · ${sc.symbols} symbols · ${sc.walk_forward} walk-forward · ${sc.in_sample_only} in-sample only · ${
-    sc.no_evidence} no evidence · ${sc.with_stats} with return statistics · ${sc.refused} refused by policy`;
-  const ev = (e) => e.kind === "walk_forward"
-    ? `<td>WALK-FORWARD ${esc(e.tier)}</td><td class="r">${bkNum(e.oos_score)}</td><td class="r">${bkNum(e.wfe)}</td>
-       <td class="r">${bkNum(e.oos_return * 100, 1)}%</td><td class="r">${bkNum(e.oos_max_drawdown * 100, 1)}%</td><td class="r">${e.oos_trades}${
-       e.oos_win_rate != null ? " · " + bkNum(e.oos_win_rate * 100, 0) + "% win" : ""}</td>`
-    : e.kind === "screened_in_sample"
-    ? `<td>IN-SAMPLE SCREEN only</td><td class="r" colspan="5">screen score ${bkNum(e.screen_score)} &mdash; not out-of-sample</td>`
-    : `<td>NO EVIDENCE</td><td class="r" colspan="5">no walk-forward record and no screen</td>`;
-  const rows = rep.rows.map((r) => `<tr><td>${esc(r.symbol)}${r.policy_refusal ? ` <span class="pill noise" title="${esc(r.policy_refusal)}">REFUSED</span>` : ""}</td>
-      <td>${esc(r.strategy || "—")}${r.strategy_source === "launch_map" || r.strategy_source === "fallback" ? ` <span class="pill thin" title="What the session runs. No walk-forward record backs it.">${r.strategy_source === "launch_map" ? "LAUNCH MAP" : "FALLBACK"}</span>` : ""}</td><td>${esc(r.asset_class || "—")}</td>${ev(r.evidence)}
-      <td class="r">${r.overlay ? "x" + bkNum(r.overlay.scalar, 3) + (r.overlay.halt ? " HALT" : "") : "—"}</td>
-      <td>${esc((r.theses || []).join("; ") || "—")}</td>
-      <td class="r">${r.stats ? `${bkNum(r.stats.ann_vol * 100, 0)}% vol · ${bkNum(r.stats.max_drawdown * 100, 0)}% dd · ${r.stats.bars} bars` : esc(r.stats_missing)}</td>
-      <td class="r">${rep.allocator_weights[r.symbol] != null ? bkNum(rep.allocator_weights[r.symbol] * 100, 1) + "%" : "—"}</td></tr>`).join("");
-  const c = rep.correlation;
-  $("bk-analysis").innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>SYMBOL</th><th>STRATEGY</th><th>CLASS</th><th>EVIDENCE</th>
-    <th class="r">OOS SCORE</th><th class="r">WFE</th><th class="r">OOS RET</th><th class="r">OOS MAXDD</th><th class="r">OOS TRADES</th>
-    <th class="r">OVERLAY</th><th>THESES</th><th class="r">RETURN STATS</th><th class="r">ALLOCATOR</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="gnote">${c ? `Correlation over ${c.overlap_bars} common bars: mean pairwise ${bkNum(c.mean_pairwise)}, highest ${esc(c.max_pair.join(" / "))} at ${bkNum(c.max_value)}.
-      Allocator weights cover only the ${sc.with_stats} symbols with return statistics.`
-      : "No correlation or allocator weights: fewer than two symbols have daily closes. Only Kraken pairs in the crypto sleeve are fetched (public OHLC); Questrade and IB history is not wired into this analysis."}</p>
-    ${Object.keys(rep.withheld || {}).length ? `<p class="gnote">Withheld, not shown: ${esc(Object.entries(rep.withheld).map(([k, w]) => k + " (" + w + ")").join("; "))}.</p>` : ""}
-    ${Object.keys(rep.fetch_errors || {}).length ? `<p class="gnote">No history for: ${esc(Object.entries(rep.fetch_errors).map(([k, w]) => k + " (" + w + ")").join("; "))}.</p>` : ""}
-    <p class="gnote">OOS = out-of-sample walk-forward (2y train / 6m test). An in-sample screen is not evidence of the same kind. Generated ${esc(rep.generated_at)}.</p>`;
-}
 const IB_STEPS = [
   "Start TWS (or IB Gateway) and log in to the paper account. This login is separate from Questrade and from the Client Portal Gateway.",
   "In TWS: Configure > API > Settings. Tick Enable ActiveX and Socket Clients, and untick Read-Only API.",
@@ -1794,8 +1663,6 @@ document.addEventListener("keydown", (e) => {
 });
 const fromHash = (location.hash || "").replace("#", "");
 if (TABS.some(([b]) => b === "tab-" + fromHash)) selectTab("tab-" + fromHash);
-else selectTab(SHIM ? "tab-basket" : "tab-approvals");
-renderBasket();
 
 /* ---------------- table toggles ---------------- */
 for (const [btn, box] of [["curve-table", "curve-tbl"], ["rank-table", "rank-tbl"], ["attr-table", "attr-tbl"]]) {
