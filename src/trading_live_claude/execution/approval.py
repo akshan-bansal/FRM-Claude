@@ -29,9 +29,12 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+from base64 import b64decode
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -89,6 +92,58 @@ def canonical_bytes(
     return "|".join(parts).encode("utf-8")
 
 
+def fingerprint(canonical: bytes, *, chars: int = 8) -> str:
+    """Human-comparable digest of the exact bytes signed: ``7F3A...91C2``.
+
+    ``chars`` is the total number of hex characters shown, split evenly between head and tail of
+    the SHA-256 digest. For eyeballing that the dashboard, the device screen and the ledger all
+    refer to the same intent. Verification always uses the full signature over the full canonical
+    bytes — never this abbreviation.
+
+    A caller MUST derive it from the same stored record the card was served, not by recomputing the
+    fields from a separate source, or the display and the signature can drift apart and the
+    comparison becomes theatre.
+    """
+    if chars < 2 or chars % 2:
+        raise ValueError(f"chars must be a positive even number, got {chars}")
+    digest = sha256(canonical).hexdigest().upper()
+    half = chars // 2
+    return f"{digest[:half]}...{digest[-half:]}"
+
+
+def verify_audit_record(record: Mapping[str, object]) -> tuple[bool, str]:
+    """Re-verify one stored approval offline. Returns ``(ok, reason)``.
+
+    Takes the dict from ``SqliteApprovalStore.audit_record`` and needs nothing else — no shim, no
+    registry, no network. ``ok`` is False with a reason when the evidence is absent (an EXPIRED
+    intent, or an approval recorded before signatures were stored) as well as when it is wrong, so
+    a caller can never read "no signature on file" as "verified".
+    """
+    verdict = record.get("verdict")
+    if verdict in (None, "EXPIRED"):
+        return False, f"nothing signed it (verdict={verdict})"
+    sig_b64, canonical, pem = record.get("signature"), record.get("canonical"), record.get("pubkey_pem")
+    if not sig_b64:
+        return False, "no signature on file (approval predates signature storage)"
+    if not canonical:
+        return False, "no canonical bytes on file"
+    if not pem:
+        return False, f"signing card {record.get('signer_card_id')!r} has no public key on file"
+    alg = record.get("signature_alg") or "ed25519"
+    if alg != "ed25519":
+        return False, f"unsupported signature algorithm {alg!r}"
+    try:
+        key = load_pem_public_key(str(pem).encode("utf-8"))
+        if not isinstance(key, Ed25519PublicKey):
+            return False, "stored key is not Ed25519"
+        key.verify(b64decode(str(sig_b64)), str(canonical).encode("utf-8"))
+    except InvalidSignature:
+        return False, "signature does not verify against the canonical bytes"
+    except Exception as e:                                    # malformed key/base64 on disk
+        return False, f"unverifiable record: {type(e).__name__}: {e}"
+    return True, "ok"
+
+
 # --------------------------------------------------------------------------- #
 # data classes                                                                #
 # --------------------------------------------------------------------------- #
@@ -117,6 +172,11 @@ class Prompt:
     nonce: str
     canonical: str
 
+    @property
+    def fingerprint(self) -> str:
+        """``7F3A...91C2`` over the exact bytes the card signs (see ``fingerprint()``)."""
+        return fingerprint(self.canonical.encode("utf-8"))
+
     def to_dict(self) -> dict[str, object]:
         return {
             "intent_id": self.intent_id,
@@ -138,6 +198,10 @@ class Prompt:
             "intel_ref": self.intel_ref,
             "nonce": self.nonce,
             "canonical": self.canonical,
+            # Phase 6: the comparison value shown on the dashboard, the device and the ledger.
+            # Derived from the canonical bytes in THIS record, never recomputed from the fields
+            # separately, so what is displayed cannot drift from what is signed.
+            "fingerprint": self.fingerprint,
         }
 
 
@@ -166,6 +230,13 @@ class PassbookEntry:
     thesis: str
     intel_ref: str
     card_id: str | None       # who signed the ACCEPT / DECLINE; None for EXPIRED
+    # Phase 6: the fingerprint of the canonical bytes this verdict covered. Empty only for a row
+    # recorded before the canonical string was kept alongside the passbook entry.
+    fingerprint: str = ""
+    # When the prompt was put in front of the card. Carried so response time is computable from a
+    # passbook row alone: without it a reader can only see when a verdict landed, not how long the
+    # holder took, and the metric that needed it was returning a constant instead.
+    issued_at: datetime | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -181,6 +252,7 @@ class PassbookEntry:
             "thesis": self.thesis,
             "intel_ref": self.intel_ref,
             "card_id": self.card_id,
+            "fingerprint": self.fingerprint,
         }
 
 
@@ -287,7 +359,7 @@ class InMemoryApprovalStore:
 
     @staticmethod
     def _entry_to_passbook(
-        entry: "_PendingEntry", *, card_id: str | None, at: datetime,
+        entry: _PendingEntry, *, card_id: str | None, at: datetime,
     ) -> PassbookEntry:
         p = entry.prompt
         assert entry.verdict is not None
@@ -304,6 +376,8 @@ class InMemoryApprovalStore:
             thesis=p.thesis,
             intel_ref=p.intel_ref,
             card_id=card_id,
+            fingerprint=p.fingerprint,
+            issued_at=p.issued_at,
         )
 
     # -- ApprovalStore ---------------------------------------------------- #
@@ -319,7 +393,10 @@ class InMemoryApprovalStore:
         intel_ref: str = "",
     ) -> Prompt:
         now = datetime.now(UTC)
-        intent_id = self._mint_intent_id()
+        # Reuse the id the intent was born with (2026-09-24) so the approval record and
+        # the router's journals share one key; fall back for a caller passing a bare
+        # intent-shaped object without one.
+        intent_id = getattr(intent, "intent_id", "") or self._mint_intent_id()
         nonce = secrets.token_hex(16)
         notional = float(intent.shares) * float(intent.entry)
         canonical = canonical_bytes(
@@ -485,6 +562,52 @@ class ApprovalRouter:
         self.ttl_seconds = ttl_seconds
         self.thesis_fn = thesis_fn
 
+    def _ledger(self, event: str, intent: OrderIntent, payload: dict[str, object]) -> None:
+        """Mirror an approval-axis transition into the inner router's ledger, if it has one."""
+        ledger = getattr(self.inner, "ledger", None)
+        if ledger is None:
+            return
+        ledger.append(event, payload, intent_id=getattr(intent, "intent_id", None),
+                      strategy_id=intent.strategy,
+                      strategy_version=getattr(intent, "strategy_version", "") or None,
+                      risk_check_version=self.inner.risk_check_version())
+
+    def _ledger_verdict(self, intent: OrderIntent, prompt: Prompt, verdict: str) -> None:
+        """Record the card's verdict, and SIGNED with the signature when one exists.
+
+        An EXPIRED prompt was never signed, so only the verdict is recorded — writing a SIGNED row
+        with an empty signature would imply evidence that does not exist.
+        """
+        ledger = getattr(self.inner, "ledger", None)
+        if ledger is None:
+            return
+        event = {"ACCEPT": "APPROVED", "DECLINE": "REJECTED"}.get(verdict, "EXPIRED")
+        rec: dict[str, object] = {}
+        audit = getattr(self.store, "audit_record", None)
+        if callable(audit):
+            try:
+                rec = audit(prompt.intent_id) or {}
+            except Exception as e:                       # a reporting read must never break routing
+                log.warning("approval_router.audit_read_failed",
+                            intent_id=prompt.intent_id, error=str(e))
+        self._ledger(event, intent, {
+            "symbol": intent.symbol, "verdict": verdict, "broker": prompt.broker,
+            "shares": prompt.shares, "notional_usd": prompt.notional_usd,
+            "fingerprint": fingerprint(prompt.canonical.encode("utf-8")),
+            "signer_card_id": rec.get("signer_card_id"),
+        })
+        signature = rec.get("signature")
+        if signature:
+            ledger.append("SIGNED", {
+                "symbol": intent.symbol,
+                "canonical": prompt.canonical,
+                "fingerprint": fingerprint(prompt.canonical.encode("utf-8")),
+                "signature_alg": rec.get("signature_alg"),
+            }, intent_id=intent.intent_id, signature=str(signature),
+                signing_key_id=str(rec.get("signer_card_id") or ""),
+                strategy_id=intent.strategy,
+                risk_check_version=self.inner.risk_check_version())
+
     def submit(
         self,
         intent: OrderIntent,
@@ -493,6 +616,9 @@ class ApprovalRouter:
         existing_risk: float,
         open_positions: int,
     ) -> Order | None:
+        # The wrapper is where this intent first meets a router, so the creation event belongs here;
+        # the inner router's own call is then a no-op for it (see Router.announce_intent).
+        self.inner.announce_intent(intent)
         decision = self.inner._gate(
             intent,
             equity=equity,
@@ -519,10 +645,22 @@ class ApprovalRouter:
             self.inner.journal.rejected(
                 {"symbol": intent.symbol, "reasons": decision.rejected_reasons}
             )
+            self._ledger("RISK_REJECTED", intent, {
+                "symbol": intent.symbol, "accepted": False,
+                "rejected_reasons": decision.rejected_reasons, "via": "approval-router",
+            })
             log.warning("approval_router.rejected_pre_prompt",
                         symbol=intent.symbol, reasons=decision.rejected_reasons)
             return None
 
+        # The gate ran and accepted: record it, or the card path's chain would begin at
+        # INTENT_SENT with no evidence the risk check happened at all.
+        self._ledger("RISK_CHECK", intent, {
+            "accepted": True, "rejected_reasons": [], "via": "approval-router",
+            "symbol": intent.symbol, "action": intent.action.value, "shares": intent.shares,
+            "entry": intent.entry, "stop": intent.stop, "risk_dollars": intent.risk_dollars,
+            "equity": equity, "existing_risk": existing_risk, "open_positions": open_positions,
+        })
         thesis, intel_ref = "", ""
         if self.thesis_fn is not None:
             try:
@@ -533,12 +671,25 @@ class ApprovalRouter:
         prompt = self.store.publish(
             intent,
             mode=self.inner.mode,
-            broker=self.inner.broker.name,
+            # ``.venue``, not ``.name``: the wire vocabulary is venue tags (ib / ib_web / kraken /
+            # questrade / paper / global). ``.name`` would send "interactive-brokers" for IBBroker
+            # and "interactive-brokers-web" for IBWebBroker, neither of which the schema accepts.
+            broker=getattr(self.inner.broker, "venue", None) or self.inner.broker.name,
             ttl_seconds=self.ttl_seconds,
             thesis=thesis,
             intel_ref=intel_ref,
         )
+        self._ledger("INTENT_SENT", intent, {
+            "symbol": intent.symbol, "action": intent.action.value, "shares": intent.shares,
+            "entry": intent.entry, "notional_usd": prompt.notional_usd,
+            "broker": prompt.broker, "ttl_seconds": self.ttl_seconds,
+            "fingerprint": fingerprint(prompt.canonical.encode("utf-8")),
+            "intel_ref": intel_ref,
+        })
         verdict = self.store.wait(prompt.intent_id)
+        # The verdict, and — for a signed verdict — the signature itself, so the approval can be
+        # re-verified from the ledger without reaching into approval.db (audit phase 5).
+        self._ledger_verdict(intent, prompt, verdict)
         if verdict != "ACCEPT":
             self.inner.journal.rejected(
                 {"symbol": intent.symbol, "reasons": [f"card:{verdict.lower()}"]}
@@ -566,12 +717,21 @@ class ApprovalRouter:
 class CardWiring:
     """The pieces the paper scripts need to hold onto when --require-card is on."""
 
-    router: "ApprovalRouter"
-    store: "InMemoryApprovalStore"
-    registry: "CardRegistry"
-    shim_thread: "threading.Thread | None"
+    router: ApprovalRouter
+    store: InMemoryApprovalStore
+    registry: CardRegistry
+    shim_thread: threading.Thread | None
     shim_url: str
     auth_token: str | None = None
+
+    @property
+    def desk_url(self) -> str:
+        """Where the desk panel is reachable while this session runs.
+
+        The shim serves the built panel itself, so the page's fetches are same-origin and
+        its approvals surface reads the live store rather than the last build's journal.
+        """
+        return f"{self.shim_url}/desk"
 
 
 def wire_card_approval(
@@ -583,7 +743,12 @@ def wire_card_approval(
     start_shim: bool = True,
     thesis_fn: object | None = None,
     auth_token: str | None = "auto",
-    db_path: "Path | None" = None,
+    db_path: Path | None = None,
+    desk_page: Path | None = None,
+    state_dir: Path | None = None,
+    session_id: str | None = None,
+    account_currency: str = "USD",
+    books: list[object] | None = None,
 ) -> CardWiring:
     """Build the card-approval layer around ``inner`` and (optionally) spin the shim.
 
@@ -602,9 +767,18 @@ def wire_card_approval(
     prompts + pubkeys survive a restart. When ``None`` (default), the
     in-memory implementations are used — fine for tests and for a paper
     loop that treats every session as fresh.
+
+    **One port, several brokers.** Every loop points ``db_path`` at the same
+    ``state/approval.db``, so the store is already shared: one card approves the QT, Kraken and IB
+    books alike. What collided was the HTTP surface — all three loops default to port 8787 and each
+    minted its own token. Pass ``start_shim=False`` (the loops expose it as ``--card-attach``) to
+    wrap the router without binding a port, and run one shim yourself
+    (``scripts/approval_shim.py --db state/approval.db --book ...``). ``books`` declares which books
+    a shim reports on for ``/v1/books``; it is ignored when ``start_shim`` is False, because the
+    process that owns the port owns that declaration.
     """
-    registry: "CardRegistry | SqliteCardRegistry"
-    store: "InMemoryApprovalStore | SqliteApprovalStore"
+    registry: CardRegistry | SqliteCardRegistry
+    store: InMemoryApprovalStore | SqliteApprovalStore
     if db_path is not None:
         # Local import so the sqlite module isn't loaded when not asked for.
         from .approval_sqlite import SqliteApprovalStore, SqliteCardRegistry
@@ -629,6 +803,8 @@ def wire_card_approval(
         from .approval_server import start_shim_thread
         shim_thread = start_shim_thread(
             store, registry, shim_host, shim_port, auth_token=resolved_token,
+            desk_page=desk_page, state_dir=state_dir, session_id=session_id,
+            account_currency=account_currency, books=books,
             journal=inner.journal, router=inner,
         )
 

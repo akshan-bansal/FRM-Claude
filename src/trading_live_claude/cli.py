@@ -307,6 +307,13 @@ def signal(
         "", help="Comma-separated symbols whose alerts are muted. Signals, sizing, routing and "
                  "journals are unchanged; only the notification is skipped.",
     ),
+    max_cost_ratio: float = typer.Option(
+        0.0, "--max-cost-ratio",
+        help="Cost-aware size floor: reject an ENTRY whose round-trip cost exceeds this fraction of "
+             "its notional, priced with the venue's real cost shape (execution/venue_costs.py). "
+             "0 = off (the flat min_ticket_usd alone). 0.005 on Questrade implies a ~$2,475 minimum "
+             "ticket at $4.95/fill. Exits are never gated on cost.",
+    ),
     max_positions: int = typer.Option(
         0, "--max-positions",
         help="Open-position cap for THIS process's Router, overriding max_open_positions in "
@@ -329,6 +336,35 @@ def signal(
              "flatten and re-buy. Pass that session's id and the same --paper-equity. Refuses to "
              "start if the journals disagree. Pair with --no-flatten-on-exit on the session you "
              "stop for a restart.",
+    ),
+    require_card: bool = typer.Option(
+        False, "--require-card/--no-require-card",
+        help="PAPER ONLY. Put a physical (or simulated) approval card between the risk gate and the "
+             "broker: the Router gates first, and only an intent it would have accepted is offered "
+             "to the card for a signed ACCEPT. Boots the approval shim, which also serves the desk "
+             "panel at /desk so a running QT session feeds it live. Never weakens a gate.",
+    ),
+    card_shim_host: str = typer.Option(
+        "127.0.0.1", help="Interface the approval shim binds. Loopback by default; set a LAN "
+                          "address deliberately to reach the card or the desk panel from a device."
+    ),
+    card_shim_port: int = typer.Option(8787, help="Port for the approval shim and the desk panel."),
+    card_attach: bool = typer.Option(
+        False, "--card-attach/--card-own-shim",
+        help="Wrap the router for card approval but do NOT bind a port: attach to a shim already "
+             "running on state/approval.db (scripts/approval_shim.py --db ...). This is how QT, "
+             "Kraken and IB share ONE port and one token instead of colliding on 8787.",
+    ),
+    card_ttl: float = typer.Option(
+        90.0, help="Seconds a prompt stays answerable before it expires unapproved."
+    ),
+    audit_ledger: bool = typer.Option(
+        True, "--audit-ledger/--no-audit-ledger",
+        help="PAPER ONLY. Write the hash-chained audit ledger under state/ledger/ alongside the "
+             "existing journals (see AUDIT_LEDGER_SCOPE.md): one stream per book, so this book's "
+             "chain cannot be corrupted by another running session. Additive and non-strict — a "
+             "ledger write failure is logged, never raised, so it cannot stop a session. Verify "
+             "with scripts/verify_ledger.py; query with scripts/rebuild_projection.py.",
     ),
     params: str = typer.Option(
         "default", "--params",
@@ -428,6 +464,20 @@ def signal(
     console.print(format_validation_banner(_validations))
     refuse_launch_on_hard_failures(_validations)
 
+    # Audit ledger (AUDIT_LEDGER_SCOPE.md). Stream "qt" so this book's chain is independent of the
+    # Kraken and IB books, which run as separate processes against the same state/ directory.
+    # Paper only: a dry-run places nothing, so there is no order path to record.
+    ledger = None
+    if paper and audit_ledger:
+        from datetime import UTC, datetime
+
+        from .audit import Ledger
+        ledger = Ledger(Path(settings.state_dir) / "ledger", stream="qt", mode="paper",
+                        session_id=getattr(exec_broker, "session_id", None))
+        console.print(f"[dim]audit ledger ON -> "
+                      f"{ledger.path_for(datetime.now(UTC)).name} "
+                      f"(verify: python scripts/verify_ledger.py --stream qt)[/dim]")
+
     router = Router.build_default(
         mode="paper" if paper else "dry-run",
         broker=exec_broker,
@@ -437,11 +487,58 @@ def signal(
         daily_loss_limit_pct=settings.daily_loss_limit_pct,
         max_open_positions=max_positions or settings.max_open_positions,
         min_ticket_usd=settings.min_ticket_usd,
+        max_round_trip_cost_ratio=max_cost_ratio,
         position_cap_pct_for=position_cap_for(settings, market) if paper else None,
+        ledger=ledger,
     )
+    if max_cost_ratio > 0:
+        console.print(f"[dim]cost floor ON: entries need round-trip cost <= {max_cost_ratio:.2%} of "
+                      f"notional on {router.cost_model.venue} "
+                      f"(min ticket ${router.cost_model.min_notional_for(max_cost_ratio=max_cost_ratio, price=10.0, shares=1):,.0f} "
+                      "at a $10 price).[/dim]")
     if max_positions:
         console.print(f"[dim]max open positions: {max_positions} (CLI override; config says "
                       f"{settings.max_open_positions}).[/dim]")
+
+
+    # Card approval (AUDIT_LEDGER_SCOPE.md / TradeCard): the wrapper runs Router._gate FIRST and
+    # only prompts for an intent the gates already accepted, so this is a human gate on top of the
+    # automated ones, never instead of them. The shim it boots also serves the desk panel, which is
+    # what gives a running QT session live feedback: the panel reads the same approval store the
+    # card does, over the shim's own /v1 routes, in this process.
+    card_wiring = None
+    if require_card:
+        if not paper:
+            raise typer.BadParameter("--require-card is paper-only: a dry-run places no orders, "
+                                     "so there is nothing for a card to approve.")
+        from .execution.approval import wire_card_approval
+        from .execution.approval_asgi import BookRef
+        card_wiring = wire_card_approval(
+            router,
+            shim_host=card_shim_host,
+            shim_port=card_shim_port,
+            ttl_seconds=card_ttl,
+            db_path=Path(settings.state_dir) / "approval.db",
+            state_dir=Path(settings.state_dir),
+            session_id=getattr(exec_broker, "session_id", None),
+            account_currency=settings.account_currency,
+            start_shim=not card_attach,
+            books=None if card_attach else [BookRef(
+                venue=getattr(exec_broker, "venue", "questrade"),
+                session_id=str(getattr(exec_broker, "session_id", "") or ""),
+                currency=settings.account_currency, asset_class="equity")],
+        )
+        router = card_wiring.router
+        if card_attach:
+            console.print(f"[cyan]--require-card ON[/cyan] — ATTACHED to the shim at "
+                          f"{card_wiring.shim_url} (no port bound by this process; it must already "
+                          "be serving state/approval.db)")
+        else:
+            console.print(f"[cyan]--require-card ON[/cyan] — approval shim at {card_wiring.shim_url}, "
+                          f"desk panel at {card_wiring.desk_url}")
+        console.print(f"[dim]card auth token: {card_wiring.auth_token}[/dim]")
+        console.print("[dim]Pair the card (and unlock the desk panel) with that token. The panel "
+                      "displays prompts; the signature that decides one is made on the card.[/dim]")
 
     alerter = Alerter(
         AlertConfig(

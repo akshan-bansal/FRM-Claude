@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterator, Literal
 
+from ..execution.venue_costs import VenueCostModel
 from ..logging_setup import get_logger
 from .base import Broker, OrderRejected, StaleQuote
 from .models import Account, Candle, Fill, Order, OrderAction, Position, Quote
@@ -42,7 +43,10 @@ _EQUITY_COLUMNS = (
 
 class PaperBroker(Broker):
     name = "paper"
-    venue = "paper"                # overwritten below by the feed's declared venue
+    # Class-level tag. NOT overwritten per instance — the resolved feed venue lives on
+    # ``self._venue`` (journal rows, graph edges); ``.venue`` stays "paper" so anything reading it
+    # off the class/instance sees the honest destination: the local simulator.
+    venue = "paper"
 
     class RehydrationMismatch(RuntimeError):
         """The journals disagree with themselves; refusing to guess a book (see ``resume``)."""
@@ -52,7 +56,7 @@ class PaperBroker(Broker):
         feed: Broker,
         starting_equity: float = 100_000.0,
         slippage_bps: float = 5.0,
-        commission_per_trade: float = 4.95,
+        commission_per_trade: float | None = None,
         journal_dir: Path | None = None,
         session_id: str | None = None,
         venue: str | None = None,
@@ -71,7 +75,13 @@ class PaperBroker(Broker):
         self._equity = starting_equity
         self._cash = starting_equity
         self._slippage_bps = slippage_bps
-        self._commission = commission_per_trade
+        # Commission: venue-priced unless the caller pins a number. A flat $4.95 is Questrade's
+        # equity fee and was charged on every venue, which mispriced crypto by an order of magnitude
+        # (2026-09-23: $4.95 on a $184.97 LINK fill = 2.68% of notional, where Kraken charges ~26 bps,
+        # about $0.48). ``None`` resolves from the feed's venue; an explicit value still wins, so
+        # tests and callers that want a fixed fee (or zero) are unaffected.
+        self._cost_model = VenueCostModel.for_venue(self._venue)
+        self._commission_override = commission_per_trade
         self._positions: dict[str, Position] = {}
         self._fills: list[Fill] = []
         self._journal_dir = journal_dir
@@ -82,6 +92,9 @@ class PaperBroker(Broker):
         # Realized P&L is accrued on closing fills, tracked here so the equity CSV can carry it
         # without recomputing from the fills journal.
         self._realized_pnl = 0.0
+        # Same figure computed the pre-2026-09-24 way (full closes only). Not accounting truth —
+        # it exists so `resume` can recognise a journal written before partial sells were realized.
+        self._realized_pnl_full_closes_only = 0.0
         # Peak equity tracked for the drawdown series feeding the max-drawdown kill-switch invariant.
         self._peak_equity = starting_equity
         # Kill-switch auto-halt wire-up (2026-09-08). Reuses the same file sentinel as the
@@ -96,6 +109,28 @@ class PaperBroker(Broker):
         # Per-instance order ids (2026-09-18: this was a class-level counter shared by every
         # PaperBroker in the process). ``resume`` continues it from the journal's highest id.
         self._order_counter: Iterator[int] = itertools.count(1)
+
+    @property
+    def commission_per_trade(self) -> float:
+        """Size-independent part of the per-fill commission, for callers that reserve against it.
+
+        Exposed 2026-09-25: the value was only held as ``self._commission``, so
+        ``Router._cost_reserve`` and ``monitor.live_loop``'s ``getattr(broker, "commission_per_trade")``
+        both silently saw nothing and reserved zero.
+
+        On a percentage venue (Kraken) the fee has no fixed part, so this is 0.0 and a reserve built
+        on it understates the true cost — the leverage cap keeps slack for that. Use
+        ``commission_for(shares, price)`` when the exact figure matters.
+        """
+        if self._commission_override is not None:
+            return self._commission_override
+        return self._cost_model.flat_per_fill + self._cost_model.min_per_order
+
+    def commission_for(self, *, shares: float, price: float) -> float:
+        """The commission this venue would charge for one fill of this size."""
+        if self._commission_override is not None:
+            return self._commission_override
+        return self._cost_model.cost_for(shares=shares, price=price)
 
     # ----- read-only data passes through feed -----------------------------
 
@@ -146,7 +181,8 @@ class PaperBroker(Broker):
         fill_price = ref_price + slippage if order.action == OrderAction.BUY else ref_price - slippage
 
         signed_qty = order.totalQuantity if order.action == OrderAction.BUY else -order.totalQuantity
-        self._apply_fill(order.symbol, signed_qty, fill_price, self._commission,
+        commission = self.commission_for(shares=order.totalQuantity, price=fill_price)
+        self._apply_fill(order.symbol, signed_qty, fill_price, commission,
                          symbol_id=order.symbolId or 0)
 
         fill = Fill(
@@ -155,7 +191,7 @@ class PaperBroker(Broker):
             side=OrderAction(order.action).value,  # type: ignore[arg-type]
             quantity=order.totalQuantity,
             price=fill_price,
-            commission=self._commission,
+            commission=commission,
             fill_time=datetime.now(UTC),
             # The resolved FEED venue, matching what _journal_fill writes. Was hardcoded "paper",
             # which disagreed with the journal row for every non-Questrade feed. Note this is
@@ -199,24 +235,46 @@ class PaperBroker(Broker):
             )
             return
         new_qty = pos.openQuantity + signed_qty
-        if new_qty == 0:
-            # Closing fill: realize P&L against the average entry price. Sign convention:
-            # if we're closing a long (pos.openQuantity > 0, signed_qty < 0), profit is
-            # (fill - avg) * closed_qty; symmetric for a short.
-            closed_qty = abs(pos.openQuantity)
-            if pos.openQuantity > 0:
-                self._realized_pnl += (fill_price - pos.averageEntryPrice) * closed_qty
-            else:
-                self._realized_pnl += (pos.averageEntryPrice - fill_price) * closed_qty
-            self._positions.pop(symbol)
-            return
         if (pos.openQuantity > 0) == (signed_qty > 0):
-            # adding to existing direction -> recompute weighted avg
+            # Adding to the existing direction -> recompute the weighted average entry. Nothing is
+            # realized by a fill that only grows a position.
             pos.averageEntryPrice = (
                 pos.averageEntryPrice * pos.openQuantity + fill_price * signed_qty
             ) / new_qty
+            pos.openQuantity = new_qty
+            pos.currentPrice = fill_price
+            pos.totalCost = abs(new_qty) * pos.averageEntryPrice
+            return
+
+        # Reducing, closing, or crossing zero. Realize against the average entry on the shares
+        # actually closed — `min` is what makes a PARTIAL sell book its P&L too. Fixed 2026-09-24:
+        # previously only the full-close branch realized anything, so `trim_to_slots` and the V4
+        # tranche stop moved proceeds into cash (equity stayed right) while `realized_pnl` in
+        # paper_equity.csv silently understated. Measured miss on QT session fba831e3: -$39.92.
+        closed_qty = min(abs(pos.openQuantity), abs(signed_qty))
+        direction = 1.0 if pos.openQuantity > 0 else -1.0
+        realized = direction * (fill_price - pos.averageEntryPrice) * closed_qty
+        self._realized_pnl += realized
+        if new_qty == 0:
+            # Legacy accumulator: pre-2026-09-24 journals only ever booked full closes. `resume`
+            # uses it to cross-check a session written by the old accounting (see resume()).
+            self._realized_pnl_full_closes_only += realized
+            self._positions.pop(symbol)
+            return
+        if (new_qty > 0) == (pos.openQuantity > 0):
+            # Partial reduction: the average entry is unchanged — the remaining shares were bought
+            # at the same average as the ones just sold.
+            pos.openQuantity = new_qty
+            pos.currentPrice = fill_price
+            pos.totalCost = abs(new_qty) * pos.averageEntryPrice
+            return
+        # Crossed through zero: the old position is fully closed (realized above) and the surplus
+        # opens a new one in the opposite direction at this fill price. Long-only today, so this is
+        # unreachable in practice; it is here so a future short path cannot silently mis-average.
         pos.openQuantity = new_qty
+        pos.averageEntryPrice = fill_price
         pos.currentPrice = fill_price
+        pos.totalCost = abs(new_qty) * fill_price
 
     def resume(self, *, tolerance: float = 0.05) -> dict[str, object]:
         """Rebuild this session's book from its own journals, so a restart continues it.
@@ -270,11 +328,29 @@ class PaperBroker(Broker):
                              float(r.get("commission") or 0.0))            # type: ignore[arg-type]
         if last_eq is not None:
             j_cash, j_real = float(last_eq["cash"]), float(last_eq["realized_pnl"])
-            if abs(self._cash - j_cash) > tolerance or abs(self._realized_pnl - j_real) > tolerance:
+            if abs(self._cash - j_cash) > tolerance:
                 raise self.RehydrationMismatch(
-                    f"replayed cash {self._cash:.2f} / realized {self._realized_pnl:.2f} disagree with "
-                    f"the journal's {j_cash:.2f} / {j_real:.2f}; check --paper-equity matches the "
-                    f"original session's starting equity")
+                    f"replayed cash {self._cash:.2f} disagrees with the journal's {j_cash:.2f}; "
+                    f"check --paper-equity matches the original session's starting equity")
+            # Realized P&L: accept either accounting. A session journalled before 2026-09-24 booked
+            # only full closes, so its last row legitimately disagrees with the fixed figure by
+            # exactly the partial sells' P&L. Rewriting those rows is not an option (state/ is
+            # ground truth), and refusing to resume would strand a live book, so a legacy match is
+            # accepted and reported. Cash is checked strictly above and the fix does not change it.
+            if abs(self._realized_pnl - j_real) > tolerance:
+                legacy = self._realized_pnl_full_closes_only
+                if abs(legacy - j_real) <= tolerance:
+                    log.warning("paper.resume.legacy_realized_pnl",
+                                session_id=self.session_id, journal_realized=round(j_real, 2),
+                                replayed_realized=round(self._realized_pnl, 2),
+                                unbooked_partial_pnl=round(self._realized_pnl - legacy, 2),
+                                note="journal predates the 2026-09-24 partial-sell fix; "
+                                     "resuming with the corrected figure")
+                else:
+                    raise self.RehydrationMismatch(
+                        f"replayed realized {self._realized_pnl:.2f} (legacy {legacy:.2f}) disagrees "
+                        f"with the journal's {j_real:.2f}; check --paper-equity matches the original "
+                        f"session's starting equity")
             self._peak_equity = max(self._peak_equity, float(last_eq["peak_equity"]))
         max_id = max((int(str(r.get("order_id") or 0)) for r in fills), default=0)
         self._order_counter = itertools.count(max_id + 1)

@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Windows console defaults to cp1252, which crashes on Unicode arrows / bullets in log lines
@@ -51,27 +52,30 @@ if sys.platform == "win32":
     except Exception:                                                  # pragma: no cover
         pass
 
+from trading_live_claude.audit import Ledger
 from trading_live_claude.brokers.base import Broker
+from trading_live_claude.brokers.fresh import guard_feed
 from trading_live_claude.brokers.ib import IBBroker
 from trading_live_claude.brokers.ib_web import CPGatewayAuth, IBWebBroker
-from trading_live_claude.venues import currency_of, market_open
-from trading_live_claude.brokers.fresh import guard_feed
-from trading_live_claude.brokers.fx import CurrencyNormalizingBroker, ib_spot_rates
 from trading_live_claude.brokers.paper import PaperBroker
-from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.market import MarketData
+from trading_live_claude.desk_policy import (
+    VenuePolicyError,
+    assert_ib_futures_only,
+    assert_single_currency,
+)
 from trading_live_claude.execution.approval import wire_card_approval
+from trading_live_claude.execution.approval_asgi import BookRef
 from trading_live_claude.execution.router import Router
 from trading_live_claude.intel.vs_engine import MarketContext, VSInvestmentEngine
 from trading_live_claude.monitor.live_loop import LiveMonitor, MonitorEvent
 from trading_live_claude.portfolio.allocator import PortfolioAllocator
+from trading_live_claude.risk.position_cap import position_cap_for
 from trading_live_claude.risk.sizing import PositionSizer
 from trading_live_claude.strategies import STRATEGIES
-
-
-DEFAULT_SYMBOLS = ("AAPL", "MSFT", "SPY", "QQQ", "IWM")
+from trading_live_claude.venues import market_open
 
 
 class _TickleThread(threading.Thread):
@@ -96,7 +100,7 @@ class _TickleThread(threading.Thread):
 
     def __init__(self, broker: IBWebBroker, interval_s: float = 90.0, *,
                  warn_after_hours: float = 20.0, critical_after_hours: float = 23.0,
-                 warn_fn: "Callable[[str, str], None] | None" = None) -> None:
+                 warn_fn: Callable[[str, str], None] | None = None) -> None:
         super().__init__(daemon=True, name="ibweb-tickle")
         self.broker = broker
         self.interval_s = interval_s
@@ -270,8 +274,9 @@ def _build_ib_feed(args: argparse.Namespace, settings) -> tuple[Broker, _TickleT
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS),
-                    help="Comma-separated symbols to monitor. Default is a US equity smoke-test set.")
+    ap.add_argument("--symbols", default="",
+                    help="Comma-separated futures roots to monitor (equities are refused — they "
+                         "trade on Questrade). Prefer --futures, which also sets the FUT sec_type.")
     ap.add_argument("--strategy", default="bollinger",
                     help="Fallback strategy name (matched against strategies.STRATEGIES).")
     ap.add_argument("--strategy-map", dest="strategy_map", default="",
@@ -305,9 +310,21 @@ def main() -> None:
                     help="Route every accepted intent through the ApprovalRouter — a physical "
                          "TradeCard (or scripts/approval_card_sim.py) must ACCEPT before the "
                          "order is dispatched. Boots the approval shim on --card-shim-port.")
+    ap.add_argument("--card-shim-host", default="127.0.0.1",
+                    help="Interface for the approval shim / desk panel. Loopback by default; "
+                         "widen it only if the card or panel must reach it over the LAN.")
     ap.add_argument("--card-shim-port", type=int, default=8787)
+    ap.add_argument("--card-attach", dest="card_attach", action="store_true",
+                    help='Wrap the router for card approval but do NOT bind a port: attach to a shim already running on state/approval.db (scripts/approval_shim.py --db ...). This is how QT, Kraken and IB share one port and one token instead of colliding on 8787.')
     ap.add_argument("--card-ttl", type=float, default=90.0,
                     help="Seconds a card prompt stays live before it auto-EXPIRES.")
+    ap.add_argument("--audit-ledger", dest="audit_ledger",
+                    default=True, action=argparse.BooleanOptionalAction,
+                    help="Write the hash-chained audit ledger under state/ledger/ alongside the "
+                         "existing journals (AUDIT_LEDGER_SCOPE.md), on stream \"ib\" so this "
+                         "book's chain is independent of the other books running beside it. ON by "
+                         "default; additive and non-strict, so a ledger write failure is logged "
+                         "rather than raised and cannot stop a session.")
     ap.add_argument("--news-providers", dest="news_providers", default="",
                     help="Comma-separated IB news provider codes to subscribe (e.g. "
                          "'BRFG,FLY,DJ-N'). Empty (default) disables the news→graph "
@@ -326,23 +343,21 @@ def main() -> None:
     feed, tickle = _build_ib_feed(args, settings)
 
     numeraire = (args.account_currency or settings.account_currency).upper()
-    requested = [s.strip().upper() for s in f"{args.symbols},{args.futures}".split(",") if s.strip()]
-    foreign = sorted({currency_of(s) for s in requested} - {numeraire})
+    # Roots from --futures are futures by definition; --symbols entries are taken verbatim (a
+    # leading '/' marks a future, anything else is treated as an equity and refused below).
+    sym_entries = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    fut_roots = [f"/{r.strip().upper().lstrip('/')}" for r in args.futures.split(",") if r.strip()]
+    requested = sym_entries + fut_roots
+    # Desk venue split: IB carries futures/commodities only (no equities), and FX is no longer
+    # sourced from IB. Refuse equities and any mixed-currency basket rather than silently routing
+    # them through IB the way the pre-2026-09-14 script did.
+    try:
+        assert_ib_futures_only(requested)
+        assert_single_currency(requested, numeraire)
+    except VenuePolicyError as e:
+        raise SystemExit(f"[ib-paper] refusing: {e}") from e
     price_feed: Broker = guard_feed(feed, settings)
     cache_dir = Path(settings.data_cache_dir)
-    if foreign:
-        if not isinstance(feed, IBBroker):
-            raise SystemExit(
-                f"[ib-paper] {', '.join(foreign)} prices must be converted into {numeraire}; live FX "
-                f"comes from IB spot quotes, which need --transport socket. Re-run with --transport "
-                f"socket, or pass --account-currency to match the symbols' currency.")
-        rates = ib_spot_rates(feed, numeraire, ttl_s=settings.fx_rate_ttl_s,
-                              max_age_s=settings.fx_max_rate_age_s)
-        price_feed = CurrencyNormalizingBroker(price_feed, rates)
-        # Converted bars must never land in the shared native-currency cache.
-        cache_dir = cache_dir / f"numeraire_{numeraire}"
-        print(f"[ib-paper] FX: converting {', '.join(foreign)} into {numeraire} via IB spot pairs",
-              flush=True)
 
     exec_broker = PaperBroker(feed=price_feed, starting_equity=args.paper_equity,
                               journal_dir=Path(settings.state_dir))
@@ -351,6 +366,15 @@ def main() -> None:
           f"starting_equity={args.paper_equity:,.0f} {numeraire} account={exec_account}", flush=True)
     print("[ib-paper] Real IB account untouched; fills are simulated against IB live quotes.",
           flush=True)
+
+    # Audit ledger (AUDIT_LEDGER_SCOPE.md phase 3/7). One stream per book: these runners are
+    # separate processes writing into one state/ directory, and a shared chain would interleave.
+    ledger = None
+    if args.audit_ledger:
+        ledger = Ledger(Path(settings.state_dir) / "ledger", stream="ib",
+                        mode="paper", session_id=getattr(exec_broker, "session_id", None))
+        print(f"[ib-paper] audit ledger ON -> {ledger.path_for(datetime.now(UTC)).name} "
+              f"(verify: python scripts/verify_ledger.py --stream ib)", flush=True)
 
     router = Router.build_default(
         mode="paper",
@@ -361,24 +385,54 @@ def main() -> None:
         daily_loss_limit_pct=settings.daily_loss_limit_pct,
         max_open_positions=settings.max_open_positions,
         min_ticket_usd=settings.min_ticket_usd,
+        ledger=ledger,
     )
 
     if args.require_card:
         _engine = VSInvestmentEngine()
+
         def _thesis(intent, broker):
-            # Signal-row fields the daemon doesn't currently pass through get
-            # lifted client-side once strategies emit them (see the Strategy
-            # base-class contract update). For now the engine still renders a
-            # useful thesis from the intent alone.
-            return _engine.explain(intent, broker=broker, market=MarketContext())
+            # Late-bound on purpose: `overlay_for` is assigned further down, before the monitor
+            # loop starts, so it is always set by the time an intent is routed through here.
+            # Fixed 2026-09-25 (same gap as scripts/paper_kraken.py): this used to call explain()
+            # with a bare MarketContext() and no overlay, so every writeup persisted with
+            # `overlay_snapshot: {}`, `market_context: {}` and `warnings: []`. The engine could
+            # always fill them; the call site never passed the data this script already holds.
+            #
+            # Remaining signal-row fields (score, rank, ...) still need strategies to emit them
+            # from generate_signals — see the Strategy base-class contract update.
+            snap = getattr(overlay_for, "last_snapshot", None) if overlay_for else None
+            dec = overlay_for(intent.symbol) if overlay_for else None
+            r_mult = None
+            try:
+                risk = abs(intent.entry - intent.stop)
+                if risk > 0 and intent.target:
+                    r_mult = round(abs(intent.target - intent.entry) / risk, 2)
+            except (AttributeError, TypeError):
+                pass
+            return _engine.explain(
+                intent, broker=broker,
+                market=MarketContext(r_multiple=r_mult),
+                overlay_snapshot=snap,
+                overlay_decisions=[dec] if dec else None,
+            )
         _card_db = Path(settings.state_dir) / "approval.db"
         _wiring = wire_card_approval(
             router,
-            shim_host="127.0.0.1",
+            shim_host=args.card_shim_host,
             shim_port=args.card_shim_port,
             ttl_seconds=args.card_ttl,
             thesis_fn=_thesis,
             db_path=_card_db,
+            state_dir=Path(settings.state_dir),
+            session_id=exec_broker.session_id,
+            account_currency=args.numeraire if hasattr(args, "numeraire") else "USD",
+            start_shim=not args.card_attach,
+            books=None if args.card_attach else [BookRef(
+                venue=getattr(exec_broker, "venue", "ib"),
+                session_id=exec_broker.session_id,
+                currency=args.numeraire if hasattr(args, "numeraire") else "USD",
+                asset_class="multi")],
         )
         router = _wiring.router
         print(f"[ib-paper] --require-card ON — approval shim at {_wiring.shim_url}.",
@@ -528,12 +582,14 @@ def main() -> None:
     # Alerter — mirrors the QT CLI wiring. Fills are silent to phone without this. The AlertConfig
     # takes its credentials from settings (Telegram + optional SMTP); empty creds mean stdout-only,
     # so the venue works whether or not the user has an .env with keys.
-    from trading_live_claude.monitor import Alerter
-    from trading_live_claude.monitor.alerter import AlertConfig
     from trading_live_claude.intel.notification import (
         format_entry as _fmt_entry,
+    )
+    from trading_live_claude.intel.notification import (
         format_exit as _fmt_exit,
     )
+    from trading_live_claude.monitor import Alerter
+    from trading_live_claude.monitor.alerter import AlertConfig
     alerter = Alerter(AlertConfig(
         telegram_bot_token=settings.telegram_bot_token,
         telegram_chat_id=settings.telegram_chat_id,

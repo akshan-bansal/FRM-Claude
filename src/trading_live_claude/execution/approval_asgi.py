@@ -34,7 +34,8 @@ import hmac
 import json
 import secrets
 import sys
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -44,12 +45,46 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..brokers.models import OrderAction
 from ..intel.vs_engine import DEFAULT_WRITEUP_DIR
-from .approval import CardRegistry, InMemoryApprovalStore
 from .router import OrderIntent
 
 SPEC_VERSION = "1.0.0"
+DEFAULT_DESK_PAGE = Path(__file__).resolve().parents[3] / "pwa" / "desk.html"
 
-Broker = Literal["ib", "kraken", "questrade"]
+# Destination tags a prompt can carry. These are broker ``.venue`` values, NOT ``.name`` values
+# (IBBroker.name is "interactive-brokers", IBWebBroker.name is "interactive-brokers-web").
+# 2026-09-17: "paper", "ib_web" and "global" were missing, so every prompt from a PaperBroker-wrapped
+# feed — i.e. every paper session, the only mode we run — failed RESPONSE validation on
+# GET /v1/intents/pending with a 500, the card never saw the prompt, and it expired unapproved.
+# "paper" is the honest value: in paper mode the destination really is the local simulator, and the
+# card signs ``broker`` as part of the WYSIWYS canonical, so it must not imply a real venue.
+# Note canonical_bytes() types broker as a plain str, so signing was never the constraint.
+Broker = Literal["ib", "ib_web", "kraken", "questrade", "paper", "global"]
+
+# Default asset class per venue, used when a caller does not say. IB carries equities AND
+# derivatives, so its default is the honest "multi" rather than a guess — a loop that knows which
+# sleeve it is running passes ``asset_class`` explicitly.
+_VENUE_ASSET_CLASS = {"questrade": "equity", "kraken": "crypto", "ib": "multi", "ib_web": "multi",
+                      "paper": "paper", "global": "multi"}
+
+
+@dataclass(frozen=True)
+class BookRef:
+    """One book a shim reports on: which venue, which journal session, in which currency.
+
+    A single shim can serve several (one port, three brokers). Books are never summed: see
+    ``/v1/books``.
+    """
+
+    venue: str
+    session_id: str
+    currency: str = "USD"
+    asset_class: str = ""        # blank -> derived from the venue
+
+    @property
+    def resolved_asset_class(self) -> str:
+        return self.asset_class or _VENUE_ASSET_CLASS.get(self.venue.lower(), "unknown")
+
+
 Verdict = Literal["ACCEPT", "DECLINE", "EXPIRED"]
 Mode = Literal["paper", "dry-run", "live", "autonomous"]
 Decision = Literal["ACCEPT", "DECLINE"]
@@ -145,6 +180,11 @@ class PromptOut(BaseModel):
     )
 
 
+    fingerprint: str = Field(
+        description=("Truncated SHA-256 of `canonical`, as `7F3A...91C2`. A HUMAN comparison value: show it beside the intent so a viewer can check the dashboard, the device screen and the audit ledger all refer to the same bytes. Verification always uses the full signature over the full `canonical` string — never this abbreviation. Derive it from THIS record; recomputing it from the other fields defeats the purpose."),
+    )
+
+
 class PromptsList(BaseModel):
     prompts: list[PromptOut]
 
@@ -181,6 +221,7 @@ class PassbookEntryOut(BaseModel):
     card_id: str | None = Field(default=None,
                                  description="Signer for ACCEPT / DECLINE; "
                                              "null for EXPIRED.")
+    fingerprint: str = Field(default="", description=("Truncated SHA-256 of `canonical`, as `7F3A...91C2`. A HUMAN comparison value: show it beside the intent so a viewer can check the dashboard, the device screen and the audit ledger all refer to the same bytes. Verification always uses the full signature over the full `canonical` string — never this abbreviation. Derive it from THIS record; recomputing it from the other fields defeats the purpose."))
 
 
 class PassbookPage(BaseModel):
@@ -191,29 +232,64 @@ class PassbookPage(BaseModel):
 
 class StatsBody(BaseModel):
     """Real-time operational intelligence for the BI dashboard."""
-    session_id: str = Field(description="Trader session identifier (from CLI)")
-    starting_equity: float = Field(description="Session opening capital")
-    session_equity: float = Field(description="Current marked-to-market equity")
-    peak_equity: float = Field(description="Highest equity this session")
-    max_drawdown_pct: float = Field(description="Maximum peak-to-trough drawdown %")
+    session_id: str | None = Field(
+        default=None,
+        description="Trader session identifier. Null when the shim has no session context — see "
+                    "`placeholders`.")
+    starting_equity: float | None = Field(
+        default=None,
+        description="Session opening capital, from the journal's peak for this session. Null when "
+                    "the shim cannot identify the session or it has not marked yet.")
+    session_equity: float | None = Field(
+        default=None,
+        description="Equity at the session's latest journalled mark, read from "
+                    "state/paper_equity.csv — never recomputed here. Null when unread.")
+    peak_equity: float | None = Field(default=None, description="Journalled peak for this session.")
+    max_drawdown_pct: float | None = Field(
+        default=None,
+        description="Drawdown at that mark, as the journal recorded it. Null when unread; a client "
+                    "must render null as unknown and never as a flat book.")
     acceptance_rate: float = Field(ge=0, le=1, description="Fraction of intents approved")
     intents_total: int = Field(ge=0, description="Total intents submitted")
     intents_approved: int = Field(ge=0, description="Intents accepted by card")
     intents_declined: int = Field(ge=0, description="Intents declined by card")
-    avg_ttl_response: float = Field(ge=0, description="Median card response time (seconds)")
+    intents_expired: int = Field(default=0, ge=0, description="Prompts that expired unanswered")
+    intents_pending: int = Field(default=0, ge=0, description="Prompts awaiting a verdict right now")
+    avg_ttl_response: float | None = Field(
+        default=None, ge=0,
+        description="Median seconds between a prompt being issued and the card answering it, "
+                    "over decided prompts only (EXPIRED excluded — its resolved_at is when the "
+                    "sweep noticed it). Null when nothing has been decided yet; a client must "
+                    "render null as unknown and never as a fast response.")
     gate_rejections: int = Field(ge=0, description="Orders rejected by risk gates (pre-prompt)")
     last_gate_reason: str = Field(default="", description="Most recent gate rejection reason")
-    overlay_scalar: float = Field(ge=0, le=1, description="Current risk overlay scalar (0-1)")
-    overlay_risk_zone: str = Field(default="", description="Asset class risk zone")
+    overlay_scalar: float | None = Field(
+        default=None, ge=0, le=1,
+        description="Current risk overlay scalar (0-1). NULL when the shim has no live overlay "
+                    "feed — it is never a stand-in value, so a client must render null as unknown "
+                    "rather than as low risk.")
+    overlay_risk_zone: str | None = Field(default=None, description="Asset class risk zone, or null.")
+    placeholders: list[str] = Field(
+        default_factory=list,
+        description="Fields this response could not populate from a live source. Anything named "
+                    "here is null by design, not missing by accident.")
 
 
 class ConvictionMatrixBody(BaseModel):
-    """Conviction heatmap: symbols × strategies."""
-    symbols: list[str] = Field(description="Trading symbols (13 typical)")
-    strategies: list[str] = Field(description="Strategy names (5 typical)")
-    matrix: list[list[float]] = Field(
-        description="2D array: [symbol_idx][strategy_idx] = conviction (0-1)"
-    )
+    """Walk-forward scores per (symbol, strategy) pair — a deliberately sparse grid."""
+    symbols: list[str] = Field(description="Walk-forward validated symbols, best score first")
+    strategies: list[str] = Field(description="The strategies those symbols were validated on")
+    matrix: list[list[float | None]] = Field(
+        description="2D array: [symbol_idx][strategy_idx] = out-of-sample score for that pair, or "
+                    "NULL where the pair was never validated. Null means no evidence, NOT zero "
+                    "conviction, and the values are an unbounded ratio — do not render them as a "
+                    "0-1 scale.")
+    available: bool = Field(default=True, description="False when no validated pair exists to report.")
+    source: str = Field(default="", description="Where the numbers come from.")
+    metric: str = Field(default="", description="What the numbers are, including their range.")
+    note: str = Field(default="", description="How to read the nulls.")
+    tiers: dict[str, str] = Field(default_factory=dict,
+                                   description="Per-symbol walk-forward tier (robust / watch).")
     updated_at: datetime = Field(description="Timestamp of last update")
 
 
@@ -227,6 +303,11 @@ def create_app(
     *,
     writeup_dir: Path = DEFAULT_WRITEUP_DIR,
     auth_token: str | None = None,
+    desk_page: Path | None = None,   # built desk panel; None -> DEFAULT_DESK_PAGE
+    state_dir: Path | None = None,   # journals to read equity and meter readings from
+    session_id: str | None = None,   # the book this shim is attached to
+    account_currency: str = "USD",
+    books: list[BookRef] | None = None,   # every book this shim reports on (one port, N brokers)
     journal=None,                # Optional OrderJournal for metrics
     router=None,                 # Optional Router for metrics
 ) -> FastAPI:
@@ -251,7 +332,7 @@ def create_app(
     # auth                                                               #
     # ------------------------------------------------------------------ #
 
-    _PUBLIC_PATHS = {"/healthz", "/openapi.json"}
+    _PUBLIC_PATHS = {"/healthz", "/openapi.json", "/desk"}
     _VERSIONED_PREFIX = "/v1"
 
     def require_auth(
@@ -453,30 +534,41 @@ def create_app(
         # Use ApprovalMetrics if journal is available; otherwise compute from store only
         if journal is not None:
             from .approval_metrics import ApprovalMetrics
-            metrics = ApprovalMetrics(store, journal, router)
+            metrics = ApprovalMetrics(store, journal, router, state_dir=state_dir,
+                                      session_id=session_id,
+                                      account_currency=account_currency)
             return metrics.get_stats()
 
-        # Fallback: compute from store alone
+        # No journal: the store alone knows the verdicts, and nothing else. Equity, drawdown,
+        # response time and the overlay have no source here, so they are null and named in
+        # `placeholders` — this block used to return -0.2 drawdown, 4.2s response and a 0.47 overlay
+        # scalar, invented numbers a dashboard could not tell apart from measurements.
         passbook = store.passbook(limit=10000, offset=0)
         accepted = sum(1 for e in passbook if e.verdict == "ACCEPT")
         declined = sum(1 for e in passbook if e.verdict == "DECLINE")
+        expired = sum(1 for e in passbook if e.verdict == "EXPIRED")
         decided = accepted + declined
 
         return {
-            "session_id": "trading-session-1",
-            "starting_equity": 100_000.0,
-            "session_equity": 100_847.0,
-            "peak_equity": 100_847.0,
-            "max_drawdown_pct": -0.2,
+            "session_id": None,
+            "starting_equity": 0.0,
+            "session_equity": 0.0,
+            "peak_equity": 0.0,
+            "max_drawdown_pct": 0.0,
             "acceptance_rate": accepted / (decided or 1) if decided > 0 else 0.0,
             "intents_total": len(passbook),
             "intents_approved": accepted,
             "intents_declined": declined,
-            "avg_ttl_response": 4.2,
+            "intents_expired": expired,
+            "intents_pending": len(store.pending()),
+            "avg_ttl_response": None,
             "gate_rejections": 0,
             "last_gate_reason": "",
-            "overlay_scalar": 0.47,
-            "overlay_risk_zone": "crypto",
+            "overlay_scalar": None,
+            "overlay_risk_zone": None,
+            "placeholders": ["session_id", "starting_equity", "session_equity", "peak_equity",
+                             "max_drawdown_pct", "avg_ttl_response", "gate_rejections",
+                             "overlay_scalar", "overlay_risk_zone"],
         }
 
     @app.get("/v1/conviction-matrix", response_model=ConvictionMatrixBody,
@@ -495,42 +587,16 @@ def create_app(
             metrics = ApprovalMetrics(store, journal, router)
             return metrics.get_conviction_matrix()
 
-        # Fallback: demo matrix (would be live from allocator + conviction engine)
-        symbols = [
-            "BTC/USD", "ETH/USD", "PAXG/USD", "SPY", "QQQ",
-            "XIC.TO", "VFV", "XLM/USD", "AAPL", "MSFT",
-            "VTI", "BND", "SCHP"
-        ]
-        strategies = [
-            "signal.momentum",
-            "overlay.bearish",
-            "composite.mean_rev",
-            "heat.pulse",
-            "allocator"
-        ]
+        # No journal: the walk-forward registry is still readable, so serve that rather than a
+        # hard-coded grid. This block used to return a 13x5 demo matrix including SPY and BTC/USD,
+        # neither of which has ever been walk-forward validated.
+        import tempfile as _tmp
 
-        matrix = [
-            [0.95, 0.62, 0.71, 0.84, 0.92],  # BTC/USD
-            [0.88, 0.55, 0.78, 0.81, 0.89],  # ETH/USD
-            [0.75, 0.68, 0.72, 0.70, 0.75],  # PAXG/USD
-            [0.82, 0.65, 0.85, 0.78, 0.80],  # SPY
-            [0.71, 0.60, 0.68, 0.75, 0.72],  # QQQ
-            [0.92, 0.71, 0.82, 0.88, 0.90],  # XIC.TO
-            [0.65, 0.58, 0.62, 0.68, 0.65],  # VFV
-            [0.45, 0.40, 0.48, 0.52, 0.48],  # XLM/USD
-            [0.78, 0.66, 0.75, 0.80, 0.78],  # AAPL
-            [0.81, 0.69, 0.77, 0.82, 0.80],  # MSFT
-            [0.68, 0.62, 0.70, 0.72, 0.70],  # VTI
-            [0.55, 0.50, 0.52, 0.58, 0.55],  # BND
-            [0.98, 0.75, 0.88, 0.92, 0.95],  # SCHP
-        ]
+        from .approval_metrics import ApprovalMetrics
+        from .journal import OrderJournal as _J
+        return ApprovalMetrics(store, _J(Path(_tmp.gettempdir()) / "frm-shim-nojournal"),
+                               router).get_conviction_matrix()
 
-        return {
-            "symbols": symbols,
-            "strategies": strategies,
-            "matrix": matrix,
-            "updated_at": datetime.now(UTC),
-        }
 
     # ------------------------------------------------------------------ #
     # passbook                                                           #
@@ -548,6 +614,147 @@ def create_app(
     # ------------------------------------------------------------------ #
     # security scheme in the generated spec                              #
     # ------------------------------------------------------------------ #
+
+    # ------------------------------------------------------------------ #
+    # desk panel (unversioned shell + versioned page)                    #
+    # ------------------------------------------------------------------ #
+    #
+    # Serving the built panel from the shim is what makes it live: its fetches become same-origin,
+    # so no CORS hole has to be opened and no token ever travels in a URL. The split is deliberate.
+    #
+    #   GET /desk            public, carries no data — a shell that asks for the token if needed
+    #   GET /v1/desk/page    the built page, behind the same auth as every other /v1 route
+    #
+    # The page is journal-derived (equity, fills, P&L), so it must not be readable by anyone who
+    # can merely reach the port. The shell holds the token in sessionStorage and writes the page
+    # into the document, which keeps the header on the request that actually fetches the data.
+
+    def _desk_file() -> Path | None:
+        page = desk_page if desk_page is not None else DEFAULT_DESK_PAGE
+        return page if page.exists() else None
+
+
+    def _books() -> list[BookRef]:
+        """Every book this shim reports on, newest declaration wins for a repeated session."""
+        if books:
+            return list(books)
+        if session_id:
+            return [BookRef(venue="unknown", session_id=session_id, currency=account_currency)]
+        return []
+
+    @app.get("/v1/books", include_in_schema=False, dependencies=[Auth])
+    def books_snapshot() -> Response:
+        """Per-book readings, denormalized by brokerage and asset class — panel #1's feed.
+
+        One shim can carry several books (QT equities, Kraken crypto, IB derivatives). This route
+        does NOT aggregate them: a single equity number across a CAD equity book and a USD crypto
+        book would be a currency-mixed fiction. Each book carries its own venue, asset class,
+        currency and meter readings, each reading carrying the file it came from — and a book whose
+        journal has no rows yet is returned as UNREAD rather than as zeros.
+        """
+        refs = _books()
+        if state_dir is None or not refs:
+            return JSONResponse({
+                "schema_version": 1, "books": [],
+                "notes": ["This shim was started without books or a state directory, so it cannot "
+                          "say which books a reading would describe."]})
+        from ..audit.meters import snapshot as _snapshot
+        out: list[dict] = []
+        for ref in refs:
+            row: dict = {"venue": ref.venue, "asset_class": ref.resolved_asset_class,
+                         "session_id": ref.session_id, "currency": ref.currency}
+            try:
+                row["meters"] = _snapshot(Path(state_dir), ref.session_id, ref.currency)
+                row["mode"] = row["meters"].get("mode", "LIVE")
+            except Exception as exc:   # a contradictory journal is reported, not rounded off
+                row["mode"] = "UNREADABLE"
+                row["meters"] = {"schema_version": 1, "readings": {},
+                                 "notes": [f"{type(exc).__name__}: {exc}"]}
+            out.append(row)
+        return JSONResponse({"schema_version": 1, "books": out,
+                             "notes": [f"{len(out)} book(s); no cross-book aggregate is computed "
+                                       "because the books are in different currencies and venues."]})
+
+    @app.get("/v1/meters/snapshot", include_in_schema=False, dependencies=[Auth])
+    def meters_snapshot() -> Response:
+        """Live readings for the atlas, in the same wire schema an uploaded snapshot uses.
+
+        Same source as ``/v1/stats`` and the same rules: a reading carries the file it came from,
+        the scope it covers and when it was observed, or it is not emitted. A shim with no session
+        context emits an empty snapshot and says why, rather than readings about an unknown book.
+        """
+        if state_dir is None or not session_id:
+            return JSONResponse({
+                "schema_version": 1, "mode": "NO SESSION CONTEXT", "readings": {},
+                "notes": ["This shim was started without a session id or state directory, so it "
+                          "cannot say which book a reading would describe."]})
+        from ..audit.meters import snapshot as _snapshot
+        try:
+            return JSONResponse(_snapshot(Path(state_dir), session_id, account_currency))
+        except Exception as exc:       # a contradictory journal is reported, not rounded off
+            return JSONResponse({"schema_version": 1, "mode": "UNREADABLE", "readings": {},
+                                 "notes": [f"{type(exc).__name__}: {exc}"]}, status_code=409)
+
+    @app.get("/desk", include_in_schema=False)
+    def desk_shell() -> Response:
+        cfg = json.dumps({"spec": SPEC_VERSION, "auth_required": auth_token is not None,
+                          "poll_seconds": 2})
+        shell = (
+            "<!doctype html><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>TradeCard Desk</title>"
+            "<style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b1417;"
+            "color:#e6eef0;font:13px ui-monospace,Menlo,monospace}"
+            "form{display:none;gap:8px;margin-top:14px}form.on{display:flex}"
+            "input,button{font:inherit;color:#e6eef0;background:#172c35;border:1px solid #213d48;"
+            "border-radius:2px;padding:8px 10px}button{cursor:pointer}"
+            "p{color:#7d99a3;letter-spacing:.1em}</style>"
+            "<main><div style='letter-spacing:.14em'>TRADE<span style='color:#3fb8c4'>CARD</span>"
+            " DESK</div><p id=msg>CONNECTING TO THE SHIM…</p>"
+            "<form id=f><input id=t type=password placeholder='shim token' autocomplete='off'>"
+            "<button>UNLOCK</button></form></main>"
+            # Scoped: document.write hands the document to the built page but keeps this Window,
+            # so a name declared here is still declared when the page's own script runs — and two
+            # `const $` declarations in one scope is a SyntaxError that kills the whole page.
+            "<script>(function(){\n"
+            f"const CFG={cfg};const KEY='tc.shim.token';\n"
+            "const $=(i)=>document.getElementById(i);\n"
+            "async function load(){\n"
+            "  const tok=sessionStorage.getItem(KEY);\n"
+            "  let r;\n"
+            "  try{ r=await fetch('/v1/desk/page',{headers:tok?{Authorization:'Bearer '+tok}:{}});}\n"
+            "  catch(e){ $('msg').textContent='SHIM UNREACHABLE — '+e.message; return; }\n"
+            "  if(r.status===401){ sessionStorage.removeItem(KEY);\n"
+            "    $('msg').textContent='THIS SHIM NEEDS ITS TOKEN. The session printed it at launch.';\n"
+            "    $('f').className='on'; $('t').focus(); return; }\n"
+            "  if(!r.ok){ $('msg').textContent='SHIM RETURNED '+r.status+' — '+(await r.text()).slice(0,120); return; }\n"
+            "  const html=await r.text();\n"
+            "  const pre='<scr'+'ipt>window.__SHIM__='+JSON.stringify(CFG)+';</scr'+'ipt>';\n"
+            "  document.open(); document.write(pre+html); document.close();\n"
+            "}\n"
+            "$('f').addEventListener('submit',(e)=>{e.preventDefault();\n"
+            "  sessionStorage.setItem(KEY,$('t').value.trim()); $('f').className='';\n"
+            "  $('msg').textContent='UNLOCKING…'; load();});\n"
+            "load();\n"
+            "})();</script>"
+        )
+        return Response(shell, media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.get("/v1/desk/page", include_in_schema=False, dependencies=[Auth])
+    def desk_built_page() -> Response:
+        page = _desk_file()
+        if page is None:
+            expected = desk_page if desk_page is not None else DEFAULT_DESK_PAGE
+            return JSONResponse(
+                {"error": "the desk panel has not been built",
+                 "expected": str(expected),
+                 "build": "python scripts/build_desk_dash.py"},
+                status_code=404)
+        return Response(page.read_text(encoding="utf-8"),
+                        media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-store"})
+
 
     def _customize_openapi():
         if app.openapi_schema:

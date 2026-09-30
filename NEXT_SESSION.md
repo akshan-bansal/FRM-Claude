@@ -5,6 +5,119 @@ superseded, or closed by an explicit user decision; the full pre-prune text is i
 (last committed version: `4d471f3`) and in the session scratchpad backup
 `NEXT_SESSION.backup-2026-09-16.md`.
 
+## Session 2026-09-24 / 25 — defect pass + capital-integrity page
+
+Full suite after the work: **1388 passed, 1 skipped, 0 failed** (4m06s; the skip is the POSIX-only
+signal test). Ruff clean on every file touched. Nothing staged or committed by Claude.
+
+### Fixed and verified
+
+- ✅ **`degraded` reported healthy on a stale feed — FIXED 2026-09-24.** `WorldMonitorClient.snapshot`
+  set `degraded` only when a tool *raised*. A tool that succeeds but returns a payload it cached days
+  earlier left the flag `false`, so a **135-hour-old energy source** was scaling live de-risk at full
+  confidence (equity ×0.4669 at the time). Staleness is now measured from each payload's own
+  `cached_at` against `MAX_SOURCE_AGE_H = 48.0`, deliberately tied to the existing
+  `confluence.STALENESS_HALF_LIFE_H = 24.0` rather than being a second independent policy. Fail-safe:
+  tripping it caps every class at `degraded_cap`. 3 tests in `test_intel_overlay.py`.
+  **Runtime-exercised** — fired in a live session at `energy: 114.9h`, `degraded: True`.
+- ✅ **Intel writeups were structurally empty — FIXED 2026-09-24.** All 19 writeups on disk carried
+  `overlay_snapshot`, `market_context` and `warnings` in the schema and empty on disk. The engine was
+  never at fault; `scripts/paper_kraken.py` called `explain()` with a bare `MarketContext()` and no
+  overlay, while the same script already held a live `OverlayProvider`. Now passes the snapshot, the
+  per-symbol decision, and an `r_multiple` derived from the intent. **Runtime-verified** against a
+  real prompt: all three fields populated, and the card thesis gained a `geo elevated` clause.
+- ✅ **`dashboard.py` fabricated a session — FIXED 2026-09-24.** `.fillna("legacy")` invented a
+  session id for the 4 fills that carry none (all 2026-08-31, before `PaperBroker` stamped the field)
+  and rendered it as a row beside real ones with no equity curve behind it. Now excluded, with the
+  scope stated in the output rather than narrowed silently. Also cleared 4 pre-existing ruff findings
+  in that file (verified identical at `HEAD`, none introduced here).
+
+### Considered and deliberately NOT changed
+
+- **Realized P&L excludes commission.** No emitter change. `paper_fills.jsonl` already carries
+  `commission` per fill with `session_id`, so net is derivable today. Adding a column would corrupt
+  alignment — the equity CSV writes its header only on file creation, so appending wider rows to the
+  existing file puts 10 fields under a 9-field header. This is a consumer obligation.
+- **Sizing rationale on the Questrade path** (33 of 275 fills). Out of scope by standing rule: sizing
+  v2 stays Kraken-only. The coverage gap is that decision visible in the data, not a bug.
+- **The 4 fills with no `session_id`** are historical; the live emitter has written it since. Under
+  the "unfit data" rule the answer is exclusion, not backfill.
+
+### Open — carried forward
+
+1. ✅ **`paper_ib.py` writeup gap — FIXED 2026-09-25.** Same fix as `paper_kraken.py`: passes the
+   live overlay snapshot, the per-symbol decision, and an `r_multiple` derived from the intent.
+   **Code-complete, NOT runtime-exercised** — no IB gateway available in this session (the
+   interactive-brokers MCP server is also failing to connect), so unlike the Kraken path this one
+   has not produced a real populated writeup. Mirrors a fix that was runtime-verified on Kraken.
+
+2. ✅ **Audit ledger — VERIFIED WORKING 2026-09-25. Earlier "writes nothing" was my error.**
+   `state/ledger/` looked empty only because no session had yet run with the flag; it defaults ON and
+   had simply not been exercised. A card-gated Kraken session then wrote
+   `state/ledger/2026-09-25.kraken.jsonl` (10 rows), and `scripts/verify_ledger.py --stream kraken`
+   reports **OK** over the hash chain. Full lifecycle present for both intents:
+   `STRATEGY_SIGNAL → RISK_CHECK → INTENT_SENT → REJECTED → SIGNED`, each row carrying
+   `prev_hash` / `row_hash` / `payload_hash`, plus `signature` and `signing_key_id` on the SIGNED
+   rows. `Router.build_default(ledger=...)` does thread through to the emit sites.
+   **Residual design note, much weaker than first stated:** `Ledger.append()` is still non-strict by
+   default, so a *future* write failure would log rather than raise and would not be obvious from the
+   outside. Worth a periodic `verify_ledger` in the runbook rather than a code change; a real
+   regulated deployment would construct with `strict=True`.
+
+3. ✅ **Leverage cap now reserves the commission — FIXED 2026-09-25.** `Router._gate` computed
+   gross leverage on notional alone, so an order sized to exactly fill the headroom still debited
+   the fee on top and overdrew cash. `Router._cost_reserve()` reads `commission_per_trade` off the
+   broker (fee structure is broker-specific; the gate must not hardcode one) and the reserve is
+   subtracted from the headroom and added to the leverage test. **Only ever tightens the gate.**
+   Also exposed `PaperBroker.commission_per_trade` as a property — it was only `self._commission`,
+   so both this and `monitor.live_loop`'s existing `getattr(broker, "commission_per_trade")` were
+   silently reading nothing and reserving zero.
+   **A second bug fell out of the first full-suite run:** the reserve must accept only a REAL
+   number, not anything merely `float()`-able. `float(MagicMock())` is `1.0`, so a broker wrapper
+   delegating through `__getattr__` — or any test double — fabricated a $1.00 reserve and tightened
+   a risk gate on invented input (it broke
+   `test_router_risk_gates.py::test_trim_mode_gross_leverage_cap_trims_to_headroom`, trimming to 99
+   instead of 100). `_cost_reserve` now rejects non-`int`/`float` values and `bool`, reserving zero.
+   4 tests, incl. an order at exactly 100% of equity trimming 1000 -> 999 shares and a
+   delegating-broker regression. Unit-tested; not yet seen in a live session.
+
+4. ✅ **OASIS debate output now persisted — DONE 2026-09-25.** `debate()` appends one row per run
+   to `state/intel_agents.jsonl`, carrying the `Claim` / `Critique` structure the caller used to
+   discard: domain, thesis, direction, self-reported confidence, adversary verdict and reason,
+   cited evidence. **Records the attempt, not just survivors** — per-domain `outcome` is one of
+   `no_evidence` / `no_claim` / `below_threshold` / `no_critique` / `falsified` / `fired`, plus
+   `api_key_present`, so a missing key is distinguishable from a quiet world (the same silent
+   no-op the `degraded` flag had). Falsified claims are dropped from the output but KEPT in the
+   record, which is what makes "did upheld claims precede better outcomes than falsified ones"
+   answerable at all. `journal=False` / `journal_path=` for tests; all 5 pre-existing `debate()`
+   calls in `test_intel_agents.py` were switched to `journal=False` so the suite cannot write
+   ground truth — verified `state/intel_agents.jsonl` is absent after a run. 4 new tests.
+   **Still open:** no claim -> trade -> realized-P&L join yet. `as_of` and domain+thesis are the
+   keys to join on; nothing downstream consumes them, so agent accuracy remains unmeasured.
+
+### Analysis corrections — read before reusing any earlier number
+
+- **The "$2,983,231 stranded" figure is retracted.** It summed `positions_value` across 48
+  independent $100k accounts, frozen at 11 different as-of dates, over only 13 distinct symbols
+  (QQQ in 24 books, EQB.TO in 24), and ~70% of it sat in 15 books whose cash was negative — money the
+  accounts never had. It is not exposure, loss, or portfolio value. **Never restate it.**
+- **The unfinished-books problem is historical.** All 48 last wrote on or before 2026-09-16; all
+  sessions since closed flat.
+- **Leverage explains the loss tail.** Peak gross leverage by period: 2.258× (09-01→07, 28 sessions),
+  1.111× (09-08→14, 12), 1.000× (09-15→24, 40). The gate at `Router._gate` (`max_gross_leverage=1.0`)
+  landed ~09-08. Marking all 48 unfinished books to 2026-09-23 cached closes: **the ten worst are all
+  leveraged**; 13 of 48 leveraged overall. Split by leverage, the 35 non-leveraged books total
+  **+$13,824** and the 13 leveraged total **−$23,211** — i.e. leverage, not strategy, is why the
+  aggregate is negative. Caveat: only 13 symbols across 48 books, so effective sample ≪ 48; the
+  direction is robust, the magnitude is not.
+- **Closed-book scope** (the only fit scope for rates): 32 sessions, 154 fills, 79 FIFO round trips,
+  zero unmatched lots. Winners **28% gross → 10% net**. Commission is flat $4.95/fill.
+
+### Published
+
+- Capital-integrity page: <https://claude.ai/artifact/9thPpNAWXmaHToWUZ6iyj4>
+- Partner / diligence brief (TradeCard): <https://claude.ai/artifact/EH9ZFqiFm9oP31MVgjqHTV>
+
 ## Status (2026-09-21)
 
 - Branch `feat/multi-scoring-attention-map`, **6 commits ahead of `origin` and NOT pushed**
@@ -286,8 +399,8 @@ ls state/HALTED state/STOP* 2>/dev/null
 
 # 4. Paper monitors (flatten-on-exit is the default on both; sizing v2 is the Kraken default)
 .venv/Scripts/python.exe -m trading_live_claude.cli signal --strategy bollinger \
-    --symbols "EQB.TO,QQQ,XIC.TO,ZEB.TO,CGL.TO,VALE,DBC,SRU.UN.TO,CRT.UN.TO,ENB.TO,XIU.TO,VDY.TO,SLF.TO,RSI.TO" \
-    --strategy-map "EQB.TO=ts_momentum,QQQ=ts_momentum,XIC.TO=rsi_meanrevert,ZEB.TO=atr_channel,CGL.TO=atr_channel,VALE=bollinger,DBC=bollinger,SRU.UN.TO=rsi_meanrevert,CRT.UN.TO=rsi_meanrevert,ENB.TO=bollinger,XIU.TO=bollinger,VDY.TO=ts_momentum,SLF.TO=bollinger,RSI.TO=bollinger" \
+    --symbols "XIC.TO,ZEB.TO,CGL.TO,VALE,DBC,SRU.UN.TO,CRT.UN.TO,ENB.TO,XIU.TO,VDY.TO,SLF.TO,RSI.TO,SONY,EWJ,FLJP,JPXN,NVDA,AVGO,AMAT,MU,INTC,QCOM,TXN,ADI,NXPI,ON,SMH,SOXX" \
+    --strategy-map "XIC.TO=rsi_meanrevert,ZEB.TO=atr_channel,CGL.TO=atr_channel,VALE=bollinger,DBC=bollinger,SRU.UN.TO=confirm_rsi_meanrevert,CRT.UN.TO=rsi_meanrevert,ENB.TO=confirm_bollinger,XIU.TO=composite,VDY.TO=ts_momentum,SLF.TO=bollinger,RSI.TO=bollinger,SONY=rsi_meanrevert,EWJ=bollinger,FLJP=bollinger,JPXN=rsi_meanrevert,NVDA=bollinger,AVGO=bollinger,AMAT=bollinger,MU=rsi_meanrevert,INTC=bollinger,QCOM=bollinger,TXN=bollinger,ADI=bollinger,NXPI=bollinger,ON=bollinger,SMH=bollinger,SOXX=bollinger" \
     --interval 300 --paper --paper-equity 100000 --level --intel-overlay
 .venv/Scripts/python.exe scripts/paper_kraken.py --interval 300 --paper-equity 100000
 
@@ -295,6 +408,38 @@ ls state/HALTED state/STOP* 2>/dev/null
 #    flatten, then fall back to --interval in the same process. Add to either command:
 #      --warmup-interval 60 --warmup-minutes 60
 #    QT's current map runs ENB.TO=confirm_bollinger, SRU.UN.TO=confirm_rsi_meanrevert, XIU.TO=composite.
+#
+# 4c. ADDED 2026-09-25 (user): Japan names + chipmakers. 16 new names, QT watchlist is now 28.
+#     Strategy per name chosen by pinned-param WF over 5 a-priori strategies x 10y of bars
+#     (reports/chip_japan_wf_2026-09-25.md; 63 of 120 cells cleared the gate, 20 of 24 names at
+#     best-of-5). Japan: SONY=rsi_meanrevert, JPXN=rsi_meanrevert, EWJ/BBJP/FLJP=bollinger.
+#     Chips: ASML and MU = rsi_meanrevert, the other 13 = bollinger.
+#     HELD BACK, too few OOS trades: TSM (7), KLAC (8), ARM (5 over 2 folds), BBJP (8) — BBJP is the
+#     5th Japan name asked for, held at 8 OOS trades against a 10 minimum.
+#     EXCLUDED on OOS return despite clearing the score/WFE/trades rule: MRVL (-4.87% on a 27% win
+#     rate), AMD (-0.49%), LRCX (-1.83%). The tier rule never asks whether the name made money.
+#     EXCLUDED on degradation: ASML (WFE 0.059 on live params).
+#     *** The selection sweep ran DEFAULT params, but `--params wf` resolves every one of these names
+#     to CALIBRATED params (bollinger 30/1.5, rsi_meanrevert 15/35) — a different configuration from
+#     the one scored. Re-scored on the live params
+#     (reports/chip_japan_live_params_2026-09-25.md): 16 of 20 survive, and AMD + ASML flipped from
+#     robust to failing. Never promote on a sweep whose params are not the ones the book will run. ***
+#     CAVEATS: (a) best-of-5 selection is biased upward — treat the ranking as a shortlist, not
+#     evidence; (b) `bollinger` won 15 of 20, which is a suspiciously uniform answer; (c) several
+#     WFEs are 5-32x, which means the IN-SAMPLE score was tiny, not that OOS was excellent;
+#     (d) single-stock semis carry 20-60% OOS max drawdowns (ON -61.7%, NXPI -46.8%, AVGO -41.2%)
+#     against an ETF book that ran -5 to -10% — the vol-scaled cap will size them smaller and the
+#     50% clamp binds, but this changes the book's risk character; (e) 32 names compete for 6 slots,
+#     so this adds candidate competition and alert volume, NOT exposure.
+#
+# 4a. OMITTED 2026-09-25 (user): QQQ, EQB.TO, LMT, RTX are out of the QT book. All four are
+#     ts_momentum and all four scored 0 with ZERO out-of-sample trades across 6-13 folds in the
+#     pinned-param walk-forward (reports/full_sim_wf_2026-09-25.md) — a 126-bar test window is
+#     shorter than the strategy's own 126-189 bar lookback, so no trade ever completes. Their WF
+#     numbers are evidence of nothing, in either direction. Note what this leaves: VDY.TO is the
+#     only ts_momentum name still in the book (OOS 41.3, WFE 9.9, but 6 OOS trades = 'watch'), and
+#     it was the biggest loser on both live sessions this week. ITA/NOC/GD stay for now on
+#     defaults with 388 bars, which is too little for a single fold.
 
 # 4b. Exit variants — STANDING config (user decision 2026-09-18): add to the QT command above.
 #       --profit-lock --profit-lock-exempt ts_momentum --candle-exit --candle-exit-exempt ts_momentum --overbought-exit --overbought-exit-exempt ts_momentum
@@ -308,7 +453,7 @@ ls state/HALTED state/STOP* 2>/dev/null
 #     QT cap raised to 5 (user 2026-09-22): add --max-positions 5 to the QT command (Kraken stays on
 #     trading.yaml's 3). --trim-to-slots is ONE-SHOT (ran 16:15 UTC on fba831e3: every holding x0.80,
 #     pro rata); keep it off the standing command or every restart trims again.
-#     BUG: partial sells don't book realized_pnl. See "Queue — correctness bugs" (2026-09-22).
+#     (Partial-sell realized_pnl bug: FIXED 2026-09-24, see "Queue — correctness bugs".)
 
 # 4c. Restart WITHOUT closing the book (2026-09-21): stop the running session with its flatten off
 #     (launch it with --no-flatten-on-exit), then relaunch the same command plus
@@ -328,7 +473,14 @@ validation now catches that class of failure at launch.
 
 ## Queue — correctness bugs
 
-- 🔴 **Paper broker doesn't book realized P&L on a partial sell.** Found 2026-09-22.
+- ✅ **Paper broker didn't book realized P&L on a partial sell — FIXED 2026-09-24.** `_apply_fill`
+  now realises `(fill − avg) × closed_qty` on any reducing fill (average entry unchanged), handles a
+  fill that crosses zero, and keeps a legacy full-closes-only accumulator so `resume` accepts a
+  journal written before the fix instead of refusing to start — `state/` is not rewritten, and the
+  corrected figure is used with a warning. Replaying real session `fba831e3` reproduces the measured
+  **−$39.92** of unbooked P&L exactly. Tests: partial books P&L, partial+close == one close, resume
+  round-trip, legacy journal accepted, garbage journal still refused. **Sessions started before the
+  fix keep the old behaviour until restarted.** Original report:
   `brokers/paper.py` `_apply_fill` adds to `_realized_pnl` only in the `new_qty == 0` branch (a full
   close). A partial reduction lowers `openQuantity`, keeps `averageEntryPrice`, and moves the
   proceeds into cash, so **equity is correct**, but the sold shares' P&L never reaches the
@@ -455,6 +607,750 @@ validation now catches that class of failure at launch.
 
 ## Queue — build / run
 
+- **Futures proxies for the chip + Japan equities — MEASURED 2026-09-25/26, verdict: a hedge, not a
+  substitute (except for the Japan ETF sleeve).** User asked what futures could proxy the names just
+  added. Two structural facts first:
+    * **Single-stock futures do not exist** for NVDA/AVGO/MU/etc. — US single-stock futures died with
+      OneChicago in 2020. A "proxy future" can only be an index future.
+    * **`config/futures_universe.json` has no equity index future at all**: 23 contracts, every one a
+      commodity (/CL /GC /HG /NG /SI /ZC /ZS /ZW, ICE softs, OSE platinum + rubber, SGX iron ore +
+      rubber, canola). Adding an index future is a config addition, not a code change — the roll,
+      lots and `AssetRouter` paths are already wired for futures.
+
+  **Measured fit** (daily returns, cached bars, `reports/futures_proxy_fit_2026-09-25.csv`; beta and
+  R² vs the ETF that stands in for each future):
+
+  | name | proxy future | beta | R² | unhedged variance | ann vol | residual vol |
+  |---|---|---:|---:|---:|---:|---:|
+  | FLJP | Nikkei/TOPIX (via EWJ) | 0.96 | **0.949** | 5% | 18.2% | 4.1% |
+  | JPXN | Nikkei/TOPIX | 0.93 | **0.874** | 13% | 17.6% | 6.2% |
+  | SMH | /NQ or /MNQ | 1.40 | 0.781 | 22% | 35.7% | 16.7% |
+  | SOXX | /NQ or /MNQ | 1.44 | 0.758 | 24% | 37.4% | 18.4% |
+  | NVDA | /NQ | 1.74 | 0.612 | 39% | 50.3% | 31.3% |
+  | AMAT / ADI / AVGO | /NQ | 1.06-1.50 | 0.51-0.53 | ~47-50% | 33-47% | 23-32% |
+  | QCOM / NXPI / TXN / ON / MU | /NQ | 0.94-1.54 | 0.40-0.48 | 52-61% | 33-54% | 25-42% |
+  | **SONY** | Nikkei (via EWJ) | 0.98 | **0.359** | 64% | 28.8% | 23.1% |
+  | **INTC** | /NQ | 1.21 | **0.280** | 72% | 51.9% | 44.0% |
+
+  **What follows**
+    1. **The Japan ETF sleeve is genuinely replaceable by one future.** FLJP R² 0.95 and JPXN 0.87
+       against a Nikkei/TOPIX proxy, residual vol 4-6%. One contract would replace three correlated
+       ETF positions (EWJ, FLJP, JPXN are the same exposure three times — worth noting they are
+       currently three of the 28 watchlist names competing for 6 slots), trade ~23h so it covers the
+       after-US-close gap the exchange-hopping item is about, and OSE.JPN is **already a configured
+       venue** (the platinum and rubber contracts trade there), so the plumbing exists.
+    2. **No future proxies a single chipmaker.** /NQ leaves 39-72% of variance unhedged; INTC at 0.28
+       and SONY at 0.36 are barely related to their index. Use /MNQ as a **beta hedge on the semi
+       basket** (SMH/SOXX at R² ~0.78 are the only single tickers a future tracks reasonably), never
+       as a stand-in for a named position.
+    3. **Sizing is the constraint, as the existing config shows** — most of the 23 contracts are
+       `enabled: false` precisely because `notional_per_contract` does not fit the position cap on a
+       $100k book. Micros are the only viable rung: /MNQ ($2 × NDX), /MES ($5 × SPX), OSE Nikkei 225
+       **micro** (¥10 × index) and mini (¥100 × index). Compute each against the vol-scaled cap and
+       the 50% clamp before enabling anything.
+
+  **Open work if this is taken up:** (a) probe whether OSE **index** futures return data on the paper
+  login — index futures data is a different subscription from the missing TSEJ *equity* permission
+  (error 162), and all futures fronts already resolved in the 09-21 probe, so this may be free;
+  (b) `execution/venue_costs.py` has no futures entry — futures charge per contract, not per share,
+  so the cost floor cannot price them yet; (c) currency: /NKD is USD-denominated while OSE Nikkei is
+  JPY, which interacts with the numeraire question in the exchange-hopping item; (d) decide whether a
+  future *replaces* the Japan ETFs (fewer, better-correlated positions) or *hedges* the semi basket —
+  they are different mandates and the second one needs a short leg, which nothing in the book does today.
+
+- **Japanese tech: searched 2026-09-25, NOTHING ADOPTED.** User asked for Japanese-tech exposure.
+  Result: **no candidate clears the walk-forward gate, and pure Japanese tech is not reachable
+  through Questrade at all.**
+    * **Reachable (validated against the live Questrade symbol API):** SONY, EWJ, DXJ, BBJP, FLJP,
+      JPXN, SCJ, HEWJ, DFJ — 9 of 14 candidates. `CAJ` (Canon ADR) is **not carried**, and
+      `6758.T`, `8035.T`, `6861.T`, `9984.T` (Sony, Tokyo Electron, Keyence, SoftBank on their home
+      exchange) all return "Symbol not found" — Questrade has no Tokyo listings, as expected.
+    * **So the only single-name Japanese tech available here is SONY.** Everything else on the list
+      is a broad Japan fund where tech is a sector weight, not the exposure. Real Japanese tech
+      (Tokyo Electron, Advantest, Keyence, Disco, Renesas, Murata, Fanuc) needs the **.T listings via
+      IB**, which are blocked on the missing TSEJ market-data permission — error 162 on daily bars,
+      the one venue where even history fails. That makes it a dependency of the IB item, not a
+      Questrade one.
+    * **Walk-forward (5y cached bars, same harness as the equity pool):
+      `reports/wf_symbols_japan_tech_2026-09-25.md` — 0 robust of 9.** Best OOS scores came with
+      almost no trades: FLJP 7.73 (3 trades), BBJP 4.90 (2), JPXN 4.66 (3), EWJ 3.14 (2),
+      SONY 2.46 (**10 trades**, the only one near the trade minimum) — every WFE between −0.02 and
+      0.40, all under the 0.5 gate. DXJ and HEWJ produced 0-1 trades.
+    * **Reading:** these names rarely trigger the book's strategies, so the scores rest on 1-3
+      trades and mean nothing. Do not add any of them on this evidence.
+    * **What would change the answer:** (a) deeper history — the cache warm pulled 5y (1,255 bars),
+      enough for only ~4-5 folds, so a 10y pull is the cheap next test; (b) the Tokyo data
+      permission, which unlocks the actual tech names rather than proxies; (c) a strategy family
+      suited to these names, since the current set is what failed to trigger.
+
+- **SCOPE (user direction 2026-09-25): unlock strategy capacity, walk-forward the currency
+  sleeves, and hop exchanges after the US close.** Three separable programmes; A is cheap and
+  self-contained, B reopens two closed decisions, C is gated on IB market data. None started.
+
+  ### A. Unlocking strategy capacity — the bottleneck is slots, not strategies
+  **Where it stands:** 44 strategies in `STRATEGIES`; the live QT map uses 7 of them and the crypto
+  sleeve 5. `WALK_FORWARD_VALIDATED` holds 32 names, **all equity (29) + commodity (3)** — no FX, no
+  crypto. Since 2026-09-24 the book runs `--params wf`, so the machinery to run registry configs
+  in production exists and is exercised.
+  **The trap:** 44 strategies x 32 names is 1,408 cells. Sweeping that and keeping the winners is
+  how a repo manufactures overfit. And more validated strategies do **not** buy more exposure: the
+  book has 6 position slots, so extra candidates only change *which* name wins a slot. Treat this
+  as improving the ranking, not widening the book.
+  **Steps:** (1) inventory which of the 44 have ever been walk-forwarded at all — the `candle_*`
+  single-pattern family (17 of the 44) almost certainly has not; (2) pinned-parameter WF per
+  strategy-family cell (the `scripts/calibration_sweep.py` protocol, not the re-optimising sweep),
+  a-priori grids, config count recorded; (3) promotion only on WFE >= 1.0, OOS trades >= the class
+  minimum, beating the incumbent by more than the fold-to-fold spread, still ahead at 2x costs;
+  (4) then ask whether the winner displaces an incumbent in the strategy map, symbol by symbol.
+  **Score on `sortino_over_dd`** with Sortino, return and time in market beside it.
+
+  ### B. Walk-forward validating the currency sleeves — reopens two closed decisions
+  **Say this out loud before spending time:** the guardrails record **"FX pair-trading: not
+  tradeable here (2026-09-04)"** (cost drag 25-75% of the daily FX excursion; revisit only with a
+  sub-pip cost model or `KalmanPairs`) and **"FX single-name sleeve: dropped (2026-09-05)"** (0 fills
+  in 14 polls), plus **IB FX off-policy (2026-09-14)**. The user has now asked to revisit, so this is
+  prompted — but the evidence that closed it has not changed, and nothing here should be presented as
+  new until a cost model contradicts it.
+  **What already exists:** `WF_PROTOCOLS["fx"]` (504 train / 126 test / 126 step, annualisation 260,
+  `min_wfe` 0.5, `min_oos_trades` 10) with `data_source="pair-price feed (not yet wired)"`. Its own
+  note says currency-*hedged ETFs* clear under the **equity** protocol. On disk: `AUDUSD_daily.parquet`
+  (2,272 bars, 2020-06 -> 2026-09) and its trades file — one pair, deep; the other majors are not
+  cached. `scripts/single_fx_wf.py`, `fx_pairs_scan.py`, `walk_forward_pairs.py` are written.
+  **Two paths, and the cheap one is policy-compatible:**
+    1. **Currency exposure through ETFs** (FXE / FXB / FXA / UUP / CEW.TO), walk-forwarded under the
+       **equity** protocol: Questrade-fetchable, no new vendor, no FX venue, no sub-pip claim, and it
+       reuses the whole existing pipeline. The dollar-hedge overlay already trades UUP, so the
+       plumbing is proven. **Do this first.**
+    2. **Native FX pairs**: needs a pair-price feed AND a cost model with a real spread per pair
+       before any result means anything. `execution/venue_costs.py` (new 2026-09-25) is where that
+       spread belongs — an FX entry with a sub-pip half-spread, not a flat fee. Until then a native
+       FX walk-forward would be scored against a cost model that does not describe FX.
+  **Acceptance:** a currency sleeve must clear the same gate as an equity name on `sortino_over_dd`
+  net of **2x** costs, and must beat the trivial alternative of simply running the hedge overlay.
+
+  ### C. Exchange shifting after the US close — the clock first
+  **Correction to the framing:** London is not an after-4pm venue. Measured from `venues.py` for
+  2026-09-25 (America/New_York):
+
+  | venue | local session | NY open -> close |
+  |---|---|---|
+  | ASX (AUD) | 10:00-16:00 Sydney | **20:00 -> 02:00** |
+  | TSEJ (JPY) | 09:00-15:30 Tokyo | **20:00 -> 02:30** |
+  | SEHK (HKD) | 09:30-16:00 Hong Kong | **21:30 -> 04:00** |
+  | LSE (GBP) | 08:00-16:30 London | **03:00 -> 11:30** |
+  | US / TSX | 09:30-16:00 | 09:30 -> 16:00 |
+
+  So the handoff after 16:00 NY is **Asia first (ASX + Tokyo, then Hong Kong), London pre-dawn**, and
+  London's afternoon overlaps the US open rather than the US close. Any "follow the sun" scheduler
+  should be built from `Venue.sessions` rather than from a hand-written clock, and must handle the
+  DST drift between NY, London and Sydney (their offsets change on different dates).
+  **Already built:** all five venues with sessions, currency, IB exchange and lot rules;
+  `paper_global.py` (IB futures + overseas equities, one numeraire, `--equities`); `SessionRouter`
+  queueing closed-venue intents; `priceMagnifier` pence handling and per-name board lots
+  (fixed 2026-09-21, checked on real IB bars).
+  **Blockers, in the order they bite:**
+    1. **Live quotes: error 354 on every venue including SPY**, on both 2026-09-21 probes. Bars work
+       everywhere except Tokyo. Re-probe after a *fresh paper login* first — it is free (option 1 of
+       the four off-hours options).
+    2. **Tokyo has no TSEJ market-data permission** — even daily bars fail (error 162).
+    3. **LSE ETFs list on `LSEETF`** but `.L` routes to `LSE`, so ISF.L / VUSA.L do not resolve.
+    4. **Numeraire and FX conversion**: a book spanning AUD/JPY/HKD/GBP needs one accounting
+       currency and a conversion for equity, heat and cap math. `paper_global.py` takes a
+       `--numeraire`; the Router's cap/leverage math is currency-naive and would need to agree.
+    5. **Per-venue costs**: `venue_costs.py` models Questrade / Kraken / IB US. London adds **UK
+       stamp duty (0.5% on purchases of shares; ETFs exempt)**, which dwarfs commission and must be
+       in the model before any LSE result is scored.
+  **Steps:** re-probe -> daily-bar dry run of the hop (plumbing evidence only, no P&L claim) ->
+  decide subscriptions (US futures bundle before any Asia equity data) -> then **one venue at a
+  time, easiest first: ASX, then SEHK (per-stock lots), then LSE (pence + LSEETF + stamp duty),
+  Tokyo last (needs a data permission).**
+  **Gate:** no overseas book trades until that venue's quotes, lots, currency conversion and cost
+  model are each verified, and the whole path has been runtime-exercised on daily bars.
+
+  **Cross-cutting:** none of C is reachable through Questrade, so it shares its fate with the IB
+  equity-migration item below — the same feed swap, cost model and contract resolution serve both.
+
+- **Dynamic portfolio holdings, managed every poll instead of only at entry (user direction
+  2026-09-25, not started).** Today the book's weights are decided ONCE and then left alone:
+  `weight_bias_for` is "computed ONCE at startup from the local candle cache" (`cli.py`), the
+  per-name cap is evaluated only on a BUY, and `trim_to_slots` is a one-shot at launch. Between
+  polls nothing re-weights: a name that drifts from 20% to 63% of the book keeps its shares until a
+  strategy exit fires. That is what produced 2026-09-23's QT book (VDY.TO 63% of equity, −$557 of a
+  −$533 gross day) — no gate was breached, the weights simply were never revisited.
+
+  **What "real-time" should mean here.** The loop polls every 60-300s but the strategies read daily
+  bars, so the target weights change slowly; what needs to be continuous is the *comparison* of held
+  weights against target, plus a decision to act. Target weight per name from the existing pieces
+  (OOS score + covariance bias, the vol-scaled cap as a ceiling, the intel overlay as a trim),
+  recomputed each poll on live marks rather than at boot.
+
+  **The precedent to copy, not invent:** `risk/hedge.rebalance_delta(current, target, band=0.20)` —
+  a no-trade band as a fraction of the target position, so small drifts never trade. The dollar-hedge
+  sleeve already rebalances this way inside `step()`; a holdings rebalancer is the same shape applied
+  to the whole book, and it must route through `Router.submit` like everything else.
+
+  **Dependency CLEARED 2026-09-24** (the partial-sell fix landed — see the ✅ entry in the
+  correctness queue; 5 tests in `tests/test_paper_resume.py`). The argument is kept because it is the
+  standing reason rebalancing needs correct accounting: a
+  rebalance trims positions, i.e. it is a *partial* sell, and `PaperBroker._apply_fill` books
+  realized P&L only on a full close. Rebalancing daily would push most of the book's P&L into the
+  gap: equity would stay right, `realized_pnl` would stay 0.00, and per-session attribution would
+  become unrepresentable. The emitter is fixed, so this no longer blocks — but verify per-session
+  attribution against a live rebalancing session before trusting it.
+
+  **Design constraints**
+    * **Cost first.** At $4.95/fill a 5-name book rebalanced daily pays ~$50/day, which on $100k is
+      ~12%/yr of drag. The no-trade band and the cost-aware floor (see the cost-aware sizing item)
+      are what make this viable or not; pair them, and require each rebalance leg to clear the same
+      round-trip-cost ratio a new entry must clear.
+    * **Trim-only first.** Ship the reducing half (cut an oversized name) before the adding half:
+      trims lower risk and cannot breach a cap, adds re-open every sizing question. An add is also
+      an entry and belongs in the parallel allocator's slot/budget pass, not in a separate path.
+    * **Never fight an exit.** If V1-V3 or a stop fires on a name, that wins; no rebalance may
+      re-buy into a name the lockout is holding out of.
+    * **Journal the target.** Write target weight, held weight, band and decision per symbol per
+      poll (the `sizing_decisions.jsonl` shape), or the behaviour is unauditable after the fact.
+    * **Resume-safe by construction:** rebalance fills land in the session's own journals, so
+      `--resume-session` replays them; nothing extra needed.
+
+  **How to judge it:** A/B two paper books on the same strategy map, rebalanced vs not, comparing
+  `sortino_over_dd` net of the extra fills, realised max single-name weight, and turnover. The
+  hypothesis is that capping concentration is worth more than the commissions it costs — which is
+  exactly the thing 09-23 suggests but does not prove.
+
+  *(Filed as the trading mechanism. If what you wanted was a live read-only holdings view instead,
+  say so — that is a different, smaller item, and per the unfit-data principle it must show only
+  closed-book-derived figures plus current marks.)*
+
+- **Audit ledger + cryptographic continuity — PHASES 0–7 BUILT 2026-09-24, 8 scoped.** Full structure in
+  `AUDIT_LEDGER_SCOPE.md`: an append-only event ledger (one row per state transition, hash-chained,
+  signature persisted) plus an intent fingerprint shown on dashboard, device and ledger alike. Seven
+  gaps found in the current stores; the worst is that **the card's signature is verified and then
+  discarded** (`intents` has `signer_card_id`, no signature column), so no approval can be
+  re-verified after the fact — **now fixed**, along with the missing correlation key and the
+  partial-sell P&L bug (phases 0–2; see the scope doc's phase table for exactly what landed).
+  Phase 3 landed too: `audit/ledger.py` (append-only, hash-chained per stream, fsync per row),
+  Router dual-write behind an optional `ledger=`, `scripts/verify_ledger.py` (chain check + per-intent
+  reconstruction, exit 1 on a break), on by default in `paper_kraken.py` via `--audit-ledger`.
+  Phase 4 landed too: `audit/versioning.py` content-hashes the strategy (module source + that
+  instance's params) and the risk gate (gate source + live thresholds); both are on every ledger row
+  and shown by `verify_ledger.py --intent`. Known limit, documented: strategy versions do not follow
+  imports, so an edit to `signals/indicators.py` changes behaviour without changing the version.
+  Phase 5 landed too (mostly): STRATEGY_SIGNAL / SIGNAL_SUPPRESSED with reasons, RISK_TRIMMED,
+  PARTIAL vs FILLED, BROKER_REJECTED, INTENT_QUEUED / RELEASED, INTENT_SENT, APPROVED / REJECTED /
+  EXPIRED, SIGNED **with the signature in the row**, POSITION_FLATTENED. It found two real gaps
+  (the card path's accepted gate emitted nothing; the Router compared fill quantity against a
+  broker-mutated order) — both fixed. **Still unemitted:** INTENT_DISPLAYED (needs the store to
+  record the card's first fetch), SIZED, KILL_SWITCH_TRIPPED, CARD_REGISTERED / CARD_REVOKED,
+  FUTURES_ROLLED, CANCELLED.
+  Phase 6 landed too, except firmware: the fingerprint is on `Prompt` and `PassbookEntry` (derived
+  from the stored canonical bytes), in `PromptOut` / `PassbookEntryOut`, rendered by the PWA (pending
+  prompts show HASH / ACCOUNT / STATUS; history shows the hash and signing card), and the card sim
+  recomputes it and **refuses to sign on mismatch**. **Firmware is specified but unwritten** —
+  `handle_prompt` in `firmware/tradecard/main/main.c` needs an mbedTLS SHA-256 over the same
+  `canon_buf` and a display line; the 4-line LCD is full, so which line it replaces is your UX call,
+  and it needs a device build I cannot do here.
+
+### Cheap fixes cleared 2026-09-24 (working the backlog lowest-cost first)
+
+* ✅ **Stale `state/STOP_KRAKEN_FETCH` removed.** It was left behind when the interleave driver was
+  stopped by hand, and `kraken_interleave.py` exits between steps whenever it exists — so the 16:30
+  scheduled fetch would have exited immediately every night without fetching anything. Nothing in the
+  driver clears its own sentinel; worth deciding whether it should (a stop file that outlives the run
+  it stopped is a foot-gun) — left as-is for now because an auto-clearing stop file can also lose an
+  intentional "stay stopped".
+* ✅ **`graph_journal.py --help` no longer crashes** on the cp1252 console. `sys.stdout.reconfigure`
+  at import, as the paper runners already do, so callers no longer need `PYTHONIOENCODING=utf-8`.
+* ✅ **`backtest/costs.py`: 4 invalid `\$` escapes fixed** — 8 SyntaxWarnings gone from every test
+  run. No docs build renders those docstrings, so the backslash bought nothing.
+* ✅ **`/v1/stats` stopped serving invented numbers as measured ones.** `overlay_scalar` was
+  hardcoded `0.47`, `session_id` `"trading-session-1"` and `overlay_risk_zone` `"crypto"`. All three
+  are now `null` and named in a new `placeholders` field, and the genuinely computed pending/expired
+  counts — previously assigned and thrown away, which is what ruff's F841 was pointing at — are
+  returned as `intents_pending` / `intents_expired`. `get_conviction_matrix`'s demo fallback is
+  commented as such; **it still returns invented conviction when the allocator has no data**, so a
+  client must not draw it unlabelled. Nothing outside the shim consumed these fields.
+* ✅ **Ledger wired into `paper_ib.py` (stream `ib`) and `paper_global.py` (stream `global`).** All
+  four runners now record: qt, kraken, ib, global — each its own chain, `--audit-ledger` on by
+  default. The stream-separation test covers all four. This clears the phase 7 leftover, so
+  `reconcile_ledger.py` will stop reporting IB/QT journal rows as missing once those books next run.
+* ✅ **The BI endpoints stopped inventing data (2026-09-25).** `/v1/stats` and
+  `/v1/conviction-matrix` each had **two** fabricating code paths — one in `ApprovalMetrics`, one
+  inline in the route for when the shim has no journal, which is the path the tests actually
+  exercised. Removed: a hard-coded 13x5 "conviction" grid **including SPY and BTC/USD, neither of
+  which has ever been walk-forward validated**; a `0.5` "neutral conviction" for every unvalidated
+  symbol; five per-strategy columns derived from one number by fixed offsets (`+0.15` because
+  "momentum tends higher", `-0.20` for a "bearish overlay"); a `[0, 1]` clamp that hid that
+  `oos_score` is an unbounded ratio running 19-111, so every real symbol saturated at 1.0; and
+  `-0.2` drawdown / `4.2s` response / `0.47` overlay scalar in the no-journal stats branch.
+  The matrix now reports only measured `(symbol, strategy)` pairs from `WALK_FORWARD_VALIDATED` —
+  32 symbols, 7 strategies, **one value per row and null everywhere else**, because a null means
+  "never validated", not "zero conviction". `metric` states the range so nothing renders it as 0-1.
+  Three tests changed with it; each had been asserting the fabricated values, including one that
+  pinned `starting_equity == 100_000` and one that required SPY to be present.
+  **Still unfit for display:** per-strategy conviction is not computed anywhere in this codebase, so
+  the heatmap is sparse by construction. If a real per-strategy conviction is wanted, that is a
+  modelling task, not a rendering one.
+* ✅ **45 unclosed-SQLite ResourceWarnings gone.** `SqliteCardRegistry` and `SqliteApprovalStore`
+  held a connection for the life of the instance with no way to release it, so every short-lived one
+  was reclaimed by the GC with its connection open — and the warning surfaced against whichever test
+  happened to be running at collection time, which is why it looked like an arima/entries problem.
+  Both now have `close()` (idempotent), context-manager support and a `__del__` backstop; the
+  projection tests register their connections for teardown. Beyond the noise, an open handle on
+  Windows keeps the `.db` locked against `tmp_path` cleanup. Suite-wide count is now **0**. One
+  unclosed *file* warning remains in `tests/test_order_journal.py:43` (not Claude's file, left alone).
+* ✅ **`execution/router.py` is clean under `mypy --strict`** — 18 errors to 0, on the file every
+  order passes through. The 15 `arg-type` errors were one root cause: `build_default` assembled the
+  gate knobs as a bare `dict` and splatted it into `confirm_live` / `confirm_autonomous` / the
+  constructor, so mypy inferred a union value type and could not check a single argument — a
+  misspelled key or a float where an int belongs would have reached the risk gate unchallenged. Now a
+  `GateKwargs` TypedDict. The bare `list[dict]` annotations became `list[dict[str, object]]`, except
+  `check_forced_exits(positions=...)` which is `list[dict[str, Any]]` on purpose: those rows come
+  from a broker payload or a journal replay, mix strings with numbers, and the body reads them
+  defensively, so claiming a precise shape would be a lie about data it deliberately distrusts.
+  **Repo-wide mypy is 116 errors in 21 files**, so this is one file down, not the suite.
+* ✅ **`scripts/build_desk_dash.py`** — "repopulate the dash" is now one command. It reads `state/`,
+  computes every figure the panel draws (session ranking, curve, return distribution, round trips,
+  attribution, activity heatmap, venue mix, gate denials, per-strategy acceptance, approval
+  analytics) and injects one JSON blob into `pwa/desk.template.html`. It also prints the thin-sample
+  warning: 7 closed trades against a 30-trade floor.
+* ✅ **The Meter Atlas is folded into the desk panel** (2026-09-28) — the two pages in
+  `OS-InvestmentIntelligenceDashboard/` are now one. The atlas is a fourth tab, ATLAS, restyled to
+  the desk's dark tokens and unchanged in substance: 120 defined meters in 12 groups, neutral and
+  needleless where nothing has been measured, a snapshot loader that rejects a file whole if any
+  reading lacks a source, a scope or a plausible timestamp, search, and a per-meter detail dialog
+  with the definition, unit, scale, code support and pinned source. The catalogue is baked in from
+  `meter_catalog.csv`, the HISTORICAL snapshot is derived from the first row of
+  `reports/calibration_sweep.csv` (all six readings or none), and the provenance line resolves the
+  pinned commit through git rather than asserting it. One build writes both
+  `pwa/desk.html` and `OS-InvestmentIntelligenceDashboard/TradeCard Desk Panel.html`, byte-identical.
+  **Runtime-exercised**, not just built: loaded in a browser, the atlas renders 120 tiles, the
+  historical snapshot reproduces the standalone page's six values exactly, a snapshot from
+  `export_meters.py` run against the real journals loads and shows STALE/OBSERVED correctly, and a
+  file with a future timestamp is rejected whole.
+* ✅ **The desk panel is wired to a running session on both QT and Kraken** (2026-09-28) — the card
+  shim now serves the panel, which is what makes it live: `GET /desk` is a public unlock shell that
+  carries no journal data and never the token, and `GET /v1/desk/page` serves the built page behind
+  the same auth as every other `/v1` route. Same-origin, so no CORS hole is opened and no token
+  travels in a URL. The page polls `/v1/intents/pending` and `/v1/stats` and is **read-only by
+  construction**: it shows the prompt and its fingerprint to compare against the card's screen, and
+  the ACCEPT that decides an order is still a signature made on the device.
+  * Kraken: `scripts/paper_kraken.py --require-card` prints the desk URL; new `--card-shim-host`.
+  * QT: `cli signal --paper --require-card` gained the whole card path (`--card-shim-host`,
+    `--card-shim-port`, `--card-ttl`) — it had none before.
+  * **Runtime-exercised end to end**: with a shim booted against this repo's Router and one intent
+    published, the panel showed `link live · 1 pending`, the prompt took the screen with the
+    fingerprint the shim published (`A8AA...DC69`), and the TTL counted down. 11 new tests in
+    `tests/test_desk_link.py`; the 119 approval-related tests still pass.
+* ⚠️ **Three fabricated figures removed from the panel and its source** (2026-09-28), found while
+  wiring the live link. (1) The AWAITING APPROVAL queue was a hard-coded pair of specimen rows
+  (PAXG/USD, XIC.TO) with invented fingerprints; it is now the live queue, or an explicit "no link"
+  note. (2) The takeover prompt was the same specimen; it is now either the live prompt or a
+  **replay** of the newest real row in `approval.db`, ribboned as such, with the verdict that was
+  actually recorded in place of the buttons. (3) `ApprovalMetrics.get_avg_ttl_response()` returned
+  the literal **4.2** in every case — the loop meant to compute it was a `pass`, and the passbook
+  did not carry `issued_at` anyway. `PassbookEntry.issued_at` is now populated by both stores, the
+  median is measured over decided prompts only, and `StatsBody.avg_ttl_response` is nullable and
+  named in `placeholders` when nothing has been decided. The header chips (kill-switch, card) are
+  read from `state/HALTED` and the registered cards instead of being asserted in the markup.
+* ⚠️ **Two defects the artifact wrapper had been masking** — found while folding, both in the
+  already-committed `pwa/desk.html`. (1) `heat()` wrote to `#heat-n` / `#heat`, which existed in no
+  markup, so the inline script threw there and **every statement after it never ran**: tab
+  switching, the table toggles and the prompt takeover were all dead in the standalone file. The
+  missing WHEN THE BOOK TRADES section is now in the BOOK panel. (2) `.takeover` sets `display:
+  grid`, which outranks the UA rule for `[hidden]`, so the prompt overlay could be opened but never
+  closed; the page now carries its own `[hidden] { display: none !important }`. Both only showed up
+  outside the artifact host, which patches `[hidden]` itself.
+
+### Phase 7 — SQLite projection + reconciliation — ✅ DONE 2026-09-24
+
+Built as specified: `audit/projection.py`, `scripts/rebuild_projection.py`,
+`scripts/reconcile_ledger.py`, 20 tests. The ledger stays the write path and the source of truth;
+the projection is **derived and disposable**, rebuilt from scratch by replaying
+`state/ledger/*.jsonl`. If the two disagree, the ledger wins and the disagreement is the finding.
+
+**Verified on a seeded ledger** (11 events → 3 intents): outcomes folded correctly, a tampered row
+reported as `chain_status.ok = 0` instead of being projected as sound, and 2 journal fills plus 1
+rejection reconciled exactly against `fills.jsonl` / `rejected.jsonl`. **Against the real
+`state/ledger/` it reports 0 events** — no session has yet traded with the ledger on, so there is
+nothing to project. That is the honest state, not a failure.
+
+**Remaining from this phase:** wire `ledger=` into the other runners (`cli.py signal`,
+`paper_ib.py`, `paper_global.py`) — the same three lines as `paper_kraken.py`. Until then only the
+Kraken book records, and `reconcile_ledger.py` will keep reporting QT/IB journal rows as missing on
+the ledger side. Retire no journal until reconciliation is clean for a full session.
+
+Original spec kept below for the parts not yet done.
+
+* **Tables** (all `PRIMARY KEY`-ed on ledger identity so a replay is idempotent):
+  `ledger_events(stream, seq, ts, event, intent_id, …, row_hash)` — the flat spine;
+  `intents(intent_id, first_seen, last_event, symbol, action, shares, strategy_id,
+  strategy_version, risk_check_version, verdict, signer_card_id, fingerprint, broker_order_id,
+  filled_qty, outcome)` — one row per intent, folded from its events;
+  `chain_status(stream, rows, last_seq, last_row_hash, verified_at, ok, reason)` — so a verification
+  run is queryable rather than only printed.
+* **Queries it must answer** (scope §2.5, currently only answerable by grepping JSONL):
+  rejection rates per gate reason per week; time from `INTENT_SENT` to `APPROVED` (the TTL-pressure
+  question the card UX needs); which `strategy_version` traded a symbol on a date; every intent with
+  a `SIGNED` row whose signature no longer verifies; intents that reached `BROKER_SUBMITTED` but have
+  no terminal event (the crashed-writer case).
+* **Reconciliation** (`scripts/reconcile_ledger.py`, exit non-zero on mismatch): ledger `FILLED` /
+  `PARTIAL` rows against `state/fills.jsonl` and `paper_fills.jsonl` by `(intent_id, order_id)`;
+  ledger `RISK_REJECTED` against `rejected.jsonl`; `approval.db` verdicts against ledger
+  `APPROVED` / `REJECTED` / `EXPIRED`; replayed positions/cash against the session's last
+  `paper_equity.csv` row. **Expect real mismatches on the first run** and treat them as findings, not
+  bugs to paper over: sessions started before 2026-09-24 have no ledger at all, and the Kraken book
+  is the only runner wired (`--audit-ledger`), so QT and IB sessions will have journal rows with no
+  ledger counterpart until they are wired too (small: pass `ledger=` in `cli.py signal` and
+  `paper_ib.py` / `paper_global.py`, same three lines as `paper_kraken.py`).
+* **Retire nothing yet.** The existing journals stay until reconciliation is clean for a full
+  session; only then is dropping a writer a discussion.
+* **Watch:** the projection must never be on the trading path — build it in a separate process, not
+  inside the poll loop.
+
+### Phase 8 — daily anchor + retention + trusted time (BLOCKED on three decisions)
+
+Mechanics are easy; both open questions are about trust, so they are yours.
+
+* **What it does:** at UTC rollover, for each stream, compute the Merkle root of that day's rows,
+  sign the root with a key the trading process cannot use, and append
+  `state/ledger/anchors/<date>.<stream>.json` (`{date, stream, first_seq, last_seq, row_count,
+  merkle_root, signature, key_id}`). Publish the root somewhere append-only. That bounds tampering
+  to the current day: a rewrite of any earlier row changes the root, and the root is already signed
+  and copied elsewhere.
+* **🔴 DECISION 1 — where the anchoring key lives.** An anchor signed by a key sitting beside the
+  ledger, usable by the process that wrote it, proves nothing about that process. Options, cheapest
+  first: (a) a second Ed25519 key in `state/` — honest about being weak, only defends against an
+  edit that doesn't think to re-sign; (b) **the TradeCard signs the daily root** — the hardware is
+  already there, already holds a key the host cannot read, and this is the option that actually fits
+  the design; costs a daily tap; (c) an offline key on removable media, signed weekly rather than
+  daily; (d) publish the root to a remote append-only place and treat public visibility as the
+  anchor. Recommendation: **(b), with (d) as the publication channel** — it matches the
+  zero-vendor-infrastructure posture where GitHub is the coordinator, so a commit of the day's root
+  to a private repo is both the copy and the timestamp, with no service to run.
+* **🔴 DECISION 2 — retention and WORM.** Today nothing stops a process — including the test
+  suite, which has done it twice — from writing into `state/`. Needs: a retention period (how long
+  ledger files and anchors are kept, and whether anything may ever be deleted); where the off-box
+  copy goes and how often; whether to set the Windows read-only attribute on closed day files (cheap,
+  defeats an accident, not an attacker); and whether the ledger directory should be moved out of
+  `state/` so the "everything under state/ is fair game" convention stops applying to it.
+* **🔴 DECISION 3 — trusted time (surveyed 2026-09-24, see scope §2.6).** We have timestamps; none
+  of them is evidence. `ts` on every ledger row, and every `issued_at` / `resolved_at` in
+  `approval.db`, is the writing host's own clock. `seq` + the chain carry **order** but say nothing
+  about wall-clock. The card has no clock at all, by design: `prompt_ttl_seconds` takes the window
+  from the server's `issued_at`/`expires_at` so no NTP is needed, and its passbook stores uptime
+  since boot — so the card can contradict the host about the bytes, never about the time. Set the
+  system clock back and every new row follows it while the chain still verifies.
+  **One property worth not losing:** `mint_intent_id()` is `f"{time.time_ns():016x}-…"` and
+  `intent_id` is inside the signed canonical bytes, so an approval cannot be re-dated without
+  invalidating its signature (`18d84e7c8730f1e0` → `2026-09-24T16:25:48.630815+00:00`). It is still
+  only the host's claim, signed by the card — and anyone reformatting the id would delete this
+  silently. Options: (a) log `time.monotonic()` beside `ts` so an in-session clock jump is visible —
+  cheap, catches accidents only; (b) publish the daily root remotely and let the publication time be
+  a timestamp we did not author; (c) an **RFC 3161** timestamp token over the daily Merkle root —
+  one HTTP call, a standard token, verifiable by any third party, no service of ours to run.
+  Recommendation: **(c) plus (b)** — together they make the anchor mean "this existed by then"
+  instead of "we say this existed by then". Note this is a prerequisite for the anchor being worth
+  much: a root signed locally records a time the same host chose.
+* **Do not claim immutability before this lands.** The chain makes edits *detectable*; the anchor
+  makes them detectable *by someone else*; only WORM storage makes them *impossible*. The scope doc
+  and `audit/ledger.py`'s docstring both say so — keep it that way in any write-up.
+* **Also still open from phase 5–6:** `INTENT_DISPLAYED` (the store must record the card's first
+  fetch of a prompt — a small `approval.db` migration plus a touch in `pending()`), and the firmware
+  fingerprint line.
+* ✅ **`INTENT_CREATED` now has an emitter — FIXED 2026-09-25, taxonomy coverage 25/25.** Neither of
+  the two options in the original finding was needed: rather than stamping N construction sites or
+  deleting the event, `Router.announce_intent()` writes it the first time a router sees an intent,
+  carrying the intent's own `timestamp` plus `pre_gate_ms` — so the gap between "the strategy built
+  it" and "the gate ran" is on the record without the Router having to be where it was created.
+  Announced once per intent via a bounded `deque`: **the card path gates, waits for a verdict, then
+  submits the same intent again**, so a naive emit in `submit()` put the creation event in the middle
+  of the chain after SIGNED, reading as a second intent. `ApprovalRouter` calls `announce_intent`
+  before its own pre-prompt gate; the inner router's call is then a no-op. 3 tests, and the
+  diagnostic harness now demands full coverage rather than tolerating one gap.
+* **Display target changed (user, 2026-09-24): ideally an 8" 1280x800 touch panel** for
+  firmware/dash-type devops. This obsoletes the phase 6 firmware note that asked which of the 6 SPI
+  LCD lines the hash should replace — at 1280x800 there is no line-budget problem, and the
+  fingerprint, thesis, device id and status all fit at once. Two consequences worth thinking through
+  before writing any firmware: (a) the current `firmware/tradecard/main/main.c` drives a small
+  monochrome SPI panel with a 5x7 font (`lcd_puts`, `LCD_COLS`, `font5x7.h`) — a 1280x800 touch panel
+  is a different device class (RGB/MIPI + touch controller, likely a different SoC or an SBC), so this
+  is a port, not a display tweak; (b) at that size the **PWA is the natural dashboard** — it already
+  renders the hash, account and status — so the question becomes whether the card stays a minimal
+  tap-to-approve device with the 8" panel as a separate dash, or whether one touch device does both.
+  The security property does not change either way: whatever displays the intent must show the
+  fingerprint derived from the same record the signer received. The PWA is currently styled for phone
+  width, so it would want a wider layout for an 8" panel.
+
+- 🟡 **Cost-aware minimum position size — BUILT 2026-09-25, off by default, not runtime-exercised.**
+  `execution/venue_costs.py`: `VenueCostModel.for_venue()` prices one side per venue (Questrade flat
+  $4.95; Kraken 26 bps taker; IB $0.005/share, $1 order minimum, capped at 1% of notional; anything
+  unrecognised or duck-typed gets the conservative flat fee), plus `round_trip_cost_ratio` and
+  `min_notional_for`. Wired into `Router` as gate 11 (`max_round_trip_cost_ratio`, entries only,
+  evaluated AFTER the size-cap trim so it judges what would actually be sent; the rejection names the
+  ratio, the venue and the minimum ticket) and into `PaperBroker`, whose commission is now
+  venue-priced unless a caller pins one. 13 tests in `tests/test_venue_costs.py`; suite 1415 passed,
+  1 skipped. Flags: `--max-cost-ratio` on `cli signal` and `paper_kraken.py`, default 0.0 = off.
+    * **Finding that shapes the setting:** Kraken's taker fee alone is ~52 bps round trip, so a
+      0.5% ceiling fits at NO size there, while the same ceiling implies a ~$2,475 minimum ticket on
+      Questrade and ~$500-800 on IB. **The ceiling must be per-venue** (or ~2% on Kraken). A
+      percentage-fee venue needs no size floor at all — its ratio is size-independent.
+    * **Still open:** pick the ceilings from data (replay every closed round trip: cost-as-%-of-
+      notional vs realised return, see what 0.25/0.5/1% would have refused and what those netted);
+      decide whether `min_ticket_usd` stays as a floor underneath; add an FX spread entry when the
+      currency-sleeve work needs one; the backtest engine's `CostModel` is still separate, so
+      backtests and the live gate do not yet share one cost source.
+
+- **(original scope) Cost-aware minimum position size, per venue and per share count (user direction 2026-09-23).** The min-ticket gate is a flat `min_ticket_usd: 100.0` in `trading.yaml`, applied
+  identically on every venue. It is blind to what a fill actually costs, so the engine happily opens
+  positions that cannot pay for themselves. The rule the user asked for: **a position is only worth
+  taking when its size is large relative to the commissions it will pay — and what "large" means
+  depends on the share count and the venue.**
+
+  **Evidence (Kraken paper session `bc361280`, 2026-09-23).** One fill all session: LINK/USD 14.55
+  units, **$184.97 notional, $4.95 commission = 2.68% of notional on entry, ~5.4% round trip.** It
+  cleared the $100 floor with room to spare and would have needed a 5.4% move to break even. At a
+  flat $4.95/fill, **anything under roughly $2,000 is structurally unprofitable**, i.e. the floor
+  permits positions 20x too small.
+
+  **Two defects, and they compound**
+    1. **The floor is not cost-aware.** `Router._gate` compares notional to a constant. It should
+       compare the *round-trip cost fraction* to a ceiling: reject when
+       `round_trip_cost / notional > max_cost_ratio` (0.5% is a defensible starting point, which at
+       $4.95/fill implies a ~$2,000 minimum). `signals/profit_lock.round_trip_cost_frac` already
+       computes exactly this number for the exit side, and `backtest/costs.CostModel.per_side_frac`
+       does it for backtests — the gate is the only place that doesn't use it.
+    2. **The commission model is not venue-aware.** `PaperBroker(commission_per_trade=4.95)` is
+       Questrade's equity commission, and `scripts/paper_kraken.py` uses that default unchanged, so
+       **the crypto book is charged $4.95 per fill when Kraken actually charges ~0.16-0.26% of
+       notional** (~$0.40 on that LINK trade). The flat model overstates small crypto trades and
+       would understate large ones. IB is different again: per-share with a per-order minimum and a
+       cap as a % of trade value, so **cost per share falls with price and rises with share count** —
+       which is precisely the "depends on share-size and venue" the user named.
+
+  **Shape of the fix**
+    * One `VenueCostModel` (extend `backtest/costs.CostModel`) resolved per venue: Questrade flat
+      per fill, Kraken bps of notional, IB per-share with min/max. One source of truth for
+      `PaperBroker`, the Router's min-ticket gate, the profit lock's arming test and the backtest
+      engine — today three of those four disagree.
+    * Gate becomes `max_round_trip_cost_ratio` (keep `min_ticket_usd` as a floor underneath it).
+      **Reject, never size up**: if the risk-sized position is too small to carry its costs, the
+      trade is not worth taking — inflating it past the sizer's answer would be the tail wagging
+      the dog.
+    * The rejection reason must name the number ("round-trip cost 5.4% of notional > 0.5% cap"),
+      because a silent skip looks like a missing signal in the journals.
+    * Venue tags already exist on every journal row (`venue` on fills/orders), so a replay can
+      attribute costs correctly once the model is venue-aware.
+
+  **Measure before choosing the ceiling.** Replay `state/paper_fills.jsonl`: for every round trip
+  ever closed, compute cost-as-%-of-notional and the realised return, then ask what a 0.25% / 0.5% /
+  1% ceiling would have refused and what those refused trades actually netted. Pick the ceiling
+  from that distribution rather than from the $4.95 arithmetic alone — and note the obvious
+  confound, that the flat-$4.95 model has mispriced every crypto fill in the journal to date.
+
+- **FIRST STEP of the IB equity move: diff the two feeds' daily bars (2026-09-23, not started).**
+  Standalone and runnable now — it is step 2 of the IB item below, pulled out because it blocks
+  everything else and needs no decision. Every walk-forward parameter, every backtest and every
+  calibration in this repo was fitted on **Questrade** bars. If IB's history differs materially,
+  those numbers do not transfer and the migration is not a feed swap but a re-fit.
+
+  **What to build:** `scripts/feed_diff.py --symbols <list> --years N`, writing
+  `reports/feed_diff_<date>.{csv,md}`.
+
+  **Data sources, and why this can run while a QT session is live:**
+    * **Questrade side: from the local cache only.** `data/cache/` already holds 18,327 shards
+      across 590 symbols (`EQB_TO_1d_<hash>.parquet` — dots become underscores, which is why a
+      naive `EQB.TO_1d_*` glob finds nothing). No token, no API call, **so no risk to the one-shot
+      refresh token of a running QT session.** The 2026-09-22 defense-name gap has since closed
+      itself: ITA/NOC/GD now have shards, fetched by the live session.
+    * **IB side: `IBBroker.candles(..., whatToShow="TRADES", useRTH=True)`** with TWS on 7497.
+      Daily bars worked on every venue except Tokyo in the 09-21 probe, so **this step does not
+      need the missing live-quote subscriptions**.
+
+  **What to measure**, per symbol, over the overlapping window:
+    1. Coverage: bar counts, first/last date, missing sessions on each side (calendar mismatches
+       are as damaging as price differences).
+    2. Close-to-close: mean and max absolute difference in bps, and the count of bars over 10 bps.
+       Split TSX (`.TO`) from US — currency, listing venue and consolidated-vs-primary tape all
+       differ, and TSX is where a surprise is most likely.
+    3. Return series: correlation and, more usefully, the distribution of daily return differences.
+       A constant price offset is harmless to a strategy; differing returns are not.
+    4. OHLC beyond the close: the ATR stop and the candle/overbought exits read high/low/open, so a
+       feed that agrees on closes can still move every stop. Check ranges, not just closes.
+    5. Adjustment convention: pick a few names with recent dividends or splits (ENB.TO, VDY.TO,
+       SLF.TO all pay) and check whether the two feeds adjust the same way — this is the most
+       likely source of a systematic gap.
+
+  **Acceptance, decided before looking at the output:** if median close differences are within a
+  few bps and the return distributions match, the registry params carry over and the migration
+  proceeds. If TSX or the adjustment convention differs materially, the honest conclusion is that
+  **the walk-forward has to be re-run on IB bars** before any IB-fed book trades — record that as a
+  cost of the migration rather than discovering it later in a paper A/B.
+
+  **Then:** re-run one or two known backtests (a `ts_momentum` name and a `bollinger` name) on IB
+  bars and compare `sortino_over_dd`, OOS return and trade count against the QT-fitted result.
+  That converts a bar-level diff into the number that actually matters.
+
+- **Move the equity book from Questrade to IB — US/TSX too, not just futures and options (user
+  direction 2026-09-23, not started).** Today's split is a desk policy, not a technical limit: IB
+  carries futures and overseas listings (`.L`, `.AX`, `.T`, `.HK`) and `scripts/paper_global.py`
+  actively *refuses* US/TSX names (`assert_ib_no_questrade_equities`), while the whole QT path —
+  `cli.py signal`, `backtest`, `paper`, `tune`, the candle cache and pre-flight symbol validation —
+  is wired to `_make_questrade` at 8 call sites. The ask is to make IB the equity broker as well.
+
+  **Why it is worth doing**
+    * One broker for every asset class: one calendar, one contract model, one cost model, one
+      account. `AssetRouter` already maps asset class -> brokerage; today equity is the odd one out.
+    * **Questrade's refresh token is one-shot and process-local.** A second QT process invalidates
+      the running session's token, which is why the defense names (ITA/NOC/GD) could not be
+      cached on 2026-09-22 while a QT paper session was live. IB has no equivalent constraint.
+    * Costs: QT is modelled at a flat $4.95/fill; IB tiered US equity pricing is per-share with a
+      small minimum, materially cheaper for the sizes this book trades — and the paper cost model
+      would finally match the venue it claims to simulate.
+    * Limit orders, extended hours and real-time quotes all live on the IB side of the codebase
+      already (`brokers/ib.py`, `brokers/ib_web.py`, both with `quote` / `candles` / `place_order`).
+
+  **Blocking facts — read before starting**
+    * **No live quotes yet.** Probe 2026-09-21 (paper login on 7497): error 354 on *every* venue
+      including SPY, twice, before and after enabling real-time sharing. Daily bars work everywhere
+      except Tokyo. Per "Held for market data", an IB-fed book without quote permissions launches
+      and never trades. **However** — the strategies decide on completed DAILY bars; live quotes are
+      used for fills, marks and the stop/profit-lock checks. So a daily-bar IB paper book is
+      testable before subscriptions exist, which is the cheap first step below.
+    * The `interactive-brokers` MCP server failed to connect again on 2026-09-23
+      (`CONNECTION_CLOSED`), and TWS must be listening (7497 paper / 7496 live). Any IB path
+      inherits that operational dependency; QT needs only a token.
+    * `brokers/ib.py` is built on `ib_insync`, which is unmaintained — the `ib_async` migration is
+      already queued in the dependency-caps item. Do that first or accept the debt knowingly.
+
+  **Work, in order**
+    1. **Feed swap behind a flag**, not a rewrite: `--feed {questrade,ib}` on `cli.py signal`
+       (and `backtest`). `MarketData` takes any `Broker`, so the seam is `_make_questrade`. Keep QT
+       working the whole time — this must be A/B-able, not a cutover.
+    2. **Cache separation.** Do NOT mix QT and IB bars in the same parquet shards: different
+       adjustment and timestamp conventions. Key the cache by source, and **diff the two feeds over
+       their overlap** (close-to-close deltas per symbol) before trusting IB history. Every WF
+       registry param and every backtest in the repo was fitted on QT bars.
+    3. **Symbol resolution and pre-flight.** `.TO` -> TSE/SMART with CAD currency, US -> SMART;
+       replace the QT-candles-404 validation with IB contract resolution + a one-bar fetch, so a
+       bad symbol still refuses the launch. `stock_details()` price-magnifier handling already
+       exists; US/TSX shouldn't need it, but assert rather than assume.
+    4. **Cost model.** Replace the flat $4.95 in `CostModel` / `PaperBroker(commission_per_trade=)`
+       with IB tiered (per-share, per-order minimum, max % of notional). Paper P&L, the profit
+       lock's round-trip cost gate and the min-ticket gate all read it.
+    5. **Daily-bar paper A/B (the cheap first run).** Same strategy map, same `--paper-equity`, one
+       QT-fed book and one IB-fed book side by side, marks from the last completed bar where live
+       quotes are unavailable. Compare fills, fill prices, costs and `sortino_over_dd`. Two books
+       double the alert volume — mute one.
+    6. **Live path parity** only after 1-5: order types, TIF, TSX routing, account base currency
+       (CAD vs USD) and the FX leg for a mixed book, plus `AssetRouter` / approval-card venue tags
+       (`approval_asgi.Broker` already knows `ib`, `ib_web`, `questrade`).
+    7. **Decide QT's fate explicitly.** Keep it as a second opinion on quotes, or retire it? If it
+       stays, the one-shot-token constraint stays with it and must be documented where it bites
+       (concurrent processes).
+
+  **Do not** flip the desk-policy refusal in `paper_global.py` as the first move — that guard is
+  what keeps a half-migrated book from double-trading a name on two venues. It comes down in
+  step 6, once one venue owns the equity book.
+
+- **Wire the RMT eigen representation into the live analysis layers (user decision 2026-09-22,
+  not started).** Question raised: is the eigenvalue representation built into the top layers of
+  analysis? **No — it is research-only.** `analysis/rmt.py` (commit `9b9958f`: Marchenko-Pastur
+  band with a Tracy-Widom margin, k-deep embedding, trace-preserving noise shapes) has exactly one
+  importer in the repo, `scripts/rmt_lstm_study.py`. Nothing in the live path imports it. Meanwhile
+  every correlation the live path does use is a **raw sample estimate**, which on a 5-name book is
+  mostly noise:
+    * `risk/risk_model.py` `portfolio_risk(method="corr")` — raw rho with Dimson +/-1 lead-lag,
+      `sqrt(r' rho r)`, run every poll for the heat gate;
+    * `risk/allocation.py` via `cli.py` — CVaR + score softmax, computed once at session start,
+      multiplies entry conviction through `weight_bias_for`;
+    * `risk/entry_allocation.py` (new 2026-09-22) — ranks slots by conviction only, no correlation;
+    * `intel/interpret.py` — no correlation input at all.
+
+  Three entry points, **ranked by cost/benefit — do them in this order**:
+
+    1. **Denoise the heat gate's correlation matrix.** Swap the raw rho in
+       `portfolio_risk(method="corr")` for the MP-filtered one. Cheapest: self-contained, no new
+       data, one call site, and the study code already exists. Highest immediate value because the
+       heat gate's diversification credit is currently computed from noise — a spuriously low
+       off-diagonal lets the book carry more risk than intended. **It changes when the gate binds,
+       so it changes sizing:** A/B the same sessions, `sortino_over_dd` primary with Sortino,
+       return and time in market beside it, plus a count of how often the gate's verdict flips.
+    2. **Eigen-aware entry ranking in the parallel allocator.** Today's slot ranking is conviction
+       alone, so two names loading on the same dominant eigenvector can take both free slots. Rank
+       (or trim) by conviction discounted by the candidate's loading on the top eigenvector of the
+       denoised matrix, i.e. prefer the name that adds a new direction. This is the honest version
+       of what `weight_bias_for` is reaching for, and it belongs in the allocator now that the
+       whole poll is decided at once. Needs the eig computed per poll (cheap at 5-19 names) or
+       cached per session like the current bias. Medium cost, medium evidence burden: it decides
+       which names enter, so judge it on realised book correlation and `sortino_over_dd`, not on
+       how sensible the ranking looks.
+    3. **Top-eigenvalue share as an intel thesis input** ("cross-asset correlation spike"), the
+       third of the new inputs queued in the thesis-layer item above. Computed locally from cached
+       daily returns, no vendor, and it measures the thing that actually hurts a concentrated book:
+       everything moving together. Lowest priority of the three because it feeds the layer that
+       has never been scored (see step 4 of that item) — do it after the thesis layer earns its
+       keep, or alongside, but do not let a new gate start trimming size before then.
+
+  **Caveat for all three.** MP denoising has its own parameters and the commit message records the
+  sigma2 estimate already misbehaving once (a fixed-point iteration collapsed 1 -> 10 signal modes
+  on crypto). Pin the estimator and the lower cut, record them, and treat a denoised matrix as a
+  change to position sizing that needs a before/after — not a drop-in improvement.
+
+- **Intel thesis layer — fix the inputs and the gates before adding theses (user decision
+  2026-09-22, not started).** Question raised: only 2 of the 8 theses fire consistently, so should
+  we build more on top of them? Answer: not yet, and these four steps first. Evidence is in the
+  `intel/interpret.py` module header. Four theses are gated on values the feed has never reached
+  (`fear_greed >= 70`/`<= 25` against an observed 54-68, zero fires in 280 reads; disasters `>= 5`
+  against a max of 2; `disaster_accel` whose key is absent from every payload; conflict/energy
+  accel `>= 2.0` against a max of 1.20), and the two that do fire are near-constants since the
+  09-18 gate change (Complacency 81%, Conflict watch 70% of real reads). A conjunction of two
+  ~80% gates still fires ~65% of the time, so composing new theses out of the existing eight adds
+  words, not information. **Ordered, 1 blocks 2 and 4.**
+
+    1. **Degraded-row detection is wrong.** 89 of 336 rows in `state/intel_overlay.jsonl` carry no
+       strategic-risk reading and no VIX yet are flagged `degraded: false`. Every base rate,
+       calibration and backtest of this layer reads those rows. Fix where the flag is set
+       (`intel/overlay.py` / `intel/worldmonitor.py`), and treat old rows at READ time — a
+       `is_real_read(row)` helper used by every replay — rather than rewriting the journal
+       (`state/` is ground truth).
+    2. **Trailing-percentile gates instead of hard constants.** Already flagged as the queued
+       design change in the module header ("a trailing-percentile gate would be regime-robust
+       where a hard constant is not"). Replace `strategic_risk >= 67` / `conflict_events_active
+       >= 4` (and the accel gates) with "this read is in the top decile of the last N real reads",
+       N ~90 days, with a minimum sample before the gate arms and the current constants as the
+       cold-start fallback. This is what actually fixes "only 2 fire consistently": every thesis
+       then fires at a designed rate in any regime, and a WorldMonitor recentring of the index
+       can't silently invalidate the constants. **Sizing impact: the same gates drive the
+       live-loop conviction trim** (Complacency at moderate = x0.75 on the safe-haven exemplars),
+       so a firing-rate change is a position-size change — measure before adopting.
+    3. **New inputs, which is where genuinely new theses can come from.** The existing feed is one
+       slow-moving geopolitical index plus event counts; no rewording of it will produce a
+       signal it doesn't carry.
+         * **VIX via IB** (`Index("VIX", "CBOE")`): coverage 77% -> ~100% and real-time. Note the
+           header's caveat — this alone changes no firing rate, both `calm_market` legs were
+           already satisfied.
+         * **VIX term-structure inversion** (VIX vs VIX3M, or the front two VX futures): a real
+           regime marker with actual range, unlike the strategic-risk index. Check the
+           "Held for market data" section first — VX futures need an IB subscription; the
+           VIX/VIX3M index pair may not.
+         * **Credit spreads**: HYG vs LQD vs IEF as a Questrade-fetchable proxy (no new vendor, no
+           subscription, already in the cache pipeline). Widening high-yield spreads against a
+           calm VIX is the honest version of the complacency thesis the current index only gestures at.
+         * **Cross-asset correlation spike**: computed locally from cached daily returns — the top
+           eigenvalue's share of the correlation matrix, straight out of the RMT / MP-denoising
+           work on this branch (`9b9958f`). No vendor at all, and it measures the thing that
+           actually hurts a 5-name book: everything moving together.
+       Each new input needs coverage stats and a percentile distribution recorded before any
+       thesis is written on it, so step 2's gates have something to sit on.
+    4. **Score the layer before expanding it.** Nothing has ever measured whether a thesis trim
+       helped. Replay the corpus, tag each thesis ONSET (not each firing read — the de-duplicated
+       alert stream is what acts), and compare forward returns of that thesis's `THEME_EXEMPLARS`
+       against the no-thesis baseline over 1/5/20 days, net of costs, scored on `sortino_over_dd`
+       with Sortino, return and time in market beside it. State the sample honestly: one regime,
+       ~4 weeks, so this is a sanity check on sign and magnitude, not validation. If the trims
+       show no edge, the answer is fewer theses and a smaller trim, not more theses.
+
 - **Limit orders, so entries stop paying the full spread + slippage (added 2026-09-22, not
   started).** Today's paper cost breakdown: $214.36 of −$595.68 was "spread + slippage", which is
   the paper broker's flat model (mid + 5 bps per fill, on ~$429k traded). Limit orders are the real
@@ -555,20 +1451,63 @@ validation now catches that class of failure at launch.
     * The FX slice is blocked on the FX classification bug and on FX being dropped.
     * Confirmation filter: consider dropping `bullish_engulfing` on crypto (the gap criterion is a
       rounding artefact on continuous bars). Needs backtest evidence.
-- **Deep-history fetch for the crypto sleeve.** `_daily.parquet` exists only for BTC, ETH and PAXG.
-  Remaining priority: XMR, ZEC, LINK, then XRP, XLM, SOL, ADA, POL, UNI, AAVE
-  (`scripts/fetch_crypto_history.py --pair <WIRE> --since 2020 --max-pages 15000`). This takes
-  multiple hours per pair at ~1 req/s. An overnight scheduled run needs the user's consent first.
-  It unblocks crypto tiering (the 09-08 WF ran 11 of 13 pairs shallow) and the crypto calibration
-  cells.
-- **Kraken tick-level deepening on a schedule.** `scripts/deepen_kraken_trades.py` works (13 pairs
-  cached under `data/cache/kraken_trades/`). Proposed every 2h:
-  `--lookback-hours 6 --max-pages 30 --sleep 1.1`. **Ask before creating any scheduled task**; if
-  approved, commit the task definition to `scripts/`.
-- **Order-flow edges in the intel graph (design).** New predicates `flow_imbalanced`
-  (weight = `buy_vol_share − 0.5`) and `vwap_gap`, emitted by the same batch job (not the paper
-  loop). Fast decay (`half_life_hours≈24`, `hard_ttl_days=3`). No per-tick edges. Prototype behind
-  `--emit-edges` on `deepen_kraken_trades.py`.
+### Kraken data → graph → walk-forward → calibration (one chain, in order)
+
+Four steps that only pay off in sequence: the fetch feeds the graph and the walk-forward, and the
+walk-forward feeds the calibration. Doing 2–4 before step 1's data lands produces confident-looking
+numbers from a 12-day-stale cache. Both fetch scripts hit Kraken's ~1 req/s public tier, so they
+**must not run concurrently** — `scripts/kraken_interleave.py` (committed `b1cdabd`) serializes them.
+
+- **1. Fetch — IN PROGRESS 2026-09-23.**
+    * *Deep history* (daily bars, `fetch_crypto_history.py`): `_daily.parquet` existed only for
+      BTC, ETH, PAXG. XMR started 2026-09-23 (~2.5M trades in ~45 min; 15000-page cap ≈ 4.4h).
+      Remaining after it: ZEC, LINK, then XRP, XLM, SOL, ADA, POL, UNI, AAVE — **hours per pair**,
+      so ~days of wall-clock. Only runs while a session is alive; an unattended schedule needs the
+      user's consent first.
+    * *Tick deepening* (`deepen_kraken_trades.py`): one pass ran 2026-09-23 (12 pairs, 14.4 min,
+      `--max-pages 60`). That cap does NOT close the gap — the cache had been idle since 09-10, and
+      60k trades buys ~14h of BTC. After the pass: POL current, AAVE 2d behind, LINK/XMR ~5d,
+      ADA/XLM/UNI 7–8d, BTC/ETH/ZEC/SOL/XRP/PAXG 10–12.6d. So `trades_24h=0` and
+      `buy_vol_share=n/a` for 11 of 12 pairs in `reports/kraken_trade_intel.csv`. Each interleaved
+      pass moves every pair forward by ≤ `--tick-pages`×1000 trades; closing the gap needs several.
+      PAXG is frozen by design (left the traded sleeve 2026-09-23).
+    * **Done when:** every sleeve pair has a `_daily.parquet`, and the tick caches are < ~1 day
+      behind so a 24h microstructure window is actually populated.
+
+- **2. Wire the fetch output into the intel graph journal — NOT WIRED, design only.** Today neither
+  script imports `intel.graph`: deepening writes per-pair parquets + `reports/kraken_trade_intel.csv`,
+  the history fetch writes daily parquets, and **nothing reads that CSV** (a produced-but-unconsumed
+  artefact). Proposal, unchanged in shape: new predicates `flow_imbalanced`
+  (weight = `buy_vol_share − 0.5`) and `vwap_gap`, emitted by the batch job (never the paper loop),
+  one edge per pair per run — **no per-tick edges**, or a single pass would dwarf the ~10k-edge
+  journal. Prototype behind `--emit-edges` on `deepen_kraken_trades.py`.
+    * *Implementation notes gathered 2026-09-23:* `Predicate` in `intel/graph.py` is a `Literal`,
+      so both names must be added there **and** to `DEFAULT_POLICIES` — a predicate with no policy
+      is kept unchanged by `wash_edges` forever (that is why `traded` / `ranked_by` never prune).
+      Give them fast decay (`half_life_h≈24`, `ttl_h=72`) so stale flow can't linger. Subject/object
+      should be the existing `symbol` / `venue` node types, so the edges join the fill (`traded`)
+      records already in the journal.
+    * *Gate before emitting anything:* step 1 must be current. Emitting now would write `n/a`-derived
+      or 12-day-old flow as if it were today's.
+
+- **3. Walk-forward on the deepened data.** `scripts/walk_forward_crypto.py` reads the deep parquets
+  (2y train / 6mo test, per-fold re-opt; robust = WFE ≥ 0.5 AND positive OOS AND ≥ 10 OOS trades)
+  and writes `reports/walk_forward_crypto.csv`. The 09-08 run had 11 of 13 pairs shallow, so its
+  tiering is not evidence. Re-run per pair as each `_daily.parquet` lands; the script deliberately
+  does **not** flip the `tier` field in `CRYPTO_SLEEVE` — a human reads the report and edits
+  `universe.py`, so the sleeve isn't silently bound to the last Kraken pull.
+    * Open question worth answering with the fuller data: does the order-flow feature from step 2
+      add anything to a WF fold, or is it decoration? Test it as a feature, not as a live gate.
+
+- **4. Calibration / tuning of the crypto cells.** `scripts/calibration_sweep.py` sweeps Bollinger
+  `n_std`, ZScoreOU `entry_z` and RSI `oversold` on a class basket with the same WF harness, scored
+  on `sortino_over_dd`, writing `reports/calibration_sweep.{csv,md}`. Its crypto basket was limited
+  to whichever pairs had a deep cache, so the crypto cells rest on BTC/ETH/PAXG. Re-run once step 1
+  widens it. Carry the known follow-up: **RSI `oversold=35` won at the top edge of {20,25,30,35}
+  in both classes — extend the grid to {40,45}**, or the "winner" is just the boundary. The script
+  does not edit `analysis/calibration.py`; a human folds winners in.
+    * Standing rules that apply here: `sortino_over_dd` is primary (Sharpe is reference only);
+      data-first — one WF pass validates the protocol, promotion also needs the paper A/B.
 - **IB OAuth 1.0a for CP Gateway** (~4–6 hr). **Blocked on user setup**: consumer key, a
   **rotated** token plus its secret (see decision #1; the old value also sits in a session
   transcript under `.claude/projects/…/bac3334b-*.jsonl`), a local RSA-2048 signing key whose
@@ -673,6 +1612,52 @@ book launches and never trades. Revisit when the data exists.
     700.HK 100); trading.yaml `board_lots` still wins.
   * **Still open:** LSE ETFs list on `LSEETF`, but `.L` routes to `LSE`, so ISF.L / VUSA.L don't
     resolve (BP..L does). Tokyo needs a TSEJ market-data permission.
+
+- **Off-hours coverage — the four options (laid out 2026-09-22, UNDECIDED).** No IB book can trade
+  until live quotes exist; these are the ways forward, cheapest first. Recommendation: do 1, then
+  2 while deciding on 3, and buy the US futures bundle before any Asia equity data — nothing on
+  this route has been runtime-exercised yet, so paying for Asia equity data now buys untested
+  plumbing.
+    1. **Re-test the sharing (free, ~5 min).** IB applies shared market data at the next *paper
+       login*; neither 2026-09-21 probe followed a fresh login. Start TWS, log into paper, re-run
+       the scratchpad `ib_probe.py 7497`. Could clear everything except Tokyo.
+    2. **Run the books on daily bars instead of live quotes (free, small change).** Bars already
+       work for US / LSE / ASX / HK / all futures, and the strategies are daily-bar strategies —
+       only the *fill* needs a quote. Synthesize the fill from the last bar, marked stale, to
+       exercise routing, gates, lots, pence, rolls and session hopping end to end. Gives plumbing
+       evidence only: no honest fill price, no spread, so P&L means nothing.
+    3. **Buy the subscriptions.** The only path to real quotes. Highest value first: the **US
+       futures bundle** (CME/NYMEX/CBOT) — futures run ~23h, rolls are wired, the USD book is
+       ready. Tokyo needs one before even its bars work. ASX / LSE / HKEX are separate additions.
+       Prices are per-exchange monthly fees in Client Portal → Market Data Subscriptions (some
+       waived above a commission threshold); don't quote them from memory.
+    4. **Reconsider what actually covers the gap.** The goal is coverage outside Canadian hours.
+       Futures (~23h, USD) plus the existing 24/7 Kraken crypto book cover most of it for one
+       subscription. Asian/European *equities* add genuinely different exposure but cost the most
+       and carry the most unfinished work (Tokyo permissions, LSEETF routing, per-name lots).
+
+- **Options (the instrument) — NOT WIRED, scoped 2026-09-22.** `brokers/ib.py`'s header advertises
+  "equity and index options with the full Greeks surface"; what exists is contract *construction*
+  only. Concretely:
+    * **Exists:** `IBContract(sec_type="option", strike=…, right="C"/"P", expiry=…, multiplier=…)`
+      builds an `ib_insync.Option` via `_to_ib_contract`, reachable through `quote_contract()` and
+      `place_algo_order()` — both IBContract-level, outside the symbol-string `Broker` protocol.
+      `scripts/probe_ib_data.py` names chain resolution (`/iserver/secdef/strikes` + `/info`) on
+      the Web API, but no adapter method implements a chain walk.
+    * **Missing before an option could ever be a position:** (a) a symbol grammar — `venues.py`
+      reads `/ROOT` as a future and `BASE/QUOTE` as crypto, everything else as an equity, so an
+      option can't be named in `--symbols`; (b) no chain/expiry/strike selection anywhere;
+      (c) `Quote` carries no IV or Greeks fields, so nothing can price or hedge one; (d) the
+      contract multiplier reaches the book only through `CurrencyNormalizingBroker.multiplier_for`
+      (futures path) — `PaperBroker` otherwise fills shares × price, so a 100-multiplier contract
+      would book at 1/100 of its real notional; (e) sizing/risk is ATR-on-the-underlying
+      fixed-fractional — premium-at-risk, delta and assignment have no representation, and the
+      heat/kill-switch math would read premium as notional.
+    * **If it's ever wanted, the honest order is:** decide the use (covered calls / protective puts
+      on existing equity exposure vs directional vs vol) → symbol grammar + chain resolution →
+      multiplier through the paper fill path → Greeks on the quote model → an options-aware sizer
+      → only then a paper book. Needs an options market-data subscription too (OPRA for US).
+      Treat as a project, not a flag.
 - **Exchange hopping, levels 2–4 — HELD (decided 2026-09-16).** Not abandoned: IB stays in the
   stack, and these levels resume once market-data access exists. *(Superseded 2026-09-21 by the
   entry above for per-currency books; L3 multi-currency and L4 remain held.)*
@@ -919,7 +1904,12 @@ the blocker.
 the S3 DS peripheral). No power path or enclosure. No display or input sourcing decision. No RF
 certification or antenna choice.
 
-**Firmware:** the LCD is only a UART mirror (no font/framebuffer); no TLS on card↔shim; no deep
+**Firmware:** the LCD now renders text — `main/font5x7.h` (5×7, ASCII 0x20–0x7E) plus a real
+`lcd_puts_ex` painting into `s_fb`, inverse-video rows, a 14-column prompt layout with one
+signed field per row, a fixed-deadline countdown, a panning thesis, a passbook empty state and
+boot status screens (2026-09-23). **Code-complete, NOT compiled** — no ESP-IDF on the box; the
+font and layouts were verified by porting the renderer to a host harness and rendering the real
+canonical strings from session `24a7fd7f`. `idf.py build` is still the gate. Remaining: no TLS on card↔shim; no deep
 sleep; no CENTER detail view (`GET /intel/{ref}` isn't called); trust-on-first-use pairing; no OTA;
 no factory reset; no fault UI; no passbook search; no long-press handling. Firmware changes from
 2026-09-13 aren't compiled yet (`idf.py build`).

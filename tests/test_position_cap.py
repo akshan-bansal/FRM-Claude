@@ -14,6 +14,7 @@ from trading_live_claude.risk.position_cap import (
     RealizedVolatility,
     VolScaledPositionCap,
     annualised_vol,
+    position_cap_for,
 )
 
 
@@ -137,3 +138,35 @@ def test_unreadable_positions_refuse_entries_but_not_exits(tmp_path: Path) -> No
                               stop=101.0, target=None, strategy="t", risk_dollars=10.0,
                               account_number="PAPER-001")
     assert router._gate(exit_intent, equity=100_000, existing_risk=0, open_positions=1).accepted
+
+
+# ---- the flat cap is the global ceiling (2026-09-23) --------------------------------------------
+
+def test_router_clamps_a_dynamic_cap_to_the_flat_per_symbol_cap(tmp_path: Path) -> None:
+    """A vol-scaled rule may tighten the house limit, never exceed it."""
+    _paper, router = _paper_router(tmp_path, cap_for=lambda _s: 0.75)   # rule wants 75%
+    assert router.max_position_notional_pct == 0.50
+    assert router._position_cap_pct("AAA") == pytest.approx(0.50)
+    big = _buy("AAA", 620)                                             # 62% of 100k at $100
+    assert router._gate(big, equity=100_000, existing_risk=0, open_positions=0).accepted
+    assert big.shares == 500                                           # trimmed to the 50% ceiling
+
+
+def test_router_still_honours_a_tighter_dynamic_cap(tmp_path: Path) -> None:
+    _paper, router = _paper_router(tmp_path, cap_for=lambda _s: 0.10)
+    assert router._position_cap_pct("AAA") == pytest.approx(0.10)       # clamp only bites upward
+
+
+def test_position_cap_for_clamps_a_configured_ceiling_above_the_flat_cap() -> None:
+    class _S:
+        position_cap_mode = "vol_scaled"
+        max_position_notional_pct = 0.50
+        position_cap_ref_vol = 0.20
+        position_cap_floor_pct = 0.05
+        position_cap_ceiling_pct = 0.75                                # the shipped default
+
+    rule = position_cap_for(_S(), _Market())
+    assert rule is not None
+    assert rule.ceiling_pct == pytest.approx(0.50)                      # type: ignore[attr-defined]
+    rule.vol_for = lambda _s: 0.02                                      # type: ignore[attr-defined]
+    assert rule("CALM") == pytest.approx(0.50)                          # no longer 0.75

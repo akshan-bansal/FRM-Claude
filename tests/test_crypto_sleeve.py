@@ -49,9 +49,12 @@ class _StubBroker:
 
 def test_crypto_sleeve_is_well_formed() -> None:
     assert set(crypto_sleeve_symbols()) == {
-        "BTC/USD", "PAXG/USD", "XMR/USD", "XRP/USD", "XLM/USD", "LINK/USD", "ETH/USD",
+        "BTC/USD", "XMR/USD", "XRP/USD", "XLM/USD", "LINK/USD", "ETH/USD",
         "SOL/USD", "ADA/USD", "POL/USD", "UNI/USD", "AAVE/USD", "ZEC/USD",
     }
+    # PAXG/USD was dropped from the traded sleeve on 2026-09-23 (user decision); it stays a
+    # safe-haven exemplar for the intel overlay, which is not a trading list.
+    assert "PAXG/USD" not in CRYPTO_SLEEVE
     for sym, e in CRYPTO_SLEEVE.items():
         assert e.symbol == sym and "/" in sym
         assert e.pair.endswith("USD")

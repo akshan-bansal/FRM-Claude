@@ -1,6 +1,9 @@
 """Volatility-scaled per-name notional cap: every name gets about the same annualised risk budget.
 
-``cap = base_pct x ref_vol / vol``, clipped to ``[floor_pct, ceiling_pct]``. A name at ``ref_vol``
+``cap = base_pct x ref_vol / vol``, clipped to ``[floor_pct, ceiling_pct]``. The class itself
+applies whatever bounds it is given; the policy that ``ceiling_pct`` may never exceed the flat
+``max_position_notional_pct`` lives in :func:`position_cap_for` and in
+``Router._position_cap_pct``, so the house limit binds even for a caller that builds its own rule. A name at ``ref_vol``
 gets ``base_pct`` of equity; twice as volatile, half the notional. ``vol`` is the higher of short- and
 long-window realised volatility, so a volatility spike tightens the cap at once. Unknown volatility
 gets ``floor_pct``: the cap only loosens on evidence.
@@ -81,10 +84,19 @@ def position_cap_for(settings: object, market: _Market) -> Callable[[str], float
     """The per-name cap the paper entry points use, per ``position_cap_mode`` in trading.yaml."""
     if getattr(settings, "position_cap_mode", "static") != "vol_scaled":
         return None
+    base = float(settings.max_position_notional_pct)          # type: ignore[attr-defined]
+    ceiling = float(settings.position_cap_ceiling_pct)        # type: ignore[attr-defined]
+    if ceiling > base:
+        # The flat per-symbol cap is the global ceiling; a dynamic rule may only tighten it.
+        # Clamped here as well as in Router._position_cap_pct so the configured and the enforced
+        # cap agree, and the operator sees the discrepancy in the log instead of in a fill.
+        log.warning("position_cap.ceiling_clamped", configured=ceiling, clamped_to=base,
+                    reason="position_cap_ceiling_pct above max_position_notional_pct")
+        ceiling = base
     return VolScaledPositionCap(
         RealizedVolatility(market),
-        base_pct=settings.max_position_notional_pct,          # type: ignore[attr-defined]
+        base_pct=base,
         ref_vol=settings.position_cap_ref_vol,                # type: ignore[attr-defined]
         floor_pct=settings.position_cap_floor_pct,            # type: ignore[attr-defined]
-        ceiling_pct=settings.position_cap_ceiling_pct,        # type: ignore[attr-defined]
+        ceiling_pct=ceiling,
     )

@@ -503,10 +503,13 @@ class CryptoSleeveEntry:
 # validated or cleared for live capital until deeper history lets it clear the walk-forward gate.
 CRYPTO_SLEEVE: dict[str, CryptoSleeveEntry] = {
     "BTC/USD": CryptoSleeveEntry("BTC/USD", "XBTUSD", "macd", 2.59, {"fast": 16, "slow": 34}),
-    # PAXG (Pax Gold) is a tokenized-gold token — it tracks physical gold, so it has the lowest
-    # volatility (0.25) in the crypto universe and diversifies the sleeve away from crypto beta
-    # (the on-Kraken analog of the equity pool's CGL.TO). Surfaced by the widened 638-pair search.
-    "PAXG/USD": CryptoSleeveEntry("PAXG/USD", "PAXGUSD", "ts_momentum", 2.55, {"lookback": 90, "threshold": 0.0}),
+    # PAXG/USD (tokenized gold) — DROPPED from the traded sleeve 2026-09-23 by user decision: the
+    # gold move it was meant to diversify into has already happened, so it was carrying position
+    # cost without the diversification case that justified it. It remains a safe-haven exemplar in
+    # intel.interpret.THEME_EXEMPLARS (that list is for risk overlays, not for trading) and Kraken
+    # still maps the pair, so re-adding it is one line:
+    #   "PAXG/USD": CryptoSleeveEntry("PAXG/USD", "PAXGUSD", "ts_momentum", 2.55,
+    #                                 {"lookback": 90, "threshold": 0.0}),
     "XMR/USD": CryptoSleeveEntry("XMR/USD", "XMRUSD", "macd", 1.66, {"fast": 16, "slow": 34}),
     "XRP/USD": CryptoSleeveEntry("XRP/USD", "XRPUSD", "bollinger", 1.43, {}),
     "XLM/USD": CryptoSleeveEntry("XLM/USD", "XLMUSD", "bollinger", 1.01, {}),

@@ -22,6 +22,7 @@ import contextlib
 import signal
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Windows console defaults to cp1252, which crashes on structlog's unicode output when an
@@ -36,6 +37,7 @@ if sys.platform == "win32":
         pass
 
 from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
+from trading_live_claude.audit import Ledger
 from trading_live_claude.brokers.fresh import guard_feed
 from trading_live_claude.brokers.kraken import KrakenBroker
 from trading_live_claude.brokers.paper import PaperBroker
@@ -44,6 +46,7 @@ from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.kraken_ohlc import kraken_ohlc
 from trading_live_claude.data.market import MarketData
 from trading_live_claude.execution.approval import wire_card_approval
+from trading_live_claude.execution.approval_asgi import BookRef
 from trading_live_claude.execution.router import Router
 from trading_live_claude.intel.apply import OverlaidBias
 from trading_live_claude.intel.interpret import interpret
@@ -109,8 +112,15 @@ def main() -> None:
     ap.add_argument("--require-card", dest="require_card", action="store_true",
                     help="Route every accepted intent through the ApprovalRouter — a physical "
                          "TradeCard (or scripts/approval_card_sim.py) must ACCEPT before the "
-                         "order is dispatched. Boots the approval shim on --card-shim-port.")
+                         "order is dispatched. Boots the approval shim on --card-shim-port, "
+                         "which also serves the desk panel at /desk so this running session "
+                         "feeds it live.")
+    ap.add_argument("--card-shim-host", default="127.0.0.1",
+                    help="Interface the approval shim binds. Loopback by default; set a LAN "
+                         "address deliberately to reach the card or the desk panel from a device.")
     ap.add_argument("--card-shim-port", type=int, default=8787)
+    ap.add_argument("--card-attach", dest="card_attach", action="store_true",
+                    help='Wrap the router for card approval but do NOT bind a port: attach to a shim already running on state/approval.db (scripts/approval_shim.py --db ...). This is how QT, Kraken and IB share one port and one token instead of colliding on 8787.')
     ap.add_argument("--card-ttl", type=float, default=90.0,
                     help="Seconds a card prompt stays live before it auto-EXPIRES.")
     ap.add_argument("--iterations", type=int, default=0,
@@ -132,6 +142,12 @@ def main() -> None:
                          "in a foreground terminal also works. Exits pass the risk gate like any "
                          "other intent, so a residual below min-ticket or a tripped kill-switch "
                          "will refuse to close and is reported loudly.")
+    ap.add_argument("--audit-ledger", dest="audit_ledger",
+                    default=True, action=argparse.BooleanOptionalAction,
+                    help="Write the hash-chained audit ledger under state/ledger/ alongside the "
+                         "existing journals (AUDIT_LEDGER_SCOPE.md). ON by default; it is additive "
+                         "and a write failure is logged rather than raised, so it cannot stop a "
+                         "session.")
     ap.add_argument("--warmup-interval", type=int, default=0,
                     help="Poll every N seconds for the first --warmup-minutes after launch, then "
                          "fall back to --interval in the same process (no restart, no flatten). "
@@ -144,6 +160,17 @@ def main() -> None:
                          "share of the leverage headroom, per-symbol cap) before routing any of "
                          "them, instead of first-come in watchlist order. ON by default. The "
                          "Router still gates every intent.")
+    ap.add_argument("--close-symbols", default="",
+                    help="Comma-separated symbols to CLOSE in full at startup, through the Router "
+                         "and into this session's journals (so --resume-session replays a book "
+                         "without them). For dropping a name from the sleeve: a symbol removed "
+                         "from the watchlist is never evaluated again, so its position would "
+                         "otherwise have no exit path. One-shot; leave it off the standing command.")
+    ap.add_argument("--max-cost-ratio", type=float, default=0.0,
+                    help="Cost-aware size floor: reject an ENTRY whose round-trip cost exceeds this "
+                         "fraction of its notional, priced per venue (execution/venue_costs.py). "
+                         "0 = off. NOTE Kraken's taker fee alone is ~52 bps round trip, so a 0.005 "
+                         "ceiling fits at no size; use ~0.02 here if you want a floor at all.")
     ap.add_argument("--mute-alerts", default="",
                     help="Comma-separated symbols whose alerts are muted (still traded and "
                          "journaled).")
@@ -194,33 +221,102 @@ def main() -> None:
     print(format_validation_banner(_validations), flush=True)
     refuse_launch_on_hard_failures(_validations)
 
+    # Audit ledger (AUDIT_LEDGER_SCOPE.md phase 3): hash-chained record of the order path, written
+    # beside the existing journals, one stream per book so concurrent books can't corrupt each
+    # other's chain. Non-strict, so a ledger write failure can never break a trade.
+    ledger = None
+    if args.audit_ledger:
+        ledger = Ledger(Path(settings.state_dir) / "ledger", stream="kraken", mode="paper",
+                        session_id=exec_broker.session_id)
+        print(f"[kraken-paper] audit ledger ON -> {ledger.path_for(datetime.now(UTC)).name} "
+              f"(verify: python scripts/verify_ledger.py --stream kraken)", flush=True)
+
     router = Router.build_default(
         mode="paper",
         broker=exec_broker,
         state_dir=settings.state_dir,
+        ledger=ledger,
         cap_pct=settings.portfolio_heat_cap,
         max_drawdown_pct=settings.max_drawdown_kill_switch,
         daily_loss_limit_pct=settings.daily_loss_limit_pct,
         max_open_positions=settings.max_open_positions,
+        max_round_trip_cost_ratio=args.max_cost_ratio,
         min_ticket_usd=settings.min_ticket_usd,
     )
 
     if args.require_card:
         _engine = VSInvestmentEngine()
+
         def _thesis(intent, broker):
-            return _engine.explain(intent, broker=broker, market=MarketContext())
+            # Late-bound on purpose: `overlay_for` is assigned further down, before the monitor
+            # loop starts, so it is always set by the time an intent is routed through here.
+            # Fixed 2026-09-24: this used to call explain() with a bare MarketContext() and no
+            # overlay at all, so every writeup in state/intel_writeups/ persisted with
+            # `overlay_snapshot: {}`, `market_context: {}` and `warnings: []` — 19 of 19 empty.
+            # The engine was always able to fill them; the call site simply never passed the data
+            # this script already holds.
+            snap = getattr(overlay_for, "last_snapshot", None) if overlay_for else None
+            dec = overlay_for(intent.symbol) if overlay_for else None
+            # r_multiple is derivable from the intent itself (target/risk), so it costs nothing.
+            # The remaining MarketContext fields need `score`/`rank` columns out of
+            # generate_signals, which no strategy emits yet — see NEXT_SESSION section 11.
+            r_mult = None
+            try:
+                risk = abs(intent.entry - intent.stop)
+                if risk > 0 and intent.target:
+                    r_mult = round(abs(intent.target - intent.entry) / risk, 2)
+            except (AttributeError, TypeError):
+                pass
+            # The same rows the Telegram entry alert prints under "Sizing chain", built from state
+            # this script already holds. Late-bound like `overlay_for`: `monitor`, `bias_map` and
+            # `interpret_for` are assigned below, before the loop starts. Strategy-vol is left out
+            # because it is computed per poll inside the monitor, not held here.
+            chain = [f"Order size: {intent.shares:g} units (notional ~${intent.shares * intent.entry:,.0f})"]
+            if dec is not None:
+                if dec.scalar < 1.0:
+                    chain.append(f"OSINT overlay ({dec.asset_class}): x{dec.scalar:.3f} - live intel de-risking this class"
+                                 + (f" ({'; '.join(dec.reasons)})" if dec.reasons else ""))
+                if dec.halt_new_entries:
+                    chain.append(f"HALT: overlay stood {dec.asset_class} down")
+            try:
+                ib, theses = monitor._interpret_bias(intent.symbol)
+                if ib < 1.0:
+                    chain.append(f"Interpret bias: x{ib:.3f} - theses implicating this symbol: "
+                                 f"{', '.join(theses) or '(unnamed)'}")
+            except Exception:  # advisory rows only; never block the prompt
+                pass
+            wb = bias_map.get(intent.symbol, 1.0)
+            if wb != 1.0:
+                chain.append(f"Allocator weight: x{wb:.2f} ({'boost' if wb > 1 else 'trim'})")
+            return _engine.explain(
+                intent, broker=broker,
+                market=MarketContext(r_multiple=r_mult),
+                overlay_snapshot=snap,
+                overlay_decisions=[dec] if dec else None,
+                sizing_chain=chain,
+            )
         _card_db = Path(settings.state_dir) / "approval.db"
         _wiring = wire_card_approval(
             router,
-            shim_host="127.0.0.1",
+            shim_host=args.card_shim_host,
             shim_port=args.card_shim_port,
             ttl_seconds=args.card_ttl,
             thesis_fn=_thesis,
             db_path=_card_db,
+            state_dir=Path(settings.state_dir),
+            session_id=exec_broker.session_id,
+            account_currency=settings.account_currency,
+            start_shim=not args.card_attach,
+            books=None if args.card_attach else [BookRef(
+                venue=getattr(exec_broker, "venue", "kraken"),
+                session_id=exec_broker.session_id,
+                currency=settings.account_currency, asset_class="crypto")],
         )
         router = _wiring.router
         print(f"[kraken-paper] --require-card ON — approval shim at {_wiring.shim_url}.",
               flush=True)
+        print(f"[kraken-paper] desk panel LIVE at {_wiring.desk_url} — it reads this session's "
+              f"approval store over /v1; unlock it with the token below.", flush=True)
         print(f"[kraken-paper] card auth token: {_wiring.auth_token}", flush=True)
         print("[kraken-paper] Pair the card by passing the token as "
               "Authorization: Bearer <token> on every request.", flush=True)
@@ -373,8 +469,19 @@ def main() -> None:
         parallel_sizing=args.parallel_sizing,
         mute_symbols={s.strip().upper() for s in args.mute_alerts.split(",") if s.strip()},
     )
+    if args.max_cost_ratio > 0:
+        _cm = router.cost_model if hasattr(router, "cost_model") else getattr(router, "inner", router).cost_model
+        print(f"[kraken-paper] cost floor ON: entries need round-trip cost <= "
+              f"{args.max_cost_ratio:.2%} of notional on {_cm.venue} "
+              f"(one side of a $1,000 ticket costs ${_cm.cost_for(shares=1000/10.0, price=10.0):.2f}).",
+              flush=True)
     print(f"[kraken-paper] sizing: {'parallel (joint allocation per poll)' if args.parallel_sizing else 'sequential'}.",
           flush=True)
+    _close = [s.strip().upper() for s in args.close_symbols.split(",") if s.strip()]
+    if _close:
+        for _r in monitor.close_symbols(_close):
+            print(f"[kraken-paper] close {_r['symbol']}: {_r['qty']:g} @ {_r.get('price', 0):.4f} "
+                  f"{'ACCEPTED' if _r['accepted'] else 'NOT CLOSED — ' + str(_r['reason'])}", flush=True)
     if args.warmup_interval:
         print(f"[kraken-paper] warm-up: polling every {min(args.warmup_interval, args.interval)}s "
               f"for {args.warmup_minutes:g} min, then every {args.interval}s.", flush=True)

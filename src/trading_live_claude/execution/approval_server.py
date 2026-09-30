@@ -12,14 +12,13 @@ coroutine on a fresh event loop inside the thread.
 from __future__ import annotations
 
 import asyncio
-import secrets
 import sys
 import threading
 from pathlib import Path
 
 from ..intel.vs_engine import DEFAULT_WRITEUP_DIR
 from .approval import CardRegistry, InMemoryApprovalStore
-from .approval_asgi import create_app, mint_auth_token  # noqa: F401 (re-export)
+from .approval_asgi import BookRef, create_app, mint_auth_token  # noqa: F401 (re-export)
 
 
 def run_shim(
@@ -30,6 +29,11 @@ def run_shim(
     port: int = 8787,
     writeup_dir: Path = DEFAULT_WRITEUP_DIR,
     auth_token: str | None = None,
+    desk_page: Path | None = None,   # built desk panel served at /desk
+    state_dir: Path | None = None,   # journals the panel reads equity and meters from
+    session_id: str | None = None,   # the book this shim reports on
+    account_currency: str = "USD",
+    books: list[BookRef] | None = None,   # several books on one port
     journal=None,                # Optional OrderJournal for metrics
     router=None,                 # Optional Router for metrics
 ) -> None:
@@ -37,7 +41,8 @@ def run_shim(
     import uvicorn
     app = create_app(store, registry,
                      writeup_dir=writeup_dir, auth_token=auth_token,
-                     journal=journal, router=router)
+                     desk_page=desk_page, state_dir=state_dir, session_id=session_id,
+                     account_currency=account_currency, books=books, journal=journal, router=router)
     sys.stderr.write(
         f"approval shim listening on http://{host}:{port}"
         f"{' (auth required)' if auth_token else ' (OPEN — loopback only)'}\n"
@@ -53,6 +58,11 @@ def start_shim_thread(
     port: int,
     writeup_dir: Path | None = None,
     auth_token: str | None = None,
+    desk_page: Path | None = None,   # built desk panel served at /desk
+    state_dir: Path | None = None,   # journals the panel reads equity and meters from
+    session_id: str | None = None,   # the book this shim is attached to
+    account_currency: str = "USD",
+    books: list[BookRef] | None = None,
     journal=None,                # Optional OrderJournal for metrics
     router=None,                 # Optional Router for metrics
 ) -> threading.Thread:
@@ -66,7 +76,8 @@ def start_shim_thread(
     import uvicorn
     resolved = writeup_dir if writeup_dir is not None else DEFAULT_WRITEUP_DIR
     app = create_app(store, registry, writeup_dir=resolved, auth_token=auth_token,
-                     journal=journal, router=router)
+                     desk_page=desk_page, state_dir=state_dir, session_id=session_id,
+                     account_currency=account_currency, books=books, journal=journal, router=router)
     config = uvicorn.Config(app, host=host, port=port,
                             log_level="warning", access_log=False,
                             lifespan="off")
