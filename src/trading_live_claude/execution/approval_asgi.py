@@ -33,6 +33,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import socket
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -297,6 +298,13 @@ class ConvictionMatrixBody(BaseModel):
 # app factory                                                                 #
 # --------------------------------------------------------------------------- #
 
+class BasketAsk(BaseModel):
+    """A venue and the symbols a human typed for it."""
+    model_config = ConfigDict(extra="forbid")
+    venue: Literal["kraken", "qt", "ib"]
+    symbols: list[str] = Field(min_length=1, max_length=60)
+
+
 def create_app(
     store,                       # InMemoryApprovalStore | SqliteApprovalStore
     registry,                    # CardRegistry | SqliteCardRegistry
@@ -518,6 +526,127 @@ def create_app(
             raise HTTPException(500, f"unreadable writeup: {e}") from e
 
     # ------------------------------------------------------------------ #
+    # baskets: choose, analyse, propose. The card signs; the panel never does. #
+    # ------------------------------------------------------------------ #
+
+    def _basket_files():
+        if state_dir is None:
+            raise HTTPException(503, "this shim has no state dir, so it cannot read or write baskets")
+        return Path(state_dir) / "baskets.jsonl", Path(state_dir) / "basket_proposals.jsonl"
+
+    def _analyse(ask: BasketAsk) -> dict:
+        """Run the engines over the typed symbols. Daily closes come only from Kraken's public OHLC,
+        for pairs the crypto sleeve maps; every other venue's symbols report no statistics."""
+        import pandas as pd
+
+        from ..analysis.basket_report import build_report
+        from ..analysis.universe import CRYPTO_SLEEVE
+        from ..data.kraken_ohlc import kraken_ohlc
+        from .basket import normalize
+        syms = list(normalize(ask.symbols))
+        closes: dict = {}
+        fetch_errors: dict[str, str] = {}
+        if ask.venue == "kraken":
+            for sym in syms:
+                entry = CRYPTO_SLEEVE.get(sym)
+                if entry is None:
+                    fetch_errors[sym] = "no Kraken pair mapping in the crypto sleeve"
+                    continue
+                try:
+                    df = kraken_ohlc(entry.pair, interval=1440, timeout=10.0)
+                    closes[sym] = pd.Series(df["close"].astype(float).values)
+                except Exception as e:  # network/API: report, never invent
+                    fetch_errors[sym] = f"Kraken OHLC failed: {e}"
+        snapshot = None
+        decisions: dict = {}
+        journal = Path(state_dir) / "intel_overlay.jsonl" if state_dir else None
+        if journal and journal.exists():
+            from ..intel.overlay import IntelSnapshot
+            lines = [ln for ln in journal.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if lines:
+                row = json.loads(lines[-1])
+                snapshot = IntelSnapshot(**row["snapshot"])
+                decisions = row.get("decisions") or {}
+        try:
+            seed = json.loads(Path("config/basket_seed.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            seed = {}
+        rep = build_report(ask.venue, syms, closes=closes, snapshot=snapshot, overlay_decisions=decisions,
+                           asset_class_of=None,
+                           launch_map=seed.get("strategy_map", {}).get(ask.venue),
+                           fallback_strategy=seed.get("fallback_strategy", {}).get(ask.venue))
+        rep["fetch_errors"] = fetch_errors
+        rep["generated_at"] = datetime.now().astimezone().isoformat()
+        return rep
+
+    @app.get("/v1/basket", dependencies=[Auth], tags=["basket"])
+    def get_baskets():
+        from .basket import BasketBook, pending_proposals, registry_verifier
+        bpath, ppath = _basket_files()
+        book = BasketBook(bpath, registry_verifier(Path(state_dir) / "approval.db"))
+        venues = {}
+        for v in ("kraken", "qt", "ib"):
+            ap = book.approved(v)
+            venues[v] = None if ap is None else {"symbols": sorted(ap.symbols), "issued_at": ap.issued_at,
+                                                 "card_id": ap.card_id, "analysis_hash": ap.analysis_hash}
+        return {"venues": venues, "rejected_rows": book.rejected_rows,
+                "proposals": [{k: p[k] for k in ("id", "venue", "symbols", "issued_at", "fingerprint",
+                                                  "analysis_hash")} for p in pending_proposals(ppath)]}
+
+    @app.post("/v1/basket/analyze", dependencies=[Auth], tags=["basket"])
+    def post_basket_analyze(ask: BasketAsk):
+        _basket_files()
+        return _analyse(ask)
+
+    @app.post("/v1/basket/propose", dependencies=[Auth], tags=["basket"])
+    def post_basket_propose(ask: BasketAsk):
+        """Analyse, then queue the basket for the card. Nothing is approved by this call: the card
+        must sign the fingerprint returned here, via scripts/basket.py on the simulated card."""
+        from .basket import append_proposal, make_proposal
+        _, ppath = _basket_files()
+        rep = _analyse(ask)
+        refused = [r["symbol"] for r in rep["rows"] if r["policy_refusal"]]
+        if refused:
+            raise HTTPException(422, f"venue policy refuses: {', '.join(refused)}")
+        prop = make_proposal(venue=ask.venue, symbols=ask.symbols, analysis=rep)
+        append_proposal(prop, ppath)
+        return {k: prop[k] for k in ("id", "venue", "symbols", "issued_at", "fingerprint", "analysis_hash")}
+
+    # ------------------------------------------------------------------ #
+    # IB access: which of IB's listening ports answer right now          #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/v1/ib/access", dependencies=[Auth], tags=["ib"])
+    def get_ib_access():
+        """TCP-probe the ports an IB login opens, measured at request time.
+
+        A connect only shows that something is listening; it says nothing about whether the login
+        is the right account, has market-data permissions, or has the API enabled. The panel says
+        so. No credential is read, sent or stored, and nothing is ordered.
+        """
+        from ..config.settings import get_settings
+        cfg = get_settings()
+        host = cfg.ib_host
+        targets = [
+            ("TWS paper (socket API)", host, 7497, "paper_trading_workstation"),
+            ("TWS live (socket API)", host, 7496, "live_trading_workstation"),
+            ("IB Gateway paper (socket API)", host, 4002, "paper_gateway"),
+            ("IB Gateway live (socket API)", host, 4001, "live_gateway"),
+            ("Client Portal Gateway (web API)", cfg.ib_web_host, cfg.ib_web_port, "client_portal"),
+        ]
+        rows = []
+        for label, h, port, key in targets:
+            try:
+                with socket.create_connection((h, port), timeout=0.6):
+                    up = True
+            except OSError:
+                up = False
+            rows.append({"key": key, "label": label, "host": h, "port": port, "listening": up})
+        return {"checked_at": datetime.now().astimezone().isoformat(),
+                "configured_socket_port": cfg.ib_paper_port if cfg.ib_use_paper else None,
+                "ports": rows}
+
+    # ------------------------------------------------------------------ #
     # operational intelligence (BI dashboard)                            #
     # ------------------------------------------------------------------ #
 
@@ -702,15 +831,15 @@ def create_app(
         shell = (
             "<!doctype html><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>TradeCard Desk</title>"
+            "<title>QuantPort.io</title>"
             "<style>body{margin:0;height:100vh;display:grid;place-items:center;background:#0b1417;"
             "color:#e6eef0;font:13px ui-monospace,Menlo,monospace}"
             "form{display:none;gap:8px;margin-top:14px}form.on{display:flex}"
             "input,button{font:inherit;color:#e6eef0;background:#172c35;border:1px solid #213d48;"
             "border-radius:2px;padding:8px 10px}button{cursor:pointer}"
             "p{color:#7d99a3;letter-spacing:.1em}</style>"
-            "<main><div style='letter-spacing:.14em'>TRADE<span style='color:#3fb8c4'>CARD</span>"
-            " DESK</div><p id=msg>CONNECTING TO THE SHIM…</p>"
+            "<main><div style='letter-spacing:.14em'>QUANTPORT<span style='color:#3fb8c4'>.IO</span>"
+            "</div><p id=msg>CONNECTING TO THE SHIM…</p>"
             "<form id=f><input id=t type=password placeholder='shim token' autocomplete='off'>"
             "<button>UNLOCK</button></form></main>"
             # Scoped: document.write hands the document to the built page but keeps this Window,

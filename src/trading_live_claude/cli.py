@@ -337,6 +337,12 @@ def signal(
              "start if the journals disagree. Pair with --no-flatten-on-exit on the session you "
              "stop for a restart.",
     ),
+    require_basket: bool | None = typer.Option(
+        None, "--require-basket/--no-require-basket",
+        help="PAPER. Gate ENTRIES on a card-signed basket for the qt venue (scripts/basket.py). "
+             "Default: on whenever --require-card is on, off otherwise. A session launched before "
+             "baskets existed is not gated until it is restarted.",
+    ),
     require_card: bool = typer.Option(
         False, "--require-card/--no-require-card",
         help="PAPER ONLY. Put a physical (or simulated) approval card between the risk gate and the "
@@ -491,6 +497,11 @@ def signal(
         position_cap_pct_for=position_cap_for(settings, market) if paper else None,
         ledger=ledger,
     )
+    from .execution.basket import attach_basket_gate
+    if attach_basket_gate(router, "qt", Path(settings.state_dir),
+                          enabled=require_card if require_basket is None else require_basket):
+        console.print("[dim]basket gate ON: entries need a card-signed qt basket "
+                      "(python scripts/basket.py status).[/dim]")
     if max_cost_ratio > 0:
         console.print(f"[dim]cost floor ON: entries need round-trip cost <= {max_cost_ratio:.2%} of "
                       f"notional on {router.cost_model.venue} "

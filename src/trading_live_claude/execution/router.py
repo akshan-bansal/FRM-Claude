@@ -35,6 +35,7 @@ from ..logging_setup import get_logger
 from ..risk.heat import PortfolioHeat
 from ..risk.kill_switch import KillSwitch
 from ..risk.quantity import QuantityRule, whole_units
+from .basket import BasketGate
 from .daily_budget import DailyBudget
 from .journal import OrderJournal
 
@@ -145,6 +146,11 @@ class Router:
         # ledger is the richer record (chained, one identity per intent); the journals stay the
         # operational read path until the projection in phase 7 replaces them.
         self.ledger = ledger
+        # Card-signed basket gate (execution/basket.py). None = not enforced, which is how every
+        # session that predates baskets keeps running until it is restarted with one. Set by the
+        # launch scripts after construction; when set, an ENTRY outside the signed basket, or on a
+        # venue with no valid signed basket, is rejected. Exits are never gated by it.
+        self.basket_gate: BasketGate | None = None
         # Resolver name -> strategy version, for intents that don't carry their own. LiveMonitor
         # installs one built from its actual strategy instances (so parameters are reflected).
         self.strategy_version_for: Callable[[str], str] | None = None
@@ -376,6 +382,12 @@ class Router:
         # 5. open positions cap (only for entries)
         if intent.action == OrderAction.BUY and open_positions >= self.max_open_positions:
             reasons.append(f"open positions {open_positions} >= cap {self.max_open_positions}")
+
+        # 5b. card-signed basket (additional gate; entries only, exits always pass)
+        if intent.action == OrderAction.BUY and self.basket_gate is not None:
+            basket_reason = self.basket_gate.check_entry(intent.symbol)
+            if basket_reason:
+                reasons.append(basket_reason)
 
         # 6. portfolio heat
         snap = self.heat.snapshot(equity=equity, open_risk_dollars=existing_risk + intent.risk_dollars)

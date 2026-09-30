@@ -121,6 +121,11 @@ def main() -> None:
     ap.add_argument("--card-shim-port", type=int, default=8787)
     ap.add_argument("--card-attach", dest="card_attach", action="store_true",
                     help='Wrap the router for card approval but do NOT bind a port: attach to a shim already running on state/approval.db (scripts/approval_shim.py --db ...). This is how QT, Kraken and IB share one port and one token instead of colliding on 8787.')
+    ap.add_argument("--require-basket", dest="require_basket", action=argparse.BooleanOptionalAction,
+                    default=None,
+                    help="Gate ENTRIES on a card-signed basket for this venue (scripts/basket.py). "
+                         "Default: on whenever --require-card is on, off otherwise. A session "
+                         "launched before baskets existed is not gated until it is restarted.")
     ap.add_argument("--card-ttl", type=float, default=90.0,
                     help="Seconds a card prompt stays live before it auto-EXPIRES.")
     ap.add_argument("--iterations", type=int, default=0,
@@ -243,6 +248,12 @@ def main() -> None:
         max_round_trip_cost_ratio=args.max_cost_ratio,
         min_ticket_usd=settings.min_ticket_usd,
     )
+
+    from trading_live_claude.execution.basket import attach_basket_gate
+    if attach_basket_gate(router, "kraken", Path(settings.state_dir),
+                          enabled=args.require_card if args.require_basket is None else args.require_basket):
+        print("[kraken-paper] basket gate ON: entries need a card-signed kraken basket "
+              "(python scripts/basket.py status).", flush=True)
 
     if args.require_card:
         _engine = VSInvestmentEngine()
