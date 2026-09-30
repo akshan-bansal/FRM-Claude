@@ -25,10 +25,16 @@ def _parse_float(v: object) -> float:
 
 
 def stats_to_objective_input(stats: dict[str, object]) -> ObjectiveInput:
-    """Map a QC backtest statistics dict to an ObjectiveInput (P&L only)."""
+    """Map a QC backtest statistics dict to an ObjectiveInput (P&L only).
+
+    Sortino is mapped too (2026-09-18) so ``sortino_over_dd``, the project's ranking metric, is not
+    silently zero for QC strategies. The trade count stays unset (0 = "unknown", no shrink): QC's
+    "Total Orders" counts both legs, so it is used only as a floor in :func:`rank_qc_library`.
+    """
     sharpe = _parse_float(stats.get("Sharpe Ratio", 0.0))
+    sortino = _parse_float(stats.get("Sortino Ratio", 0.0))
     drawdown = -abs(_parse_float(stats.get("Drawdown", 0.0)) / 100.0)  # QC gives % → negative fraction
-    return ObjectiveInput(sharpe=sharpe, max_drawdown=drawdown)
+    return ObjectiveInput(sharpe=sharpe, max_drawdown=drawdown, sortino=sortino)
 
 
 @dataclass(frozen=True)
@@ -53,12 +59,18 @@ def _latest_backtest_id(backtests: list[dict[str, object]]) -> str:
 def rank_qc_library(
     client: QuantConnectClient,
     *,
-    objective: str = "sharpe_over_dd",
+    objective: str = "sortino_over_dd",
+    min_orders: int = 20,
 ) -> list[QcBacktestScore]:
     """Score each QC project by its latest backtest, ranked by ``objective`` desc.
 
     Projects with no backtest are skipped. Family is detected from source code so
     QC strategies land in the same taxonomy as native ones (for diversification).
+
+    Filters (2026-09-18: a tutorial template that buys 10 TSLA once ranked #1): backtests that
+    errored (``error`` / ``stacktrace`` set) are skipped, and so are backtests whose "Total Orders"
+    is below ``min_orders``. A backtest without that statistic is kept, since it can't be judged.
+    Default objective is ``sortino_over_dd``, the project's ranking metric (was Sharpe-based).
     """
     adapter = ObjectiveAdapter.from_name(objective)
     scores: list[QcBacktestScore] = []
@@ -71,9 +83,13 @@ def rank_qc_library(
             continue
         result = client.read_backtest(pid, bt_id)
         backtest = result.get("backtest", {})
+        if isinstance(backtest, dict) and (backtest.get("error") or backtest.get("stacktrace")):
+            continue                                   # runtime-errored: its stats are meaningless
         stats = backtest.get("statistics", {}) if isinstance(backtest, dict) else {}
         if not isinstance(stats, dict) or not stats:
             continue
+        if "Total Orders" in stats and _parse_float(stats.get("Total Orders")) < min_orders:
+            continue                                   # too few orders to rank (e.g. buy-once demos)
         oi = stats_to_objective_input(stats)
         # Family: prefer source-code detection, fall back to the project name.
         try:

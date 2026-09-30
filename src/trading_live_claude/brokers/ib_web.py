@@ -34,6 +34,7 @@ True`` must be set explicitly at construction. Default is paper-only.
 """
 from __future__ import annotations
 
+import ipaddress
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -98,6 +99,17 @@ class IBWebAuth(ABC):
                                       "Accept": "application/json"})
 
 
+
+def _is_loopback(host: str) -> bool:
+    """True for localhost / 127.0.0.0/8 / ::1, the only hosts where skipping TLS verify is safe."""
+    h = host.strip().strip("[]").lower()
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
 @dataclass
 class CPGatewayAuth(IBWebAuth):
     """Client Portal Gateway auth (retail). The Gateway holds the session cookie server-side;
@@ -108,6 +120,14 @@ class CPGatewayAuth(IBWebAuth):
     port: int = 5000
     verify_ssl: bool = False
 
+    def __post_init__(self) -> None:
+        # TLS verification may only be skipped for the local Gateway's self-signed cert. Against
+        # any other host it would let a man-in-the-middle read or alter orders (audit gap,
+        # 2026-09-18).
+        if not self.verify_ssl and not _is_loopback(self.host):
+            raise ValueError(f"CPGatewayAuth: verify_ssl=False is only allowed for a loopback host, "
+                             f"got {self.host!r}. Use verify_ssl=True for a remote Gateway.")
+
     @property
     def base_url(self) -> str:
         return f"https://{self.host}:{self.port}/v1/api"
@@ -117,8 +137,10 @@ class CPGatewayAuth(IBWebAuth):
         return
 
     def new_client(self, timeout: float = 30.0, verify: bool | None = None) -> httpx.Client:
-        return super().new_client(timeout=timeout,
-                                    verify=self.verify_ssl if verify is None else verify)
+        v = self.verify_ssl if verify is None else verify
+        if not v and not _is_loopback(self.host):
+            raise ValueError(f"CPGatewayAuth: refusing an unverified TLS client to {self.host!r}")
+        return super().new_client(timeout=timeout, verify=v)
 
 
 @dataclass
@@ -147,7 +169,7 @@ class OAuth2JWTAuth(IBWebAuth):
     def _mint_client_assertion(self) -> str:
         """Sign a short-lived JWT proving the client's identity to IB's token endpoint."""
         try:
-            import jwt                          # noqa: PLC0415 — lazy import
+            import jwt  # noqa: PLC0415 — lazy import
         except ImportError as e:
             raise BrokerError(
                 "IBWebBroker OAuth2JWTAuth requires 'PyJWT' (`uv add PyJWT` or "
@@ -196,6 +218,10 @@ class OAuth2JWTAuth(IBWebAuth):
 
 
 # ---- broker adapter ------------------------------------------------------------------------
+
+
+# Most IBKR order-confirmation prompts an order may raise before we give up (see place_order).
+MAX_ORDER_CONFIRMATIONS = 5
 
 
 class IBWebBroker(Broker):
@@ -500,9 +526,17 @@ class IBWebBroker(Broker):
         # Web API sometimes returns a confirmation prompt (list of {id, message}) that must be
         # answered before the order fires. Auto-confirm any that come back — a paper trader
         # doesn't want to hand-approve every one, and the confirmation is a soft warning.
+        # Capped (audit gap, 2026-09-18): an endless prompt chain used to loop forever. IBKR
+        # normally sends one to three precautionary prompts per order.
+        replies = 0
         while isinstance(resp, list) and resp and "id" in resp[0] and "message" in resp[0]:
+            if replies >= MAX_ORDER_CONFIRMATIONS:
+                raise OrderRejected(
+                    f"IBWebBroker: still prompting after {replies} auto-confirmations; last message: "
+                    f"{resp[0].get('message')!r}. Refusing to confirm further.")
             reply_id = resp[0]["id"]
             resp = self._post(f"/iserver/reply/{reply_id}", {"confirmed": True})
+            replies += 1
         if isinstance(resp, list) and resp and "order_id" in resp[0]:
             order.id = int(resp[0]["order_id"])
         log.info("ibweb.order.submitted", symbol=order.symbol, qty=order.totalQuantity,

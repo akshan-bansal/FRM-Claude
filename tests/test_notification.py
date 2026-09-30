@@ -7,6 +7,7 @@ from typing import Any
 from trading_live_claude.intel.notification import (
     format_entry,
     format_exit,
+    format_heartbeat,
     format_hedge,
     format_persistence,
     format_thesis,
@@ -216,3 +217,78 @@ def test_wash_alert_reports_before_after_and_percentage() -> None:
     assert "1,000" in body and "950" in body
     assert "undo-able" in body
     assert "72h" in body                        # next-wash cadence hint
+
+
+def _hb_snapshot(**kw: Any) -> Any:
+    from trading_live_claude.intel.overlay import IntelSnapshot
+    base: dict[str, Any] = dict(strategic_risk=67.0, conflict_events_active=3, fear_greed=56.2,
+                                market={"equity_vol": 15.4},
+                                event_acceleration={"energy": 1.0, "conflict": 1.0})
+    base.update(kw)
+    return IntelSnapshot(**base)
+
+
+def _heartbeat(snapshot: Any, theses: list[Any] | None = None) -> tuple[str, str]:
+    return format_heartbeat(snapshot=snapshot, theses=theses or [], poll=1, polls_total=96,
+                            edges=11169, strategic_risk_gate=73.0, conflict_gate=6,
+                            interval_hours=24.0)
+
+
+def test_heartbeat_quiet_tape_shows_readings_against_their_gates() -> None:
+    title, body = _heartbeat(_hb_snapshot())
+    assert title == "HEARTBEAT  quiet tape"
+    assert "poll 1/96" in body and "11,169 edges" in body
+    assert "none — no configuration cleared its gate" in body
+    assert "strategic-risk index 67/100 (complacency gate >= 73)" in body
+    assert "active conflict escalations 3 (conflict gate >= 6)" in body
+    assert "VIX 15.4" in body and "fear/greed 56" in body
+    assert "energy 1.0x, conflict 1.0x" in body
+    assert "~24h" in body
+    assert "DEGRADED" not in body and "no readings" not in body
+
+
+def test_heartbeat_names_firing_theses_in_title_and_body() -> None:
+    from trading_live_claude.intel.interpret import Thesis
+    t = Thesis(name="Complacency divergence", confidence="moderate", evidence=[],
+               inference="", action="")
+    title, body = _heartbeat(_hb_snapshot(strategic_risk=75.0), [t])
+    assert title == "HEARTBEAT  1 thesis firing"
+    assert "Complacency divergence (moderate)" in body
+    title2, _ = _heartbeat(_hb_snapshot(), [t, t])
+    assert title2 == "HEARTBEAT  2 theses firing"
+
+
+def test_heartbeat_flags_degraded_and_empty_snapshots_so_silence_is_not_read_as_calm() -> None:
+    _, degraded = _heartbeat(_hb_snapshot(degraded=True))
+    assert "DEGRADED" in degraded
+    _, empty = _heartbeat(_hb_snapshot(strategic_risk=0.0, market={}, fear_greed=None,
+                                       event_acceleration={}))
+    assert "carries no readings although it is not flagged degraded" in empty
+    assert "VIX n/a" in empty and "fear/greed n/a" in empty
+    assert "event flow" not in empty
+
+
+def test_thesis_alert_shows_intensity_line_only_when_given() -> None:
+    from trading_live_claude.intel.interpret import Thesis
+    from trading_live_claude.intel.thesis_intensity import intensity
+    t = Thesis(name="Complacency divergence", confidence="moderate", evidence=["x"],
+               inference="y", action="z")
+    graded = intensity(t.name, _hb_snapshot(strategic_risk=70.0))
+    _, with_line = format_thesis(t, intensity=graded)
+    assert "How strong (0-1, bounded log of value x time):" in with_line
+    assert "lead: strategic_risk" in with_line
+    _, without = format_thesis(t)
+    assert "How strong" not in without
+
+
+def test_heartbeat_appends_intensity_per_thesis_when_given() -> None:
+    from trading_live_claude.intel.interpret import Thesis
+    from trading_live_claude.intel.thesis_intensity import intensity
+    t = Thesis(name="Complacency divergence", confidence="moderate", evidence=[],
+               inference="", action="")
+    graded = intensity(t.name, _hb_snapshot(strategic_risk=70.0))
+    assert graded is not None
+    _, body = format_heartbeat(snapshot=_hb_snapshot(strategic_risk=70.0), theses=[t], poll=1,
+                               polls_total=96, edges=1, strategic_risk_gate=67.0, conflict_gate=4,
+                               interval_hours=24.0, intensities={t.name: graded})
+    assert f"Complacency divergence (moderate), intensity {graded.intensity:.2f}" in body

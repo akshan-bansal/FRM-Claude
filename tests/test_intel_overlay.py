@@ -10,7 +10,11 @@ from trading_live_claude.intel import (
     apply_overlay,
     classify_symbol,
 )
-from trading_live_claude.intel.worldmonitor import WorldMonitorClient, _build_snapshot
+from trading_live_claude.intel.worldmonitor import (
+    MAX_SOURCE_AGE_H,
+    WorldMonitorClient,
+    _build_snapshot,
+)
 from trading_live_claude.portfolio.allocator import AllocationResult
 
 
@@ -172,7 +176,7 @@ def test_overlay_provider_caches_and_routes_by_class() -> None:
         calls["n"] += 1
         return stressed
 
-    prov = OverlayProvider(_snap, refresh_seconds=1000.0)
+    prov = OverlayProvider(_snap, refresh_seconds=1000.0, journal=False)
     d_crypto = prov("BTC-USD")
     d_equity = prov("AAPL")
     assert d_crypto is not None and d_equity is not None
@@ -185,7 +189,7 @@ def test_overlay_provider_is_fail_safe() -> None:
     def _boom() -> IntelSnapshot:
         raise RuntimeError("network down")
 
-    assert OverlayProvider(_boom, refresh_seconds=0.0)("AAPL") is None
+    assert OverlayProvider(_boom, refresh_seconds=0.0, journal=False)("AAPL") is None
 
     # one good read then failures -> keeps the last good decisions
     state = {"ok": True}
@@ -195,7 +199,7 @@ def test_overlay_provider_is_fail_safe() -> None:
             return IntelSnapshot(global_alert_count=12)
         raise RuntimeError("later failure")
 
-    prov = OverlayProvider(_flaky, refresh_seconds=0.0)  # always attempts a refresh
+    prov = OverlayProvider(_flaky, refresh_seconds=0.0, journal=False)  # always attempts a refresh
     first = prov("AAPL")
     state["ok"] = False
     second = prov("AAPL")
@@ -293,3 +297,152 @@ def test_single_source_freshness_is_unchanged_from_the_previous_formula() -> Non
     ov = RiskOverlay()
     s = IntelSnapshot(source_age_hours={"energy": 24.0})     # exactly one half-life
     assert abs(ov._freshness(s, "energy") - 0.5) < 1e-12
+
+
+# --- overlay refresh off the trading loop (2026-09-18) ----------------------
+# The e2e latency diagnostic found the overlay refresh stalling the Kraken loop for 3.2 s: the
+# WorldMonitor snapshot ran synchronously inside the first entry evaluation after each TTL.
+# OverlayProvider(background=True) refreshes on a daemon thread instead. (Fetching the tools
+# concurrently was tried and rejected: the vendor answers concurrent calls with HTTP 429, which
+# _try turns into a degraded snapshot.)
+
+
+def test_background_provider_serves_stale_decisions_while_refreshing() -> None:
+    import threading
+    import time
+
+    release = threading.Event()
+    calls = {"n": 0}
+
+    def _snap() -> IntelSnapshot:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            release.wait(5)          # the TTL refresh is slow
+            return IntelSnapshot(global_alert_count=12, market={"crypto_chg": 9.0})
+        return IntelSnapshot()
+
+    prov = OverlayProvider(_snap, refresh_seconds=0.0, journal=False, background=True)
+    first = prov("BTC/USD")          # first fetch blocks — nothing to serve yet
+    assert first is not None and calls["n"] == 1
+
+    t0 = time.perf_counter()
+    stale = prov("BTC/USD")          # TTL expired; refresh goes to the background
+    assert time.perf_counter() - t0 < 0.1, "stale lookup blocked on the refresh"
+    assert stale is not None and stale.scalar == first.scalar
+    prov("BTC/USD")                  # a second stale lookup must not start another fetch
+    assert calls["n"] == 2
+
+    release.set()
+    for _ in range(100):
+        if prov._ts and prov("BTC/USD").scalar < first.scalar:
+            break
+        time.sleep(0.02)
+    assert prov("BTC/USD").scalar < first.scalar   # the stressed snapshot landed
+
+
+def test_background_provider_keeps_last_good_on_failure() -> None:
+    import time
+
+    state = {"ok": True}
+
+    def _flaky() -> IntelSnapshot:
+        if state["ok"]:
+            return IntelSnapshot(global_alert_count=12)
+        raise RuntimeError("later failure")
+
+    prov = OverlayProvider(_flaky, refresh_seconds=0.0, journal=False, background=True)
+    first = prov("AAPL")
+    state["ok"] = False
+    for _ in range(5):
+        d = prov("AAPL")
+        assert d is not None and d.scalar == first.scalar
+        time.sleep(0.02)
+
+
+def test_provider_default_is_still_synchronous() -> None:
+    calls = {"n": 0}
+
+    def _snap() -> IntelSnapshot:
+        calls["n"] += 1
+        return IntelSnapshot()
+
+    prov = OverlayProvider(_snap, refresh_seconds=0.0, journal=False)
+    prov("AAPL")
+    prov("AAPL")
+    assert calls["n"] == 2          # refreshed inline, both times
+
+
+def test_overlaid_bias_follows_the_current_overlay_and_scales_by_class() -> None:
+    from trading_live_claude.intel.apply import OverlaidBias
+    from trading_live_claude.intel.overlay import OverlayDecision
+    alloc = AllocationResult(weights={"AAPL": 0.5, "BTC": 0.5}, gross_exposure=1.0, cash=0.0,
+                             sleeve_weights={}, effective_positions=2.0)
+    scalars = {"equity": 1.0, "crypto": 1.0}
+
+    def ov(sym: str) -> OverlayDecision:
+        cls = "crypto" if sym in ("BTC", "ETH") else "equity"
+        return OverlayDecision(asset_class=cls, scalar=scalars[cls], halt_new_entries=False,  # type: ignore[arg-type]
+                               reasons=[], components={})
+
+    bias = OverlaidBias(alloc, 0.5, ["AAPL", "BTC"], ov)
+    assert bias("AAPL") == 1.0 and bias("BTC") == 1.0
+    scalars["crypto"] = 0.4                                        # overlay refreshes mid-session
+    assert bias("BTC") == 0.4 and bias("AAPL") == 1.0              # only the crypto class shrinks
+    assert bias.last is not None and abs(bias.last.cash - 0.3) < 1e-9   # freed weight is cash
+    assert bias("ETH") == 0.4                                      # outside the book: default x scalar
+    assert getattr(bias, "applies_overlay", False) is True
+
+
+# --------------------------------------------------------------------------- #
+# source staleness -> degraded (fixed 2026-09-24)                              #
+# --------------------------------------------------------------------------- #
+
+def _stub_client(ages_h: dict[str, float]) -> WorldMonitorClient:
+    """A client whose tools all SUCCEED, handing back payloads cached `ages_h` hours ago.
+
+    Models the real failure this guards: the vendor answers normally, so no transport error is
+    raised, but the payload it returns was cached days earlier.
+    """
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    tool_to_key = {
+        "get_news_intelligence": "news", "get_conflict_events": "conflict",
+        "get_natural_disasters": "disasters", "get_energy_intelligence": "energy",
+        "get_market_data": "market",
+    }
+    client = WorldMonitorClient.__new__(WorldMonitorClient)
+
+    async def call_tool(name: str, args: dict | None = None) -> dict:
+        key = tool_to_key.get(name)
+        age = ages_h.get(key, 0.0) if key else 0.0
+        stamp = (datetime.now(UTC) - timedelta(hours=age)).isoformat()
+        return {"cached_at": stamp, "data": {}}
+
+    client.call_tool = call_tool           # type: ignore[method-assign]
+    client._asyncio = asyncio
+    return client
+
+
+def test_fresh_sources_are_not_degraded() -> None:
+    import asyncio
+    c = _stub_client({"news": 0.2, "conflict": 2.0, "energy": 3.0, "market": 0.1})
+    snap = asyncio.run(c.snapshot())
+    assert snap.degraded is False
+    assert max(snap.source_age_hours.values()) < MAX_SOURCE_AGE_H
+
+
+def test_stale_source_degrades_even_though_every_tool_succeeded() -> None:
+    """The 2026-09-24 bug: energy 135h old, every call OK, snapshot published degraded=False."""
+    import asyncio
+    c = _stub_client({"news": 0.2, "conflict": 2.1, "energy": 135.07, "market": 0.03})
+    snap = asyncio.run(c.snapshot())
+    assert snap.degraded is True, "a 135h-old source must degrade the snapshot"
+    assert snap.source_age_hours["energy"] > MAX_SOURCE_AGE_H
+    assert snap.source_age_hours["news"] < MAX_SOURCE_AGE_H
+
+
+def test_staleness_threshold_is_the_boundary() -> None:
+    import asyncio
+    assert asyncio.run(_stub_client({"energy": MAX_SOURCE_AGE_H - 1.0}).snapshot()).degraded is False
+    assert asyncio.run(_stub_client({"energy": MAX_SOURCE_AGE_H + 1.0}).snapshot()).degraded is True

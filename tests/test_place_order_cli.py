@@ -55,3 +55,26 @@ def test_orders_jsonl_records_decisions(tmp_path: Path) -> None:
     assert row["symbol"] == "XIC.TO"
     assert row["accepted"] is True
     assert "ts" in row
+
+
+def test_trading_live_refuses_a_mismatched_questrade_env(tmp_path: Path, monkeypatch) -> None:
+    """2026-09-18: `trading live` used to only warn (and claimed "practice" routing, which never
+    happened: the refresh token decides the account). It now exits before touching the broker."""
+    from types import SimpleNamespace
+
+    from typer.testing import CliRunner
+
+    import trading_live_claude.cli as cli
+
+    fake = SimpleNamespace(execution_mode="live", questrade_env="practice",
+                           log_level="WARNING", log_dir=tmp_path)
+    monkeypatch.setattr(cli, "get_settings", lambda: fake)
+
+    def _no_broker(_settings):
+        raise AssertionError("the broker must not be built on a mismatched environment")
+
+    monkeypatch.setattr(cli, "_make_questrade", _no_broker)
+    res = CliRunner().invoke(cli.app, ["live", "--strategy", "ema_crossover", "--symbols", "AAPL",
+                                       "--confirm", "I UNDERSTAND THE RISK"])
+    assert res.exit_code == 2
+    assert "QUESTRADE_ENV" in res.output

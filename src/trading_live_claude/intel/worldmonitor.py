@@ -32,11 +32,18 @@ from trading_live_claude.intel.overlay import IntelSnapshot
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_URL = "https://api.worldmonitor.app/mcp"
+DEFAULT_URL = "https://worldmonitor.app/mcp"  # api.worldmonitor.app returns 410 since ~2026-09-19
 
 # Live market proxies the overlay reads. These Yahoo-style tickers are what get_market_data expects;
 # adjust here if the live tool wants different symbols.
 MARKET_PROBES = {"equity_vol": "^VIX", "dxy": "DX-Y.NYB", "crypto": "BTC-USD"}
+
+# A successfully-fetched but long-cached source still degrades the snapshot. Two half-lives of
+# ``confluence.STALENESS_HALF_LIFE_H`` (24h), so by the time this trips, confluence has already
+# discounted that source's evidence to 0.25 and it is not carrying meaningful weight anyway. The
+# number is deliberately tied to that existing scale rather than being a second, independent
+# staleness policy. Not imported from ``confluence`` to keep this module's import graph flat.
+MAX_SOURCE_AGE_H = 48.0
 
 
 class WorldMonitorError(RuntimeError):
@@ -134,6 +141,13 @@ class WorldMonitorClient:
 
         Any single tool that errors is tolerated: its features fall back to neutral and ``degraded``
         is set, so the overlay applies a conservative cap rather than trusting a partial read.
+
+        A tool that SUCCEEDS but hands back a long-cached payload also degrades the snapshot (fixed
+        2026-09-24). Before, ``degraded`` tracked transport errors only, so a read whose energy
+        source was 135 hours old still published ``degraded: false`` and the overlay scaled live
+        de-risk decisions from it at full confidence. Staleness is measured from each payload's own
+        ``cached_at`` stamp against :data:`MAX_SOURCE_AGE_H`; crossing it sets ``degraded`` exactly
+        as an error would, which is fail-safe (the overlay caps every class at ``degraded_cap``).
         """
         degraded = False
 
@@ -184,6 +198,14 @@ class WorldMonitorClient:
             _age_of(payload, key)
         # the intel archive is queried live per domain, so event features are as fresh as this call
         ages.setdefault("events", 0.0)
+
+        stale = {k: round(v, 1) for k, v in ages.items() if v > MAX_SOURCE_AGE_H}
+        if stale:
+            # Not an error, so nothing above set `degraded`: the vendor answered, just with a
+            # payload it had cached days ago. Treat it as a partial read.
+            log.warning("worldmonitor.sources_stale", stale_hours=stale,
+                        max_age_hours=MAX_SOURCE_AGE_H)
+            degraded = True
 
         snap = _build_snapshot(news, conflict, disasters, energy, market, countries, degraded)
         snap = replace(snap, event_acceleration=accel, source_age_hours=ages)

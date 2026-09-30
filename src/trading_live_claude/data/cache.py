@@ -3,7 +3,9 @@ backtests and reduces token-refresh pressure during long live sessions.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -38,8 +40,14 @@ class CandleCache:
             return None
 
     def put(self, symbol: str, interval: str, start: datetime, end: datetime, df: pd.DataFrame) -> None:
+        """Write atomically: to a temp sibling, then ``os.replace``. A crash mid-write used to leave a
+        truncated parquet that ``get`` would then fail to read (audit gap, fixed 2026-09-18)."""
         p = self._path(symbol, interval, start, end)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
         try:
-            df.to_parquet(p, index=False)
+            df.to_parquet(tmp, index=False)
+            os.replace(tmp, p)
         except Exception as e:  # pragma: no cover
             log.warning("cache.write.failed", path=str(p), error=str(e))
+            with contextlib.suppress(OSError):
+                tmp.unlink()

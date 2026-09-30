@@ -26,6 +26,7 @@ covers the sleeve today; anything outside it round-trips as the raw code the cal
 """
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -413,5 +414,9 @@ def _txid_to_int(txid: str) -> int:
     """Kraken txids are strings (``OZAA6H-FQI3S-DK6GHJ``). We hash-fold to an int so the router,
     whose fill journal stores integer order ids, has a stable numeric handle. Not reversible; the
     original txid stays in the log line.
+
+    Uses SHA-256 rather than ``hash()``: string hashing is salted per process (PYTHONHASHSEED), so
+    the same txid mapped to a different id after every restart (audit gap, fixed 2026-09-18).
     """
-    return abs(hash(txid)) % (2**31 - 1)
+    digest = hashlib.sha256(txid.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % (2**31 - 1)

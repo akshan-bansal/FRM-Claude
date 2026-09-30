@@ -11,10 +11,10 @@ transition (a round-trip pays twice; a long↔short flip pays on both legs, whic
 ``|position.diff()|`` already counts). Three components:
 
 * ``commission_bps`` — brokerage commission as a rate (Questrade ETFs are free; US equities carry
-  a per-share fee with a \$4.95 floor, which is a *rate* only relative to ticket size).
+  a per-share fee with a $4.95 floor, which is a *rate* only relative to ticket size).
 * ``slippage_bps`` — execution slippage vs the decision price.
-* ``half_spread_bps`` — crossing half the bid-ask spread; price-dependent (a \$0.01 tick is ~6 bps
-  on an \$8 stock but ~0.07 bps on QQQ), so :meth:`from_price` derives it from tick / price.
+* ``half_spread_bps`` — crossing half the bid-ask spread; price-dependent (a $0.01 tick is ~6 bps
+  on an $8 stock but ~0.07 bps on QQQ), so :meth:`from_price` derives it from tick / price.
 
 A fixed ``commission_per_trade`` (dollars) can be added, converted to a rate against
 ``notional_per_trade`` — the fully-invested engine trades ~account-notional per position.
@@ -37,7 +37,7 @@ class CostModel:
         return self.commission_bps + self.slippage_bps + self.half_spread_bps
 
     def per_side_frac(self) -> float:
-        """Per-side cost as a fraction of notional (bps components + fixed \$ / notional)."""
+        """Per-side cost as a fraction of notional (bps components + fixed $ / notional)."""
         fixed = self.commission_per_trade / self.notional_per_trade if self.notional_per_trade > 0 else 0.0
         return self.per_side_bps / 10_000.0 + fixed
 

@@ -85,8 +85,19 @@ class SessionRouter:
 
     # ----- journal ---------------------------------------------------------
 
+    def _ledger(self, event: str, intent: OrderIntent, payload: dict[str, object]) -> None:
+        """Mirror a queue transition into the audit ledger, when the inner router has one."""
+        ledger = getattr(self.inner, "ledger", None)
+        if ledger is None:
+            return
+        ledger.append(event, payload, intent_id=getattr(intent, "intent_id", None),
+                      strategy_id=intent.strategy,
+                      strategy_version=getattr(intent, "strategy_version", "") or None,
+                      risk_check_version=self.inner.risk_check_version())
+
     def _journal(self, event: QueueEvent, intent: OrderIntent, **extra: object) -> None:
-        row = {"ts": self._clock().isoformat(), "event": event, "symbol": intent.symbol,
+        row = {"ts": self._clock().isoformat(), "event": event,
+               "intent_id": getattr(intent, "intent_id", ""), "symbol": intent.symbol,
                "action": intent.action.value, "shares": intent.shares, "entry": intent.entry,
                "stop": intent.stop, "strategy": intent.strategy, **extra}
         log.info(f"scheduler.{event}", **{k: v for k, v in row.items() if k not in ("ts", "event")})
@@ -97,7 +108,8 @@ class SessionRouter:
             f.write(json.dumps(row, default=str) + "\n")
 
     def _reject(self, intent: OrderIntent, reasons: list[str]) -> None:
-        self.inner.journal.rejected({"symbol": intent.symbol, "reasons": reasons})
+        self.inner.journal.rejected({"intent_id": getattr(intent, "intent_id", ""),
+                                     "symbol": intent.symbol, "reasons": reasons})
         self._journal("rejected", intent, reasons=reasons)
 
     # ----- routing ---------------------------------------------------------
@@ -144,6 +156,11 @@ class SessionRouter:
                                        release_at + timedelta(minutes=self.cfg.intent_ttl_min))
         self._journal("replaced" if replaced else "queued", intent, exit=is_exit,
                       release_at=release_at.isoformat())
+        self._ledger("INTENT_QUEUED", intent, {
+            "symbol": intent.symbol, "action": intent.action.value, "shares": intent.shares,
+            "venue": venue.code, "is_exit": is_exit, "replaced": replaced,
+            "release_at": release_at.isoformat(),
+        })
 
     def _route(self, intent: OrderIntent, venue: Venue, is_exit: bool, *, equity: float,
                existing_risk: float, open_positions: int,
@@ -218,6 +235,13 @@ class SessionRouter:
             intent.entry = mid
             intent.risk_dollars = intent.shares * abs(intent.entry - intent.stop)
             self._journal("released", intent, exit=item.is_exit)
+            # Repriced on release: the ledger records the shift so the released order's entry/stop
+            # can be reconciled against what was originally queued.
+            self._ledger("INTENT_RELEASED", intent, {
+                "symbol": intent.symbol, "action": intent.action.value, "shares": intent.shares,
+                "is_exit": item.is_exit, "repriced_entry": intent.entry, "stop": intent.stop,
+                "queued_at": item.queued_at.isoformat(), "price_shift": shift,
+            })
             order = self._route(intent, venue, item.is_exit, equity=equity,
                                 existing_risk=existing_risk, open_positions=open_positions,
                                 current_open_notional=current_open_notional)

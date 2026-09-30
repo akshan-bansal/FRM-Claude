@@ -347,3 +347,33 @@ def test_ib_web_broker_exports_from_package_namespace() -> None:
     assert ExportedCP is CPGatewayAuth
     assert ExportedOAuth is OAuth2JWTAuth
     assert IBWebAuth is not None
+
+
+@respx.mock
+def test_place_order_stops_confirming_an_endless_prompt_chain() -> None:
+    """The auto-confirm loop is capped (2026-09-18); before, an endless chain looped forever."""
+    from trading_live_claude.brokers.ib_web import MAX_ORDER_CONFIRMATIONS
+
+    respx.post(f"{_CP_BASE}/iserver/secdef/search").mock(
+        return_value=httpx.Response(200, json=[{"conid": 265598, "symbol": "AAPL"}]))
+    respx.post(f"{_CP_BASE}/iserver/account/DU111/orders").mock(
+        return_value=httpx.Response(200, json=[{"id": "p0", "message": ["warning"]}]))
+    replies = respx.post(url__regex=rf"{_CP_BASE}/iserver/reply/.*").mock(
+        return_value=httpx.Response(200, json=[{"id": "p-next", "message": ["another warning"]}]))
+    with pytest.raises(OrderRejected, match="still prompting"):
+        _mk_broker(enable_live=True).place_order(_order())
+    assert replies.call_count == MAX_ORDER_CONFIRMATIONS
+
+
+def test_unverified_tls_is_only_allowed_for_a_loopback_gateway() -> None:
+    """verify_ssl=False is for the local Gateway's self-signed cert only (2026-09-18)."""
+    from trading_live_claude.brokers.ib_web import CPGatewayAuth
+    CPGatewayAuth()                                          # localhost default
+    CPGatewayAuth(host="127.0.0.1")
+    CPGatewayAuth(host="::1")
+    CPGatewayAuth(host="gw.example.com", verify_ssl=True)    # remote with verification is fine
+    with pytest.raises(ValueError, match="loopback"):
+        CPGatewayAuth(host="gw.example.com")
+    remote = CPGatewayAuth(host="10.0.0.5", verify_ssl=True)
+    with pytest.raises(ValueError, match="unverified"):
+        remote.new_client(verify=False)

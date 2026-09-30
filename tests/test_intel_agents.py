@@ -163,7 +163,7 @@ def test_debate_upheld_claim_survives_with_full_confidence() -> None:
     ])
     respx.post(_URL).mock(side_effect=lambda req: next(calls))
     evidence = [{"id": "EV-1", "title": "energy refinery outage", "sources": ["Reuters"]}]
-    fired = debate(evidence, domains=("energy",))
+    fired = debate(evidence, domains=("energy",), journal=False)
     assert len(fired) == 1
     ft: FiredThesis = fired[0]
     assert ft.domain == "energy"
@@ -182,6 +182,7 @@ def test_debate_falsified_claim_is_dropped() -> None:
     fired = debate(
         [{"id": "EV", "title": "energy outage rumor"}],
         domains=("energy",),
+        journal=False,
     )
     assert fired == []
 
@@ -199,6 +200,7 @@ def test_debate_weak_claim_survives_with_demoted_confidence() -> None:
     fired = debate(
         [{"id": "EV", "title": "energy outage"}],
         domains=("energy",),
+        journal=False,
     )
     assert len(fired) == 1
     assert abs(fired[0].confidence - 0.5) < 1e-9         # 0.8 - 0.3
@@ -213,6 +215,7 @@ def test_debate_neutral_specialist_reads_do_not_reach_the_adversary() -> None:
     fired = debate(
         [{"id": "EV", "title": "energy activity report"}],
         domains=("energy",),
+        journal=False,
     )
     # Only ONE HTTP call — the specialist. No adversary call fired.
     assert route.call_count == 1
@@ -224,6 +227,75 @@ def test_debate_empty_domain_slice_makes_no_calls_at_all() -> None:
     """No records mention 'macro' keywords → skip the specialist entirely rather than ask blind."""
     route = respx.post(_URL).mock(return_value=_api_response(_claim_json()))
     evidence = [{"id": "EV", "title": "quake in Anatolia", "sources": ["USGS"]}]
-    fired = debate(evidence, domains=("macro",))
+    fired = debate(evidence, domains=("macro",), journal=False)
     assert fired == []
     assert route.call_count == 0
+
+
+# --------------------------------------------------------------------------- #
+# debate journaling (added 2026-09-25)                                          #
+# --------------------------------------------------------------------------- #
+
+@respx.mock
+def test_debate_journals_a_fired_claim_with_claim_and_critique(tmp_path) -> None:
+    """The row must carry the structure the caller used to discard: verdict, confidence, reason."""
+    calls = iter([
+        _api_response(_claim_json(confidence=0.8)),
+        _api_response(_critique_json("UPHELD", "Corroborated by two independent sources.")),
+    ])
+    respx.post(_URL).mock(side_effect=lambda req: next(calls))
+    out = tmp_path / "agents.jsonl"
+    fired = debate([{"id": "EV", "title": "energy outage"}], domains=("energy",),
+                   journal_path=out)
+    assert len(fired) == 1
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["fired_count"] == 1
+    energy = row["outcomes"]["energy"]
+    assert energy["outcome"] == "fired"
+    assert energy["claim"]["confidence"] == 0.8
+    assert energy["critique"]["verdict"] == "UPHELD"
+    assert "Corroborated" in energy["critique"]["reason"]
+
+
+@respx.mock
+def test_debate_journals_the_attempt_even_when_nothing_fires(tmp_path) -> None:
+    """A quiet run and a broken run must be distinguishable in the record.
+
+    This is the failure the journal exists to prevent: with no key every specialist returns None
+    and the output is an empty list, exactly as if the world were calm.
+    """
+    respx.post(_URL).mock(return_value=_api_response(
+        _claim_json(direction="neutral", confidence=0.1)))
+    out = tmp_path / "agents.jsonl"
+    fired = debate([{"id": "EV", "title": "energy activity"}], domains=("energy",),
+                   journal_path=out)
+    assert fired == []
+    row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    assert row["fired_count"] == 0
+    assert row["outcomes"]["energy"]["outcome"] == "below_threshold"
+    assert "api_key_present" in row          # separates "no key" from "nothing to say"
+
+
+@respx.mock
+def test_debate_journal_records_a_falsified_claim(tmp_path) -> None:
+    calls = iter([
+        _api_response(_claim_json(confidence=0.9)),
+        _api_response(_critique_json("FALSIFIED", "Contradicted by the same bundle.")),
+    ])
+    respx.post(_URL).mock(side_effect=lambda req: next(calls))
+    out = tmp_path / "agents.jsonl"
+    assert debate([{"id": "EV", "title": "energy outage"}], domains=("energy",),
+                  journal_path=out) == []
+    row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    # Falsified claims are dropped from the OUTPUT but kept in the RECORD — otherwise the
+    # adversary's work is invisible and "did upheld beat falsified" is unanswerable.
+    assert row["outcomes"]["energy"]["outcome"] == "falsified"
+    assert row["outcomes"]["energy"]["critique"]["verdict"] == "FALSIFIED"
+
+
+def test_debate_journal_is_opt_out_for_tests(tmp_path) -> None:
+    out = tmp_path / "agents.jsonl"
+    debate([], domains=("energy",), journal=False, journal_path=out)
+    assert not out.exists()

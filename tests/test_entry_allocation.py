@@ -200,3 +200,21 @@ def test_trim_to_slots_does_nothing_at_or_over_the_cap() -> None:
     router = _SlotRouter()
     router.max_open_positions = 3
     assert _trim_monitor(_HeldBroker(), router, []).trim_to_slots() == [] and router.calls == []
+
+
+# ---- close_symbols (drop a name from the sleeve) ------------------------------------------------
+
+def test_close_symbols_sells_only_the_named_positions_in_full() -> None:
+    router, events = _SlotRouter(), []
+    broker = _HeldBroker()
+    rows = _trim_monitor(broker, router, events).close_symbols(["bbb"])   # case-insensitive
+    assert [r["symbol"] for r in rows] == ["BBB"]
+    (intent, _), = router.calls
+    assert intent.action.value == "Sell" and intent.shares == 3000        # type: ignore[attr-defined]
+    assert events[-1].detail["reason"] == "drop_symbol"
+
+
+def test_close_symbols_is_a_no_op_for_a_name_not_held() -> None:
+    router = _SlotRouter()
+    assert _trim_monitor(_HeldBroker(), router, []).close_symbols(["ZZZ"]) == []
+    assert router.calls == []

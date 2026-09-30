@@ -28,18 +28,16 @@ progress line on each render. In ``--refresh N``, renders every N seconds and re
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import time
 from collections import Counter, defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
 
 STATE = Path("state")
 REPORTS = Path("reports")
@@ -220,17 +218,26 @@ def section_paper_summary() -> str:
     if not fills:
         return _section("Paper sessions", "<p class='muted'>No fills yet.</p>")
     df = pd.DataFrame(fills)
-    df["session_id"] = df.get("session_id", pd.NA).fillna("legacy")
+    # Fills with no session_id cannot be attributed to a book, so they are EXCLUDED rather than
+    # bucketed (fixed 2026-09-24). Previously `.fillna("legacy")` invented a session that never
+    # existed and then rendered it as a row beside real ones, with no equity curve behind it —
+    # a fabricated denominator in every per-session figure below. 4 such fills exist, all from
+    # 2026-08-31, before PaperBroker stamped the field; the live emitter has written it since.
+    _sid = df.get("session_id", pd.NA)
+    _unattributed = int(_sid.isna().sum()) if hasattr(_sid, "isna") else 0
+    df = df[_sid.notna()] if hasattr(_sid, "notna") else df
+    if df.empty:
+        return _section("Paper sessions",
+                        "<p class='muted'>No fills carry a session_id; nothing is attributable.</p>")
     df["venue"] = df["symbol"].map(_venue_of)
     grp = df.groupby("session_id")
     rows_html = []
     for sid, g in grp:
-        eq_rows = equity[equity["session_id"] == sid] if sid != "legacy" else pd.DataFrame()
+        eq_rows = equity[equity["session_id"] == sid]
         latest_eq = float(eq_rows["equity"].iloc[-1]) if not eq_rows.empty else float("nan")
-        peak_eq = float(eq_rows["peak_equity"].iloc[-1]) if not eq_rows.empty else float("nan")
         dd = float(eq_rows["drawdown_pct"].iloc[-1]) if not eq_rows.empty else float("nan")
         notional = float((g["quantity"] * g["price"]).sum())
-        sid_short = "legacy" if sid == "legacy" else sid[:8]
+        sid_short = sid[:8]
         eq_str = f"${latest_eq:,.0f}" if not pd.isna(latest_eq) else "—"
         dd_str = f"{dd * 100:.2f}%" if not pd.isna(dd) else "—"
         rows_html.append(
@@ -245,6 +252,11 @@ def section_paper_summary() -> str:
     body = ('<table><thead><tr><th>Session</th><th>Venue</th><th>Fills</th>'
             '<th>Symbols</th><th>Notional</th><th>Equity</th><th>Drawdown</th>'
             '</tr></thead><tbody>' + "".join(rows_html) + '</tbody></table>')
+    if _unattributed:
+        # State the scope rather than quietly narrowing it: a reader must be able to see that
+        # the table below does not cover every fill in the journal.
+        body += (f"<p class='muted'>Scope: {_unattributed} fill(s) carry no session_id and are "
+                 f"excluded — they cannot be attributed to a book.</p>")
     return _section("Paper sessions", body)
 
 

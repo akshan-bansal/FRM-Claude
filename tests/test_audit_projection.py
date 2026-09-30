@@ -6,8 +6,12 @@ quietly projected as if it were sound.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from trading_live_claude.audit import Ledger
 from trading_live_claude.audit.projection import (
@@ -20,6 +24,29 @@ from trading_live_claude.audit.projection import (
     streams,
     versions_traded,
 )
+
+_OPEN: list[Any] = []
+
+
+def _db(path: Path) -> Any:
+    """``open_db`` with the connection registered for teardown.
+
+    A test that leaks a connection leaks a file handle with it, which on Windows also keeps the .db
+    locked against tmp_path cleanup — and it shows up as a ResourceWarning attributed to whichever
+    unlucky test was running when the GC got round to it.
+    """
+    conn = open_db(path)
+    _OPEN.append(conn)
+    return conn
+
+
+@pytest.fixture(autouse=True)
+def _close_connections() -> Any:
+    """Close every connection a test opened, pass or fail."""
+    yield
+    while _OPEN:
+        with contextlib.suppress(Exception):
+            _OPEN.pop().close()
 
 
 def _seed(tmp_path: Path) -> Ledger:
@@ -57,7 +84,7 @@ def test_rebuild_populates_the_three_tables(tmp_path: Path) -> None:
     assert summary["intents"] == 3                  # the bare signal has no intent row
     assert summary["chains_ok"] is True
 
-    conn = open_db(tmp_path / "p.db")
+    conn = _db(tmp_path / "p.db")
     assert conn.execute("SELECT COUNT(*) FROM ledger_events").fetchone()[0] == 8
     assert conn.execute("SELECT COUNT(*) FROM intents").fetchone()[0] == 3
     status = conn.execute("SELECT stream, rows, ok, reason FROM chain_status").fetchall()
@@ -68,7 +95,7 @@ def test_an_event_without_an_intent_id_is_not_invented_into_an_intent(tmp_path: 
     """A suppressed signal is real history, but it is not an intent — fabricating one would lie."""
     _seed(tmp_path)
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    conn = open_db(tmp_path / "p.db")
+    conn = _db(tmp_path / "p.db")
     assert conn.execute("SELECT COUNT(*) FROM ledger_events WHERE event='SIGNAL_SUPPRESSED'"
                         ).fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM intents WHERE intent_id IS NULL").fetchone()[0] == 0
@@ -77,7 +104,7 @@ def test_an_event_without_an_intent_id_is_not_invented_into_an_intent(tmp_path: 
 def test_the_fold_summarises_each_intents_life(tmp_path: Path) -> None:
     _seed(tmp_path)
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    conn = open_db(tmp_path / "p.db")
+    conn = _db(tmp_path / "p.db")
     rows = {r[0]: r for r in conn.execute(
         "SELECT intent_id, symbol, outcome, terminal_event, filled_shares, broker_order_id, "
         "gate_accepted, strategy_version, risk_check_version, verdict, signer_card_id, "
@@ -103,7 +130,7 @@ def test_rebuilding_twice_is_idempotent(tmp_path: Path) -> None:
     second = rebuild(tmp_path / "ledger", tmp_path / "p.db")
     assert first["events"] == second["events"]
     assert first["intents"] == second["intents"]
-    conn = open_db(tmp_path / "p.db")
+    conn = _db(tmp_path / "p.db")
     assert conn.execute("SELECT COUNT(*) FROM ledger_events").fetchone()[0] == first["events"]
 
 
@@ -114,7 +141,7 @@ def test_new_events_appear_on_the_next_rebuild(tmp_path: Path) -> None:
                intent_id="i-new", broker_order_id=9)
     summary = rebuild(tmp_path / "ledger", tmp_path / "p.db")
     assert summary["events"] == 9 and summary["intents"] == 4
-    conn = open_db(tmp_path / "p.db")
+    conn = _db(tmp_path / "p.db")
     assert conn.execute("SELECT outcome FROM intents WHERE intent_id='i-new'").fetchone()[0] \
         == "filled"
 
@@ -129,7 +156,7 @@ def test_a_broken_chain_is_reported_not_silently_projected(tmp_path: Path) -> No
 
     summary = rebuild(tmp_path / "ledger", tmp_path / "p.db")
     assert summary["chains_ok"] is False
-    conn = open_db(tmp_path / "p.db")
+    conn = _db(tmp_path / "p.db")
     ok, reason = conn.execute("SELECT ok, reason FROM chain_status").fetchone()
     assert ok == 0 and "payload of row 1" in reason
 
@@ -141,7 +168,7 @@ def test_partial_fills_and_trims_are_distinguishable(tmp_path: Path) -> None:
     led.append("PARTIAL", {"symbol": "VALE", "shares": 25, "requested_shares": 40},
                intent_id="i-trim", broker_order_id=3)
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    conn = open_db(tmp_path / "p.db")
+    conn = _db(tmp_path / "p.db")
     row = conn.execute("SELECT trimmed_from, requested_shares, filled_shares, outcome "
                        "FROM intents WHERE intent_id='i-trim'").fetchone()
     assert row == (100.0, 40.0, 25.0, "partial")
@@ -152,7 +179,7 @@ def test_streams_are_projected_separately(tmp_path: Path) -> None:
     Ledger(tmp_path / "ledger", stream="kraken").append("FILLED", {"symbol": "B"}, intent_id="b")
     assert set(streams(tmp_path / "ledger")) == {"qt", "kraken"}
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    conn = open_db(tmp_path / "p.db")
+    conn = _db(tmp_path / "p.db")
     assert conn.execute("SELECT COUNT(*) FROM chain_status").fetchone()[0] == 2
     assert {r[0] for r in conn.execute("SELECT stream FROM intents")} == {"qt", "kraken"}
 
@@ -162,7 +189,7 @@ def test_streams_are_projected_separately(tmp_path: Path) -> None:
 def test_rejection_reasons_are_countable(tmp_path: Path) -> None:
     _seed(tmp_path)
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    reasons = rejection_reasons(open_db(tmp_path / "p.db"))
+    reasons = rejection_reasons(_db(tmp_path / "p.db"))
     assert reasons and reasons[0][0].startswith("notional")
 
 
@@ -175,13 +202,13 @@ def test_approval_latency_is_measurable(tmp_path: Path) -> None:
     led.append("APPROVED", {"symbol": "X", "verdict": "ACCEPT"}, intent_id="i1",
                at=t0 + timedelta(seconds=14))
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    assert approval_latency_seconds(open_db(tmp_path / "p.db")) == [14.0]
+    assert approval_latency_seconds(_db(tmp_path / "p.db")) == [14.0]
 
 
 def test_versions_traded_answers_which_code_traded_a_symbol(tmp_path: Path) -> None:
     _seed(tmp_path)
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    rows = versions_traded(open_db(tmp_path / "p.db"), "XIC.TO")
+    rows = versions_traded(_db(tmp_path / "p.db"), "XIC.TO")
     assert rows == [("bollinger", "v-boll", 1)]
 
 
@@ -191,14 +218,14 @@ def test_a_submitted_intent_with_no_terminal_event_is_surfaced(tmp_path: Path) -
     led.append("RISK_CHECK", {"accepted": True, "symbol": "ETH/USD"}, intent_id="i-lost")
     led.append("BROKER_SUBMITTED", {"symbol": "ETH/USD"}, intent_id="i-lost")
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    dangling = dangling_submissions(open_db(tmp_path / "p.db"))
+    dangling = dangling_submissions(_db(tmp_path / "p.db"))
     assert [d[0] for d in dangling] == ["i-lost"]
 
 
 def test_signed_intents_expose_what_is_needed_to_reverify(tmp_path: Path) -> None:
     _seed(tmp_path)
     rebuild(tmp_path / "ledger", tmp_path / "p.db")
-    rows = signed_intents(open_db(tmp_path / "p.db"))
+    rows = signed_intents(_db(tmp_path / "p.db"))
     assert len(rows) == 1
     intent_id, key_id, signature, canonical = rows[0]
     assert intent_id == "i-card" and key_id == "card-1" and signature == "c2ln"
@@ -334,10 +361,14 @@ def test_both_paper_runners_default_the_ledger_on() -> None:
     assert '"--audit-ledger"' in src and "default=True" in src
 
 
-def test_the_two_books_use_different_streams() -> None:
+def test_every_runner_uses_its_own_stream() -> None:
     """One shared chain across processes would interleave; separate streams is the whole design."""
     root = Path(__file__).resolve().parents[1]
-    qt = (root / "src" / "trading_live_claude" / "cli.py").read_text(encoding="utf-8")
-    kraken = (root / "scripts" / "paper_kraken.py").read_text(encoding="utf-8")
-    assert 'stream="qt"' in qt
-    assert 'stream="kraken"' in kraken
+    for rel, stream in (("src/trading_live_claude/cli.py", "qt"),
+                        ("scripts/paper_kraken.py", "kraken"),
+                        ("scripts/paper_ib.py", "ib"),
+                        ("scripts/paper_global.py", "global")):
+        src = (root / rel).read_text(encoding="utf-8")
+        assert f'stream="{stream}"' in src, rel
+        assert "ledger=ledger" in src, rel
+        assert '"--audit-ledger"' in src or '"--audit-ledger/--no-audit-ledger"' in src, rel

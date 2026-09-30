@@ -179,3 +179,38 @@ def test_rank_qc_library_scores_by_backtest() -> None:
     assert scores[0].sharpe == 2.0
     assert scores[0].family == "mean_reversion"
     assert scores[0].objective_value == 2.0 / 0.10  # sharpe / |dd|
+
+
+def _mock_library(backtest: dict) -> None:
+    respx.post(f"{QC_API_BASE}/projects/read").mock(return_value=httpx.Response(
+        200, json={"success": True, "projects": [{"projectId": 9, "name": "Bollinger Bot"}]}))
+    respx.post(f"{QC_API_BASE}/backtests/list").mock(return_value=httpx.Response(
+        200, json={"success": True, "backtests": [{"backtestId": "b1", "completed": True}]}))
+    respx.post(f"{QC_API_BASE}/backtests/read").mock(return_value=httpx.Response(
+        200, json={"success": True, "backtest": backtest}))
+    respx.post(f"{QC_API_BASE}/files/read").mock(return_value=httpx.Response(
+        200, json={"success": True, "files": [{"name": "main.py", "content": BOLLINGER_SRC}]}))
+
+
+@respx.mock
+def test_rank_qc_library_skips_buy_once_templates_and_errored_backtests() -> None:
+    """2026-09-18: a tutorial that bought 10 TSLA once ranked #1."""
+    _mock_library({"statistics": {"Sharpe Ratio": "5.0", "Sortino Ratio": "6.0",
+                                  "Drawdown": "1.000%", "Total Orders": "1"}})
+    assert rank_qc_library(_client()) == []
+
+
+@respx.mock
+def test_rank_qc_library_skips_runtime_errored_backtests() -> None:
+    _mock_library({"error": "Runtime Error: ...", "statistics": {
+        "Sharpe Ratio": "2.0", "Sortino Ratio": "2.5", "Drawdown": "10.000%", "Total Orders": "200"}})
+    assert rank_qc_library(_client()) == []
+
+
+@respx.mock
+def test_rank_qc_library_defaults_to_sortino_over_dd() -> None:
+    _mock_library({"statistics": {"Sharpe Ratio": "2.0", "Sortino Ratio": "3.0",
+                                  "Drawdown": "10.000%", "Total Orders": "200"}})
+    scores = rank_qc_library(_client())
+    assert len(scores) == 1
+    assert abs(scores[0].objective_value - 3.0 / 0.10) < 1e-9       # sortino / |dd|, trades unknown

@@ -317,7 +317,7 @@ def test_level_mode_marks_transitions_and_counts_polls() -> None:
 
 # --- interpret bias as entry filter --------------------------------------------------------
 
-from trading_live_claude.intel.interpret import Thesis                       # noqa: E402
+from trading_live_claude.intel.interpret import Thesis  # noqa: E402
 
 
 def test_interpret_bias_no_op_when_interpret_for_is_none() -> None:
@@ -649,18 +649,49 @@ def test_global_stop_sentinel_ends_the_loop_and_flattens(tmp_path) -> None:
     assert any(getattr(i, "strategy", "") == "flatten" for i in router.intents)
 
 
-def test_stop_sentinel_is_consumed_so_the_next_launch_is_not_killed(tmp_path) -> None:
-    """A persistent STOP would immediately kill every subsequent session — unlike HALTED,
-    which is a risk state and stays put. The sentinel is a one-shot request."""
+def test_global_stop_is_left_for_other_sessions_and_a_later_launch_ignores_it(tmp_path) -> None:
+    """2026-09-18: the global STOP is no longer consumed (the first session used to take it, so
+    only one stopped). A session started AFTER the file was written ignores it as stale."""
+    import os
+    import time as _t
+
     broker = _MutableBroker([_Position("AAA", 5)])
     mon = _flatten_monitor(broker, _FillingRouter(broker), flatten_on_exit=True,
                            stop_sentinel_dir=tmp_path)
     sentinel = tmp_path / "STOP"
     sentinel.write_text("stop", encoding="utf-8")
-
     mon.run_forever()
+    assert sentinel.exists()                         # still there for the other sessions
 
-    assert not sentinel.exists()
+    old = _t.time() - 3600                           # an hour-old STOP: stale for a new launch
+    os.utime(sentinel, (old, old))
+    later = _MutableBroker([_Position("AAA", 5)])
+    router = _FillingRouter(later)
+    fresh = _flatten_monitor(later, router, flatten_on_exit=False, stop_sentinel_dir=tmp_path)
+    fresh.run_forever(max_iterations=1)              # bounded: the stale file must not stop it
+    assert not fresh._stop_requested
+
+
+def test_global_stop_stops_every_running_session(tmp_path) -> None:
+    b1 = _SessionBroker("aaaa1111", [_Position("AAA", 5)])
+    b2 = _SessionBroker("bbbb2222", [_Position("AAA", 5)])
+    m1 = _flatten_monitor(b1, _FillingRouter(b1), flatten_on_exit=True, stop_sentinel_dir=tmp_path)
+    m2 = _flatten_monitor(b2, _FillingRouter(b2), flatten_on_exit=True, stop_sentinel_dir=tmp_path)
+    (tmp_path / "STOP").write_text("stop", encoding="utf-8")
+
+    m1.run_forever()
+    m2.run_forever()                                 # before the fix this one never stopped
+
+    assert b1.positions("ACC") == [] and b2.positions("ACC") == []
+
+
+def test_per_session_sentinel_is_still_consumed(tmp_path) -> None:
+    mine = _SessionBroker("aaaa1111", [_Position("AAA", 5)])
+    mon = _flatten_monitor(mine, _FillingRouter(mine), flatten_on_exit=True,
+                           stop_sentinel_dir=tmp_path)
+    (tmp_path / "STOP_aaaa1111").write_text("stop", encoding="utf-8")
+    mon.run_forever()
+    assert not (tmp_path / "STOP_aaaa1111").exists()
 
 
 def test_per_session_sentinel_only_stops_that_session(tmp_path) -> None:
@@ -751,3 +782,71 @@ def test_warmup_never_slows_the_base_interval(monkeypatch) -> None:
 def test_warmup_interval_is_floored_at_five_seconds(monkeypatch) -> None:
     mon = _warm_monitor(monkeypatch, base=300, warm=1, minutes=60, elapsed_s=0)
     assert mon._sleep_seconds() == 5.0
+
+
+def test_atr_fallback_rejects_nan_and_nonpositive() -> None:
+    """NaN is truthy, so `float(atr) or default` used to let it through (fixed 2026-09-18)."""
+    from trading_live_claude.monitor.live_loop import _atr_or_default
+    assert _atr_or_default(float("nan"), 50.0) == 1.0
+    assert _atr_or_default(None, 50.0) == 1.0
+    assert _atr_or_default(0.0, 50.0) == 1.0
+    assert _atr_or_default(-3.0, 50.0) == 1.0
+    assert _atr_or_default("x", 50.0) == 1.0
+    assert _atr_or_default(float("inf"), 50.0) == 1.0
+    assert _atr_or_default(2.5, 50.0) == 2.5
+
+
+# --- apply_overlay wired through the allocator bias (2026-09-21) ---------------------------
+
+def _conviction_seen(overlay_for, weight_bias_for) -> float:
+    """Run one entry poll and return the conviction the sizer was handed."""
+    from trading_live_claude.risk.sizing import PositionSizer
+    seen: list[float] = []
+
+    class _Spy(PositionSizer):
+        def size(self, **kw):  # type: ignore[no-untyped-def,override]
+            seen.append(kw["conviction"])
+            return super().size(**kw)
+
+    LiveMonitor(
+        broker=_Broker(),          # type: ignore[arg-type]
+        market=_Market(),          # type: ignore[arg-type]
+        strategy=_EntryStrategy(),
+        sizer=_Spy(risk_pct=0.01),
+        router=_Router(),          # type: ignore[arg-type]
+        account_number="X",
+        symbols=["CCC"],
+        overlay_for=overlay_for,
+        weight_bias_for=weight_bias_for,
+    ).step()
+    return seen[0]
+
+
+def test_overlaid_allocator_bias_applies_the_overlay_once_not_twice() -> None:
+    from trading_live_claude.intel.apply import OverlaidBias
+    from trading_live_claude.portfolio.allocator import AllocationResult
+    alloc = AllocationResult(weights={"CCC": 0.6, "DDD": 0.4}, gross_exposure=1.0, cash=0.0,
+                             sleeve_weights={}, effective_positions=1.9)
+    ov = lambda _s: _decision(0.5, False)                       # noqa: E731
+    plain = _conviction_seen(ov, lambda _s: 1.2)                # bias 0.6/0.5, overlay in-loop
+    wired = _conviction_seen(ov, OverlaidBias(alloc, 0.5, ["CCC", "DDD"], ov))
+    assert abs(wired - plain) < 1e-12 and abs(wired - 1.2 * 0.5) < 1e-12
+
+
+def test_overlaid_bias_keeps_the_overlay_halt() -> None:
+    from trading_live_claude.intel.apply import OverlaidBias
+    from trading_live_claude.portfolio.allocator import AllocationResult
+    alloc = AllocationResult(weights={"CCC": 1.0}, gross_exposure=1.0, cash=0.0,
+                             sleeve_weights={}, effective_positions=1.0)
+    ov = lambda _s: _decision(0.25, True)                       # noqa: E731
+    router, events = _Router(), []
+    from trading_live_claude.risk.sizing import PositionSizer
+    LiveMonitor(
+        broker=_Broker(), market=_Market(),                     # type: ignore[arg-type]
+        strategy=_EntryStrategy(), sizer=PositionSizer(risk_pct=0.01),
+        router=router, account_number="X", symbols=["CCC"],     # type: ignore[arg-type]
+        on_event=events.append, overlay_for=ov,
+        weight_bias_for=OverlaidBias(alloc, 1.0, ["CCC"], ov),
+    ).step()
+    assert router.intents == []
+    assert next(e for e in events if e.kind == "entry").detail["mitigation"]["halt"] is True  # type: ignore[index]

@@ -178,3 +178,22 @@ def test_cancel_order_is_also_gated_off_by_default() -> None:
     from trading_live_claude.brokers.base import BrokerError
     with KrakenBroker() as b, pytest.raises(BrokerError, match="disabled"):
         b.cancel_order("KRAKEN", 1)
+
+
+def test_txid_to_int_is_stable_across_processes() -> None:
+    """hash() is salted per process, so ids used to change after a restart (fixed 2026-09-18)."""
+    import os
+    import subprocess
+    import sys
+
+    from trading_live_claude.brokers.kraken import _txid_to_int
+    txid = "OZAA6H-FQI3S-DK6GHJ"
+    here = _txid_to_int(txid)
+    assert 0 <= here < 2**31 - 1
+    code = ("from trading_live_claude.brokers.kraken import _txid_to_int;"
+            f"print(_txid_to_int({txid!r}))")
+    for seed in ("1", "2"):
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                             env={**os.environ, "PYTHONHASHSEED": seed})
+        assert int(out.stdout.strip()) == here
+    assert _txid_to_int("OTHER-TXID-000000") != here

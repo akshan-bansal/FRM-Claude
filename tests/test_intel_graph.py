@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from trading_live_claude.intel.graph import (
     ELEVATION_THRESHOLD,
     Edge,
@@ -160,7 +162,7 @@ def _make_edge(subj: tuple[str, str], pred: str, obj: tuple[str, str]) -> Edge:
 
 # --- graph → agent evidence bundle ---------------------------------------------------------------
 
-from trading_live_claude.intel.graph import recent_events_from_graph                  # noqa: E402
+from trading_live_claude.intel.graph import recent_events_from_graph  # noqa: E402
 
 
 def test_recent_events_from_graph_reconstructs_records_from_typed_edges() -> None:
@@ -204,9 +206,11 @@ def test_recent_events_from_graph_dedupes_repeated_edges() -> None:
 
 # --- temporal gate: prune + wash ------------------------------------------------------------
 
-from datetime import UTC, datetime as _dt, timedelta as _td            # noqa: E402
+from datetime import UTC  # noqa: E402
+from datetime import datetime as _dt
+from datetime import timedelta as _td
 
-from trading_live_claude.intel.graph import (                          # noqa: E402
+from trading_live_claude.intel.graph import (  # noqa: E402
     DEFAULT_POLICIES,
     DecayPolicy,
     wash_edges,
@@ -475,3 +479,131 @@ def test_edges_where_is_conjunctive_over_provided_filters() -> None:
                            object=("domain", "energy"))) == 2
     assert len(edges_where(edges, subject=("poll", "p1"), predicate="elevated_in",
                            object=("domain", "energy"))) == 1
+
+
+# ---- wash cadence: 0.0 = off, persisted across restarts (2026-09-18) --------------------------
+
+def test_wash_due_zero_fraction_disables_pruning_and_none_stays_uncapped() -> None:
+    from trading_live_claude.intel.graph import wash_due
+    assert not wash_due(max_prune_fraction=0.0, last_wash_ts=None, now=1e9, min_seconds=10)
+    assert not wash_due(max_prune_fraction=-1.0, last_wash_ts=None, now=1e9, min_seconds=10)
+    assert wash_due(max_prune_fraction=None, last_wash_ts=None, now=1e9, min_seconds=10)
+    assert wash_due(max_prune_fraction=0.05, last_wash_ts=None, now=1e9, min_seconds=10)
+    assert not wash_due(max_prune_fraction=0.05, last_wash_ts=1e9 - 5, now=1e9, min_seconds=10)
+    assert wash_due(max_prune_fraction=0.05, last_wash_ts=1e9 - 10, now=1e9, min_seconds=10)
+
+
+def test_last_wash_time_survives_restarts_via_marker_then_bak(tmp_path) -> None:
+    import os
+
+    from trading_live_claude.intel.graph import last_wash_time, record_wash_time
+    journal = tmp_path / "intel_graph.jsonl"
+    journal.write_text("", encoding="utf-8")
+    assert last_wash_time(journal) is None                       # never washed
+    bak = tmp_path / "intel_graph.jsonl.bak"
+    bak.write_text("", encoding="utf-8")
+    os.utime(bak, (1_000_000.0, 1_000_000.0))
+    assert last_wash_time(journal) == pytest.approx(1_000_000.0)  # older journals: .bak mtime
+    record_wash_time(journal, ts=2_000_000.5)
+    assert last_wash_time(journal) == pytest.approx(2_000_000.5)  # marker wins once written
+
+
+def test_append_failure_logs_the_reason_and_does_not_raise(tmp_path) -> None:
+    from structlog.testing import capture_logs
+
+    from trading_live_claude.intel.graph import Edge, append_edges
+    bad = tmp_path / "is_a_dir"
+    bad.mkdir()
+    with capture_logs() as logs:
+        append_edges([Edge(("poll", "p"), "observed", ("domain", "energy"))], path=bad)
+    ev = [e for e in logs if e.get("event") == "intel.graph.append_failed"]
+    assert ev and ev[0]["error_type"] and ev[0]["error"]
+
+
+# --------------------------------------------------------------------------- #
+# influence channel + scaled edge (2026-09-29)                                 #
+# --------------------------------------------------------------------------- #
+
+def test_influence_clamps_to_the_overlay_invariant() -> None:
+    """(0, 1]: intelligence may de-risk, never lever up.
+
+    The same bound test_intel_overlay.py asserts of the overlay itself. Enforcing it on the channel
+    means the property survives a call site that forgets it.
+    """
+    from trading_live_claude.intel.graph import clamp_influence
+    assert clamp_influence(1.4) == 1.0          # cannot lever up
+    assert clamp_influence(0.474) == 0.474
+    assert clamp_influence(1.0) == 1.0
+    assert clamp_influence(0.0) is None         # silenced, not a zero multiplier
+    assert clamp_influence(-2.0) is None
+    assert clamp_influence(None) is None
+    assert clamp_influence(float("nan")) is None
+
+
+def test_influence_is_absent_from_rows_that_do_not_carry_it() -> None:
+    """Journal rows written before the channel existed must stay byte-identical."""
+    from trading_live_claude.intel.graph import Edge
+    e = Edge(subject=("venue", "kraken"), predicate="traded",
+             object=("symbol", "LINK/USD"), weight=-74957.0)
+    assert "influence" not in e.to_row()
+    assert Edge.from_row(e.to_row()).influence is None
+
+
+def test_scaled_edge_joins_the_two_components() -> None:
+    """The edge exists to make a fill traceable back to the intelligence that resized it."""
+    from trading_live_claude.intel.graph import scaled_edge
+    e = scaled_edge(poll_id="2026-09-29T15:00", symbol="LINK/USD", scalar=0.474,
+                    asset_class="crypto", intent_id="abc-123", strategy="atr_channel",
+                    reasons=["elevated global news alerts"], as_of="2026-09-29T15:00")
+    assert e.subject == ("poll", "2026-09-29T15:00")   # the read that produced the scalar
+    assert e.object == ("symbol", "LINK/USD")
+    assert e.predicate == "scaled"
+    assert e.influence == 0.474
+    assert e.meta["intent_id"] == "abc-123"            # the join key; without it it is decorative
+    assert e.to_row()["influence"] == 0.474
+
+
+def test_scaled_edge_cannot_lever_up() -> None:
+    from trading_live_claude.intel.graph import scaled_edge
+    e = scaled_edge(poll_id="p", symbol="X", scalar=2.5, asset_class="equity",
+                    intent_id="i", strategy="s")
+    assert e.influence == 1.0        # clamped
+    assert e.weight == 2.5           # the record keeps what was actually computed
+
+
+def test_venue_influence_is_damped_below_intel() -> None:
+    """Objective #1: venue is a conduit, not a view — capped at 0.65 in the channel.
+
+    The cap is in the DIMENSIONLESS channel, not on the edge's weight. `traded` weight is signed
+    notional up to +/-100,046; 65% of that would still be ~65,000x an about_domain edge (max 1.0)
+    and would still dominate the graph. Capping the channel is what actually limits it.
+    """
+    from trading_live_claude.intel.graph import INFLUENCE_BY_PREDICATE
+    assert INFLUENCE_BY_PREDICATE["traded"] == 0.65
+    assert INFLUENCE_BY_PREDICATE["observed"] == 1.0
+    assert INFLUENCE_BY_PREDICATE["ranked_by"] is None       # signed rank abstains
+
+
+def test_node_power_is_a_normalised_share() -> None:
+    from trading_live_claude.intel.graph import Edge, node_power, scaled_edge
+    edges = [
+        scaled_edge(poll_id="p1", symbol="LINK/USD", scalar=0.474, asset_class="crypto",
+                    intent_id="i1", strategy="atr_channel"),
+        Edge(subject=("venue", "kraken"), predicate="traded",
+             object=("symbol", "LINK/USD"), weight=-74957.0),
+        Edge(subject=("poll", "p1"), predicate="observed", object=("event", "E1"), weight=3.0),
+        Edge(subject=("analysis", "a"), predicate="ranked_by",
+             object=("symbol", "LINK/USD"), weight=-61.2),
+    ]
+    pw = node_power(edges)
+    assert abs(sum(v["power"] for v in pw.values()) - 1.0) < 1e-6
+    # ranked_by carries no influence, so analysis is absent entirely — not a zero-power node.
+    assert not any(n[0] == "analysis" for n in pw)
+    # the damping is visible: a venue emitting one trade ranks below a poll emitting one observation
+    assert pw[("venue", "kraken")]["power"] < pw[("poll", "p1")]["power"]
+    assert pw[("venue", "kraken")]["emitted"] == 0.65
+
+
+def test_node_power_of_an_empty_graph_is_empty() -> None:
+    from trading_live_claude.intel.graph import node_power
+    assert node_power([]) == {}

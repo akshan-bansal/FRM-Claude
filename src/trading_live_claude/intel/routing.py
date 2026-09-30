@@ -15,6 +15,7 @@ polls. This turns the difference between "one 6x event-acceleration spike is noi
 """
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -73,7 +74,12 @@ def classify_symbol(symbol: str, overrides: Mapping[str, OverlayClass] | None = 
         return {k.upper(): v for k, v in overrides.items()}[s]
     if s.startswith("/"):
         return "future"   # futures root notation (/ES) — before the crypto "/" check
-    if "/" in s or s.split("-")[0] in _CRYPTO_BASES:
+    if "/" in s:
+        # BASE/QUOTE is crypto (Kraken) unless both legs are fiat codes: EUR/USD is FX. Checked
+        # here because the 6-letter FX test below never sees the slash form (fixed 2026-09-18).
+        base, _, quote = s.partition("/")
+        return "fx" if base in _FX_CODES and quote in _FX_CODES else "crypto"
+    if s.split("-")[0] in _CRYPTO_BASES:
         return "crypto"
     if len(s) == 6 and s[:3] in _FX_CODES and s[3:] in _FX_CODES:
         return "fx"
@@ -94,13 +100,23 @@ class OverlayProvider:
     ``snapshot_fn`` is a *synchronous* zero-arg callable returning a fresh :class:`IntelSnapshot`
     (the CLI wraps the async WorldMonitor client in one). Decisions are recomputed at most every
     ``refresh_seconds``; failures are swallowed so the monitor loop never breaks on intel I/O.
+
+    ``background=True`` refreshes stale decisions on a daemon thread and keeps serving the previous
+    ones until it lands (stale-while-revalidate). Only the very first fetch blocks, since there is
+    nothing to serve yet. 2026-09-18: synchronous refresh ran inside the trading loop's first entry
+    evaluation after each TTL, stalling the whole poll for the snapshot fetch (measured 3.2 s).
+    Default False keeps the synchronous behaviour for existing callers.
     """
 
     def __init__(self, snapshot_fn: Callable[[], IntelSnapshot], *, refresh_seconds: float = 900.0,
                  overlay: RiskOverlay | None = None,
                  class_overrides: Mapping[str, OverlayClass] | None = None,
-                 journal: bool = True) -> None:
+                 journal: bool = True,
+                 background: bool = False) -> None:
         self._snapshot_fn = snapshot_fn
+        self._background = background
+        self._inflight_lock = threading.Lock()
+        self._inflight = False
         self._refresh = refresh_seconds
         self._overlay = overlay or RiskOverlay()
         self._overrides = class_overrides
@@ -122,6 +138,23 @@ class OverlayProvider:
     def refresh(self, *, force: bool = False) -> None:
         if not force and self._decisions is not None and (time.monotonic() - self._ts) < self._refresh:
             return
+        if self._background and self._decisions is not None:
+            with self._inflight_lock:
+                if self._inflight:
+                    return
+                self._inflight = True
+            threading.Thread(target=self._refresh_bg, name="overlay-refresh", daemon=True).start()
+            return
+        self._fetch()
+
+    def _refresh_bg(self) -> None:
+        try:
+            self._fetch()
+        finally:
+            with self._inflight_lock:
+                self._inflight = False
+
+    def _fetch(self) -> None:
         try:
             snap = self._snapshot_fn()
             self._decisions = self._overlay.evaluate(snap)

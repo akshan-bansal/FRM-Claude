@@ -2,7 +2,7 @@
 
 Every notification the system pushes to Telegram/email/stdout comes through one of these
 formatters so the reader sees a consistent shape across sources: entry, exit, thesis fire,
-persistence hit, wash event.
+persistence hit, wash event, heartbeat.
 
 Design goals, in order:
 
@@ -54,7 +54,7 @@ def _bullet(items: list[str]) -> str:
 def format_entry(
     *, strategy_name: str, symbol: str, price: float,
     detail: dict[str, Any], is_transition: bool = True, poll_count: int = 1,
-    wf_record: Any = None,
+    wf_record: Any = None, live_params: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Entry alert — sizing story + statistical evidence for the selection.
 
@@ -97,11 +97,20 @@ def format_entry(
             oos_trade_line += f"  ·  win rate: {oos_wr * 100:.1f}% ({int(round(oos_wr * oos_tr))}/{oos_tr})"
         rows = [
             f"Tier: {tier} ({cls}) — cleared WF gate: WFE>=0.5, OOS>0, trades>=class-min",
-            f"Strategy: {strat_wf} with {param_str}",
+            f"Evidence is for: {strat_wf} with {param_str}",
             f"OOS score: {oos:.2f}  ·  WFE: {wfe:.2f}  ({wfe_gloss})",
             f"OOS return: {_pct(oos_ret)}  ·  OOS max drawdown: {_pct(oos_dd)}",
             oos_trade_line,
         ]
+        # The running instance's params, shown beside the evidence (2026-09-18: alerts used to
+        # show only the registry's, which the live path did not run).
+        if live_params is not None:
+            shown = {k: v for k, v in live_params.items() if k in params} if params else live_params
+            running = ", ".join(f"{k}={v}" for k, v in shown.items()) or "defaults"
+            rows.append(f"Running: {strategy_name} with {running}")
+            if params and (strat_wf != strategy_name
+                           or any(live_params.get(k) != v for k, v in params.items())):
+                rows.append("MISMATCH: the running config differs from the one the evidence is for")
         lines.append(_bullet(rows))
     else:
         lines.append("")
@@ -140,10 +149,38 @@ def format_entry(
 
 def format_exit(
     *, strategy_name: str, symbol: str, price: float, shares: float,
+    detail: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
-    title = f"EXIT  {symbol}  {strategy_name}"
+    """Exit alert. ``detail`` is the monitor event's detail dict; its ``reason`` (``stop``,
+    ``profit_lock``, ``flatten``) replaces the default strategy-signal wording when present."""
+    d = detail or {}
+    reason = d.get("reason")
+    title = f"EXIT  {symbol}  {strategy_name}" + (f"  ({reason})" if reason else "")
+    if reason == "profit_lock":
+        why = (f"profit lock. Price fell to {price:.4f}, through the lock level "
+               f"{float(d.get('lock_level') or 0):.4f} set below the peak of "
+               f"{float(d.get('peak') or 0):.4f}. The allowed giveback shrinks as the gain grows, "
+               f"and the lock never sits below entry.")
+    elif reason == "candle_exit":
+        pats = ", ".join(str(x).replace("_", " ") for x in (d.get("patterns") or [])) or "bearish reversal"
+        why = (f"candle exit. A bearish reversal ({pats}) completed on the last daily bar, which "
+               f"closed at {float(d.get('pattern_bar_close') or 0):.4f} with the position in profit "
+               f"past 1 ATR and past 2x round-trip costs.")
+    elif reason == "overbought_exit":
+        trig = {"close_above_upper_bb": "close above the upper Bollinger band",
+                "rsi_overbought": "RSI(14) at or above 70"}
+        what = " and ".join(trig.get(str(x), str(x)) for x in (d.get("patterns") or [])) or "overbought"
+        why = (f"overbought exit. The last daily bar (close {float(d.get('pattern_bar_close') or 0):.4f}) "
+               f"showed {what}, a mean-reversion sell signal, with the position in profit past 1 ATR "
+               f"and past 2x round-trip costs.")
+    elif reason == "stop":
+        why = f"protective stop at {float(d.get('stop') or 0):.4f} was traded through."
+    elif reason == "flatten":
+        why = "session stop. The book is closed out on exit; this is not a strategy signal."
+    else:
+        why = "strategy generated an exit signal on the latest bar."
     body = (f"Signal: exit at {price:.4f}. Closing {shares:g} units.\n\n"
-            f"Reason: strategy generated an exit signal on the latest bar. "
+            f"Reason: {why} "
             f"Realized P&L will land in the session's paper_equity.csv row for this fill.")
     return title, body
 
@@ -173,19 +210,25 @@ def format_hedge(*, symbol: str, detail: dict[str, Any]) -> tuple[str, str]:
 
 
 def format_thesis(thesis: Any, *, theme_exemplars: dict[str, tuple[str, ...]] | None = None,
-                    graph_context: dict[str, Any] | None = None) -> tuple[str, str]:
+                    graph_context: dict[str, Any] | None = None,
+                    intensity: Any = None) -> tuple[str, str]:
     """Thesis-fire alert — the interpretive story with exposures called out.
 
     ``thesis`` is a :class:`intel.interpret.Thesis` (duck-typed, so this stays testable without
     importing interpret at module load). ``theme_exemplars`` maps a theme to its exemplar tickers,
     used to render the "implicated tickers" block. ``graph_context`` is an optional dict for
-    corroboration/persistence gloss (source count, consecutive-polls count).
+    corroboration/persistence gloss (source count, consecutive-polls count). ``intensity`` is an
+    optional :class:`intel.thesis_intensity.ThesisIntensity` (informational grading, 0-1).
     """
     title = f"THESIS  {thesis.name}  ({thesis.confidence})"
     lines: list[str] = []
     if thesis.evidence:
         lines.append("What the feed shows:")
         lines.append(_bullet(list(thesis.evidence)))
+        lines.append("")
+    if intensity is not None:
+        lines.append("How strong (0-1, bounded log of value x time):")
+        lines.append(f"  {intensity.summary()}")
         lines.append("")
     if thesis.inference:
         lines.append("What it means:")
@@ -254,4 +297,58 @@ def format_wash(*, before: int, after: int, pruned: int,
         lines.append(_bullet(rows))
     lines.append("")
     lines.append("Next wash: at least 72h from now (--wash-min-hours default).")
+    return title, "\n".join(lines)
+
+
+def format_heartbeat(
+    *, snapshot: Any, theses: list[Any], poll: int, polls_total: int, edges: int,
+    strategic_risk_gate: float, conflict_gate: int, interval_hours: float,
+    intensities: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Periodic liveness read — lets a silent thesis channel be told apart from a broken pipeline.
+
+    ``snapshot`` is an :class:`intel.overlay.IntelSnapshot` and ``theses`` the named
+    :class:`intel.interpret.Thesis` list (quiet-tape null already dropped), both duck-typed. The
+    gates are passed in by the caller from ``interpret``'s constants so the message tracks any
+    recalibration instead of hard-coding today's cutoffs.
+    """
+    title = ("HEARTBEAT  quiet tape" if not theses
+             else f"HEARTBEAT  {len(theses)} {'thesis' if len(theses) == 1 else 'theses'} firing")
+    lines: list[str] = [f"Graph journal is polling: poll {poll}/{polls_total}, "
+                        f"journal {edges:,} edges."]
+    readings_missing = not snapshot.strategic_risk and not snapshot.market
+    if snapshot.degraded:
+        lines.append("Snapshot is DEGRADED — the readings below are partial, so silence here is "
+                     "missing data, not a quiet tape.")
+    elif readings_missing:
+        lines.append("Snapshot carries no readings although it is not flagged degraded — check "
+                     "the feed before reading silence as calm.")
+    lines.append("")
+    lines.append("Theses firing:")
+    def _thesis_row(t: Any) -> str:
+        r = (intensities or {}).get(t.name)
+        return f"{t.name} ({t.confidence})" + (f", intensity {r.intensity:.2f}" if r else "")
+
+    lines.append(_bullet([_thesis_row(t) for t in theses]) if theses
+                 else "  none — no configuration cleared its gate.")
+    lines.append("")
+    lines.append("Readings vs thesis gates:")
+    vix = snapshot.market.get("equity_vol")
+    fg = snapshot.fear_greed
+    accel = snapshot.event_acceleration or {}
+    rows = [
+        f"strategic-risk index {snapshot.strategic_risk:.0f}/100 "
+        f"(complacency gate >= {strategic_risk_gate:.0f})",
+        f"active conflict escalations {snapshot.conflict_events_active} "
+        f"(conflict gate >= {conflict_gate})",
+        f"VIX {vix:.1f}" if vix is not None else "VIX n/a",
+        f"fear/greed {fg:.0f}" if fg is not None else "fear/greed n/a",
+    ]
+    if accel:
+        rows.append("event flow vs baseline: " + ", ".join(
+            f"{dom} {accel[dom]:.1f}x" for dom in ("energy", "conflict", "military") if dom in accel))
+    lines.append(_bullet(rows))
+    lines.append("")
+    lines.append("These are the inputs the interpret layer reads — research context, not a signal.")
+    lines.append(f"Next heartbeat in ~{interval_hours:g}h.")
     return title, "\n".join(lines)

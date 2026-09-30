@@ -219,7 +219,8 @@ def test_router_dual_writes_the_order_path(tmp_path: Path) -> None:
     router.submit(intent, equity=100_000.0, existing_risk=0.0, open_positions=0)
 
     events = [r["event"] for r in led.rows()]
-    assert events == ["RISK_CHECK", "BROKER_SUBMITTED", "FILLED"]
+    # INTENT_CREATED leads: the intent existed before the gate ran, and the row carries the gap.
+    assert events == ["INTENT_CREATED", "RISK_CHECK", "BROKER_SUBMITTED", "FILLED"]
     assert {r["intent_id"] for r in led.rows()} == {intent.intent_id}   # one identity throughout
     filled = led.rows()[-1]
     assert filled["broker_order_id"] == broker.placed[0].id
@@ -235,9 +236,10 @@ def test_router_records_a_rejection_with_its_reasons(tmp_path: Path) -> None:
                                   ledger=led, min_ticket_usd=1_000_000.0)
     router.submit(_intent(), equity=100_000.0, existing_risk=0.0, open_positions=0)
     rows = led.rows()
-    assert [r["event"] for r in rows] == ["RISK_REJECTED"]
-    assert rows[0]["payload"]["rejected_reasons"]
-    assert rows[0]["payload"]["accepted"] is False
+    assert [r["event"] for r in rows] == ["INTENT_CREATED", "RISK_REJECTED"]
+    assert rows[1]["payload"]["rejected_reasons"]
+    assert rows[1]["payload"]["accepted"] is False
+    assert rows[0]["payload"]["created_at"] and rows[0]["payload"]["pre_gate_ms"] >= 0
 
 
 def test_a_router_without_a_ledger_behaves_exactly_as_before(tmp_path: Path) -> None:

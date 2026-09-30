@@ -24,10 +24,12 @@ ever changes, revisit before scaling up.
 """
 from __future__ import annotations
 
+import contextlib
 import secrets
 import sqlite3
 import threading
 import time
+from base64 import b64encode
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -37,7 +39,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 from ..logging_setup import get_logger
-from .approval import PassbookEntry, Prompt, Verdict, canonical_bytes
+from .approval import PassbookEntry, Prompt, Verdict, canonical_bytes, fingerprint
 from .router import OrderIntent
 
 log = get_logger(__name__)
@@ -65,7 +67,12 @@ CREATE TABLE IF NOT EXISTS intents (
     broker          TEXT NOT NULL,
     symbol          TEXT NOT NULL,
     action          TEXT NOT NULL,
-    shares          INTEGER NOT NULL,
+    -- REAL, not INTEGER: the crypto sleeve sizes fractionally (sizing v2 routinely
+    -- produces e.g. 4.18347861 PAXG). 2026-09-17: this column was INTEGER and both
+    -- decoders cast with int(), so every rehydrated prompt and every passbook row
+    -- truncated the quantity — the audit record disagreed with the fill, and a prompt
+    -- reloaded after a restart would have DISPLAYED a size the card never signed.
+    shares          REAL NOT NULL,
     entry           REAL NOT NULL,
     stop            REAL NOT NULL,
     target          REAL,
@@ -78,7 +85,13 @@ CREATE TABLE IF NOT EXISTS intents (
     intel_ref       TEXT NOT NULL DEFAULT '',
     nonce           TEXT NOT NULL,
     canonical       TEXT NOT NULL,
-    signer_card_id  TEXT
+    signer_card_id  TEXT,
+    -- Audit evidence (added 2026-09-24). The signature used to be verified and then dropped, so
+    -- no historical approval could be re-verified: the only record was the router's own word that
+    -- it had checked. Stored base64 beside the canonical bytes it covers, which is what makes
+    -- "this intent -> this device -> this approval" provable offline, from the DB alone.
+    signature       TEXT,
+    signature_alg   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_intents_resolved_at
@@ -100,7 +113,22 @@ def _open_db(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive column migrations for databases created before a column existed.
+
+    ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a live ``state/approval.db``
+    never gains new columns without this. Only ever ADD COLUMN with a NULL default: older rows keep
+    reading, and a NULL signature is the honest record for an approval taken before it was stored.
+    """
+    have = {row[1] for row in conn.execute("PRAGMA table_info(intents)")}
+    for column, ddl in (("signature", "signature TEXT"), ("signature_alg", "signature_alg TEXT")):
+        if column not in have:
+            conn.execute(f"ALTER TABLE intents ADD COLUMN {ddl}")
+            log.info("approval.db.migrated", added=column)
 
 
 # --------------------------------------------------------------------------- #
@@ -116,6 +144,30 @@ class SqliteCardRegistry:
         self._lock = threading.RLock()
         self._cache: dict[str, Ed25519PublicKey] = {}
         self._reload_cache()
+
+
+    # -- lifecycle ---------------------------------------------------------- #
+    # These classes hold a sqlite connection for the life of the process, which is right for a
+    # long-running shim but left every short-lived instance to be reclaimed by the GC with its
+    # connection still open — 45 ResourceWarnings across a test run, and on Windows an open handle
+    # can also keep the .db file locked against a later rmtree. close() is explicit, the context
+    # manager covers scoped use, and __del__ is the backstop for callers that do neither.
+
+    def close(self) -> None:
+        """Close the underlying connection. Safe to call twice."""
+        conn, self._conn = getattr(self, "_conn", None), None
+        if conn is not None:
+            with contextlib.suppress(Exception):       # best-effort teardown
+                conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:                         # pragma: no cover - GC timing
+        self.close()
 
     def _reload_cache(self) -> None:
         with self._lock:
@@ -187,6 +239,9 @@ class SqliteCardRegistry:
 # store                                                                       #
 # --------------------------------------------------------------------------- #
 
+_SIG_ALG = "ed25519"
+
+
 _INTENT_COLS = (
     "intent_id, issued_at, expires_at, broker, symbol, action, shares, entry, "
     "stop, target, notional_usd, risk_dollars, strategy, account, mode, thesis, "
@@ -202,7 +257,7 @@ def _row_to_prompt(row: tuple) -> Prompt:
         broker=row[3],
         symbol=row[4],
         action=row[5],
-        shares=int(row[6]),
+        shares=float(row[6]),   # never int(): fractional crypto sizes
         entry=float(row[7]),
         stop=float(row[8]),
         target=(float(row[9]) if row[9] is not None else None),
@@ -237,6 +292,30 @@ class SqliteApprovalStore:
         # (unset) Event so `wait()` can still be called on it. Nothing was
         # actually blocked when we crashed, so this loses no state.
         self._rehydrate_pending_events()
+
+
+    # -- lifecycle ---------------------------------------------------------- #
+    # These classes hold a sqlite connection for the life of the process, which is right for a
+    # long-running shim but left every short-lived instance to be reclaimed by the GC with its
+    # connection still open — 45 ResourceWarnings across a test run, and on Windows an open handle
+    # can also keep the .db file locked against a later rmtree. close() is explicit, the context
+    # manager covers scoped use, and __del__ is the backstop for callers that do neither.
+
+    def close(self) -> None:
+        """Close the underlying connection. Safe to call twice."""
+        conn, self._conn = getattr(self, "_conn", None), None
+        if conn is not None:
+            with contextlib.suppress(Exception):       # best-effort teardown
+                conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:                         # pragma: no cover - GC timing
+        self.close()
 
     def _rehydrate_pending_events(self) -> None:
         with self._lock:
@@ -279,7 +358,10 @@ class SqliteApprovalStore:
         intel_ref: str = "",
     ) -> Prompt:
         now = datetime.now(UTC)
-        intent_id = self._mint_intent_id()
+        # Reuse the id the intent was born with (2026-09-24) so the approval record and
+        # the router's journals share one key; fall back for a caller passing a bare
+        # intent-shaped object without one.
+        intent_id = getattr(intent, "intent_id", "") or self._mint_intent_id()
         nonce = secrets.token_hex(16)
         notional = float(intent.shares) * float(intent.entry)
         canonical = canonical_bytes(
@@ -422,9 +504,10 @@ class SqliteApprovalStore:
             now = datetime.now(UTC).isoformat()
             cur = self._conn.execute(
                 "UPDATE intents SET verdict = ?, consumed = 1, "
-                "resolved_at = ?, signer_card_id = ? "
+                "resolved_at = ?, signer_card_id = ?, signature = ?, signature_alg = ? "
                 "WHERE intent_id = ? AND verdict IS NULL",
-                (decision, now, card_id, intent_id),
+                (decision, now, card_id, b64encode(signature).decode("ascii"), _SIG_ALG,
+                 intent_id),
             )
             if cur.rowcount != 1:
                 log.warning("approval.response_replay", intent_id=intent_id)
@@ -436,6 +519,31 @@ class SqliteApprovalStore:
                  card_id=card_id)
         return True
 
+    def audit_record(self, intent_id: str) -> dict[str, object] | None:
+        """Everything needed to re-verify one approval offline, from this DB alone.
+
+        Returns the canonical bytes that were signed, the signature, the signing card and that
+        card's public key — including a revoked card's, because a revocation today must not erase
+        the evidence that the key was valid when it signed. ``None`` if the intent is unknown.
+        ``signature`` is None for an EXPIRED intent (nothing signed it) or for an approval taken
+        before 2026-09-24, when signatures were not stored.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT i.intent_id, i.verdict, i.resolved_at, i.issued_at, i.canonical, "
+                "       i.signature, i.signature_alg, i.signer_card_id, c.pubkey_pem, c.revoked_at "
+                "FROM intents i LEFT JOIN cards c ON c.card_id = i.signer_card_id "
+                "WHERE i.intent_id = ?",
+                (intent_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "intent_id": row[0], "verdict": row[1], "resolved_at": row[2], "issued_at": row[3],
+            "canonical": row[4], "signature": row[5], "signature_alg": row[6],
+            "signer_card_id": row[7], "pubkey_pem": row[8], "card_revoked_at": row[9],
+        }
+
     def passbook(self, *, limit: int = 50, offset: int = 0) -> list[PassbookEntry]:
         if limit <= 0:
             return []
@@ -445,7 +553,7 @@ class SqliteApprovalStore:
             rows = self._conn.execute(
                 "SELECT intent_id, resolved_at, verdict, broker, symbol, action, "
                 "  shares, notional_usd, strategy, thesis, intel_ref, "
-                "  signer_card_id "
+                "  signer_card_id, canonical, issued_at "
                 "FROM intents WHERE verdict IS NOT NULL "
                 "ORDER BY resolved_at DESC LIMIT ? OFFSET ?",
                 (limit, offset),
@@ -458,12 +566,16 @@ class SqliteApprovalStore:
                 broker=r[3],
                 symbol=r[4],
                 action=r[5],
-                shares=int(r[6]),
+                shares=float(r[6]),     # never int(): fractional crypto sizes
                 notional_usd=float(r[7]),
                 strategy=r[8],
                 thesis=r[9],
                 intel_ref=r[10],
                 card_id=r[11],
+                # Phase 6: derived from the stored canonical bytes, so the history view shows the
+                # same value the card displayed when it signed.
+                fingerprint=fingerprint(str(r[12]).encode("utf-8")) if r[12] else "",
+                issued_at=datetime.fromisoformat(r[13]) if r[13] else None,
             )
             for r in rows
         ]

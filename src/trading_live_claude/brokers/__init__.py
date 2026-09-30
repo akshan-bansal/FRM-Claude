@@ -1,5 +1,5 @@
 from .base import Broker, BrokerError, OrderRejected, TokenExpired
-from .ib import IBAssetClass, IBBroker, IBContract, L2Book, L2Level
+from .ib import IBAssetClass, IBBroker, IBContract, L2Book, L2Level, StockDetails
 from .ib_web import CPGatewayAuth, IBWebAuth, IBWebBroker, OAuth2JWTAuth
 from .kraken import KrakenBroker
 from .models import Account, Candle, Order, OrderAction, OrderSide, OrderType, Position, Quote
@@ -31,6 +31,7 @@ __all__ = [
     "Position",
     "QuestradeBroker",
     "Quote",
+    "StockDetails",
     "TokenExpired",
     "TokenStore",
 ]

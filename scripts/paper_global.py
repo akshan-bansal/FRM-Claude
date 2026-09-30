@@ -1,20 +1,35 @@
-"""Start a 24-hour global paper book: IB equities on every configured venue + the Kraken crypto sleeve.
+"""Start a 24-hour global paper book: IB futures, overseas equities and/or Kraken crypto, one currency.
 
-One PaperBroker, one Router (one kill-switch, heat budget and leverage cap) measured in
-``account_currency``. Feeds: stocks via IB socket (TWS / IB Gateway), ``BASE/QUOTE`` pairs via
-Kraken, each stale-guarded and converted with IB spot FX. ``SessionRouter`` queues intents for
-closed venues, releases them after the open auction, and applies spread / board-lot controls.
-Nothing touches a real account.
+One PaperBroker, one Router (one kill-switch, heat budget and leverage cap) measured in the book
+``--numeraire``. Feeds: futures via IB socket (TWS / IB Gateway), ``BASE/QUOTE`` pairs via Kraken,
+each stale-guarded. ``SessionRouter`` queues intents for closed venues, releases them after the
+open auction, and applies spread / board-lot controls. Nothing touches a real account.
 
-    python scripts/paper_global.py --equities "XIC.TO,AAPL,7203.T" --crypto sleeve
+Per the desk venue split, IB carries futures plus overseas-listed equities (.L, .AX, .T, .HK);
+US/TSX equities trade on Questrade and are refused. FX is not sourced from IB, so every instrument
+must already be in the numeraire: run one book per currency. Futures rows in a different currency
+from the numeraire are skipped, not refused, so the same universe file serves every book. The
+futures contract multiplier (contract size, not FX) is still applied.
+
+Exchange hopping = several of these books running side by side, each on its own ``--client-id``,
+each idle while its venues are closed (``SessionRouter`` queues intents until the open):
+
+    python scripts/paper_global.py --crypto "" --futures config/futures_universe.json --numeraire USD --client-id 51
+    python scripts/paper_global.py --crypto "" --futures config/futures_universe.json --numeraire JPY         --equities 1306.T --paper-equity 15000000 --min-ticket 15000 --client-id 52
+
+Stop a book cleanly with ``touch state/STOP_<session_id>`` (printed at boot): it exits within one
+poll and flattens through the Router. A process-manager kill skips the flatten.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
+import signal
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -30,9 +45,10 @@ from trading_live_claude.analysis.symbol_validation import (
     validate_sleeve,
 )
 from trading_live_claude.analysis.universe import CRYPTO_SLEEVE
+from trading_live_claude.audit import Ledger
 from trading_live_claude.brokers.base import BrokerError
 from trading_live_claude.brokers.fresh import guard_feed
-from trading_live_claude.brokers.fx import CurrencyNormalizingBroker, ib_spot_rates
+from trading_live_claude.brokers.fx import CurrencyNormalizingBroker, FxRates
 from trading_live_claude.brokers.ib import IBBroker, require_paper_or_data_only
 from trading_live_claude.brokers.kraken import KrakenBroker
 from trading_live_claude.brokers.paper import PaperBroker
@@ -40,6 +56,12 @@ from trading_live_claude.brokers.routed import VenueRoutedFeed
 from trading_live_claude.config import get_settings
 from trading_live_claude.data.cache import CandleCache
 from trading_live_claude.data.market import MarketData
+from trading_live_claude.desk_policy import (
+    VenuePolicyError,
+    assert_ib_no_questrade_equities,
+    assert_single_currency,
+    require_explicit_book_sizing,
+)
 from trading_live_claude.execution.router import Router
 from trading_live_claude.execution.scheduler import MicrostructureConfig, SessionRouter
 from trading_live_claude.futures import (
@@ -70,14 +92,39 @@ def _parse_map(raw: str) -> dict[str, str]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--equities", default="",
-                    help="Comma-separated IB stock symbols with venue suffixes, e.g. 'XIC.TO,AAPL,7203.T'.")
+                    help="Comma-separated overseas listings via IB: .L (LSE), .AX (ASX), .T (Tokyo), "
+                         ".HK (Hong Kong; needs a board_lots entry). US/TSX names are refused — they "
+                         "trade on Questrade.")
     ap.add_argument("--crypto", default="sleeve",
                     help="'sleeve' for CRYPTO_SLEEVE, '' for none, or comma-separated Kraken pairs.")
-    ap.add_argument("--strategy", default="bollinger", help="Fallback strategy for equities.")
+    ap.add_argument("--strategy", default="bollinger",
+                    help="Fallback strategy for futures (crypto uses its CRYPTO_SLEEVE strategy).")
     ap.add_argument("--strategy-map", dest="strategy_map", default="",
-                    help="Per-symbol overrides, e.g. 'XIC.TO=rsi_meanrevert,7203.T=ts_momentum'.")
+                    help="Per-symbol overrides, e.g. '/MCL=ts_momentum,/GC=bollinger'.")
     ap.add_argument("--interval", type=int, default=300)
-    ap.add_argument("--paper-equity", type=float, default=100_000.0)
+    ap.add_argument("--paper-equity", type=float, default=None,
+                    help="Starting equity in the book currency. Default 100,000 for CAD/USD books; "
+                         "required for any other numeraire.")
+    ap.add_argument("--min-ticket", dest="min_ticket", type=float, default=None,
+                    help="Router minimum ticket in the book currency. Default min_ticket_usd from "
+                         "settings for CAD/USD books; required for any other numeraire.")
+    ap.add_argument("--client-id", dest="client_id", type=int, default=None,
+                    help="IB API client id (default ib_client_id from settings). Every book sharing "
+                         "one TWS needs its own, or IB drops the second connection.")
+    ap.add_argument("--resume-session", default="",
+                    help="Continue an earlier paper session's book from the state/ journals instead "
+                         "of starting flat (same --paper-equity as the original). Refuses to start "
+                         "if the journals disagree. Pair with --no-flatten-on-exit on the session "
+                         "you stop for a restart.")
+    ap.add_argument("--flatten-on-exit", dest="flatten_on_exit",
+                    default=True, action=argparse.BooleanOptionalAction,
+                    help="Close every open position through the Router when the loop exits. ON by "
+                         "default. Stop a background book with state/STOP_<session_id>; a "
+                         "process-manager kill skips the flatten. A position whose venue is closed "
+                         "at exit is queued by the SessionRouter, not filled, and is reported.")
+    ap.add_argument("--numeraire", default=None,
+                    help="Book currency (default: account_currency from settings). FX is off IB, so "
+                         "every instrument must already be in this currency (e.g. USD for CME micros).")
     ap.add_argument("--iterations", type=int, default=0)
     ap.add_argument("--futures", default="",
                     help="Path to config/futures_universe.json from discover_futures.py; enabled rows trade.")
@@ -89,26 +136,45 @@ def main() -> None:
                     help="Overlay + graph persistence gate + graph-weighted interpret (needs WORLDMONITOR_API_KEY).")
     ap.add_argument("--persistence-polls", dest="persistence_polls", type=int, default=5)
     ap.add_argument("--graph-polls", dest="graph_polls", type=int, default=3)
+    ap.add_argument("--audit-ledger", dest="audit_ledger",
+                    default=True, action=argparse.BooleanOptionalAction,
+                    help="Write the hash-chained audit ledger under state/ledger/ alongside the "
+                         "existing journals (AUDIT_LEDGER_SCOPE.md), on stream \"global\" so this "
+                         "book's chain is independent of the other books running beside it. ON by "
+                         "default; additive and non-strict, so a ledger write failure is logged "
+                         "rather than raised and cannot stop a session.")
     ap.add_argument("--fill-model", dest="fill_model", choices=("touch", "mid"), default="touch",
                     help="touch = buys at ask / sells at bid (default); mid = legacy mid-price fills.")
     args = ap.parse_args()
 
     settings = get_settings()
-    numeraire = settings.account_currency
+    numeraire = (args.numeraire or settings.account_currency).upper()
+    try:
+        require_explicit_book_sizing(numeraire, args.paper_equity, args.min_ticket)
+    except VenuePolicyError as e:
+        raise SystemExit(f"[global-paper] refusing: {e}") from e
+    paper_equity = args.paper_equity if args.paper_equity is not None else 100_000.0
+    min_ticket = args.min_ticket if args.min_ticket is not None else settings.min_ticket_usd
 
     equities = [s.strip().upper() for s in args.equities.split(",") if s.strip()]
+    try:
+        # Desk venue split: US/TSX equities trade on Questrade; overseas listings may use IB.
+        assert_ib_no_questrade_equities(equities)
+    except VenuePolicyError as e:
+        raise SystemExit(f"[global-paper] refusing: {e}") from e
     if args.crypto.strip().lower() == "sleeve":
         crypto = list(CRYPTO_SLEEVE)
     else:
         crypto = [s.strip().upper() for s in args.crypto.split(",") if s.strip()]
-    if any("/" in s for s in equities) or any("/" not in s for s in crypto):
-        raise SystemExit("--equities takes stock symbols and --crypto takes BASE/QUOTE pairs.")
-    symbols = equities + crypto
+    if any("/" not in s for s in crypto):
+        raise SystemExit("--crypto takes BASE/QUOTE pairs.")
+    symbols = crypto + equities
     if not symbols and not args.futures:
-        raise SystemExit("Nothing to trade: pass --equities, --crypto and/or --futures.")
+        raise SystemExit("Nothing to trade: pass --crypto, --equities and/or --futures.")
 
     port = args.ib_port or (settings.ib_paper_port if settings.ib_use_paper else settings.ib_live_port)
-    ib = IBBroker(host=settings.ib_host, port=port, client_id=settings.ib_client_id,
+    client_id = args.client_id if args.client_id is not None else settings.ib_client_id
+    ib = IBBroker(host=settings.ib_host, port=port, client_id=client_id,
                   account=settings.ib_account or "", enable_live_orders=False,
                   readonly_market_data=True)
     try:
@@ -126,8 +192,14 @@ def main() -> None:
     book = FuturesBook(roll_bdays=settings.futures_roll_bdays)
     futures_rows: list[dict] = []
     if args.futures:
-        futures_rows = [r for r in json.loads(Path(args.futures).read_text(encoding="utf-8"))["contracts"]
-                        if r.get("enabled")]
+        enabled = [r for r in json.loads(Path(args.futures).read_text(encoding="utf-8"))["contracts"]
+                   if r.get("enabled")]
+        # One book per currency: rows in another currency belong to that currency's book.
+        futures_rows = [r for r in enabled if str(r.get("currency", "")).upper() == numeraire]
+        skipped = sorted(r["symbol"] for r in enabled if r not in futures_rows)
+        if skipped:
+            print(f"[global-paper] futures not in {numeraire}, left to their own book: "
+                  f"{', '.join(skipped)}", flush=True)
 
     def refresh_futures() -> None:
         for row in futures_rows:
@@ -144,17 +216,67 @@ def main() -> None:
     futures = sorted(book.specs)
     symbols = symbols + futures
 
+    # FX was pulled off IB on 2026-09-14: this book no longer triangulates a mixed-currency basket
+    # through IB spot pairs. Every instrument must already be in the numeraire, so run one book per
+    # currency (e.g. --numeraire USD for CME micros + USD crypto). The identity rate source below
+    # still carries the futures contract multiplier, which is contract size, not FX.
+    try:
+        assert_single_currency(symbols, numeraire)
+    except VenuePolicyError as e:
+        ib.close()
+        raise SystemExit(f"[global-paper] refusing: {e}") from e
+
+    # Board lots from IB contract details (Tokyo and Hong Kong vary per name). trading.yaml's
+    # board_lots still wins; a failed lookup leaves the venue default, and Hong Kong's default of
+    # 0 refuses the name rather than guessing.
+    board_lots: dict[str, int] = {}
+    for sym in equities:
+        try:
+            lot = ib.stock_details(sym).board_lot
+        except BrokerError as e:
+            print(f"[global-paper] {sym}: board lot lookup failed ({e}); venue default applies",
+                  flush=True)
+            continue
+        if lot:
+            board_lots[sym] = lot
+    board_lots.update({k.upper(): v for k, v in settings.board_lots.items()})
+    if board_lots:
+        print(f"[global-paper] board lots: {board_lots}", flush=True)
+
     validations = validate_sleeve(routed, symbols)
     print(format_validation_banner(validations), flush=True)
     refuse_launch_on_hard_failures(validations)
 
-    rates = ib_spot_rates(ib, numeraire, ttl_s=settings.fx_rate_ttl_s,
-                          max_age_s=settings.fx_max_rate_age_s)
+    def _no_ib_fx(pair: str) -> float | None:
+        raise BrokerError(f"FX is off IB; {pair} should not be needed in a single-currency book")
+
+    rates = FxRates(_no_ib_fx, numeraire, ttl_s=settings.fx_rate_ttl_s,
+                    max_age_s=settings.fx_max_rate_age_s)
     price_feed = CurrencyNormalizingBroker(guard_feed(routed, settings), rates,
                                            multiplier_for=book.multiplier_for)
-    exec_broker = PaperBroker(feed=price_feed, starting_equity=args.paper_equity,
-                              journal_dir=Path(settings.state_dir), fill_model=args.fill_model)
+    exec_broker = PaperBroker(feed=price_feed, starting_equity=paper_equity,
+                              journal_dir=Path(settings.state_dir), fill_model=args.fill_model,
+                              session_id=args.resume_session or None)
+    if args.resume_session:
+        try:
+            restored = exec_broker.resume()
+        except PaperBroker.RehydrationMismatch as e:
+            ib.close()
+            raise SystemExit(f"[global-paper] cannot resume session {args.resume_session}: {e}") from e
+        print(f"[global-paper] RESUMED session {args.resume_session}: "
+              f"{restored['fills_replayed']} fills replayed, positions "
+              f"{restored['positions'] or 'none'}, cash {restored['cash']:,.2f} {numeraire}, "
+              f"realized {restored['realized_pnl']:,.2f}.", flush=True)
     exec_account = exec_broker.accounts()[0].number
+
+    # Audit ledger (AUDIT_LEDGER_SCOPE.md phase 3/7). One stream per book: these runners are
+    # separate processes writing into one state/ directory, and a shared chain would interleave.
+    ledger = None
+    if args.audit_ledger:
+        ledger = Ledger(Path(settings.state_dir) / "ledger", stream="global",
+                        mode="paper", session_id=getattr(exec_broker, "session_id", None))
+        print(f"[global-paper] audit ledger ON -> {ledger.path_for(datetime.now(UTC)).name} "
+              f"(verify: python scripts/verify_ledger.py --stream global)", flush=True)
 
     inner = Router.build_default(
         mode="paper",
@@ -164,7 +286,8 @@ def main() -> None:
         max_drawdown_pct=settings.max_drawdown_kill_switch,
         daily_loss_limit_pct=settings.daily_loss_limit_pct,
         max_open_positions=settings.max_open_positions,
-        min_ticket_usd=settings.min_ticket_usd,
+        min_ticket_usd=min_ticket,   # in the book currency, despite the parameter name
+        ledger=ledger,
     )
     router = SessionRouter(
         inner, exec_broker, account_number=exec_account,
@@ -174,7 +297,7 @@ def main() -> None:
             intent_ttl_min=settings.scheduler_intent_ttl_min,
             max_spread_bps_equity=settings.max_spread_bps_equity,
             max_spread_bps_crypto=settings.max_spread_bps_crypto,
-            board_lots={k.upper(): v for k, v in settings.board_lots.items()},
+            board_lots=board_lots,
         ),
         journal_path=Path(settings.state_dir) / "scheduled_intents.jsonl",
     )
@@ -218,11 +341,12 @@ def main() -> None:
               ("" if settings.worldmonitor_api_key else " (no WORLDMONITOR_API_KEY)"), flush=True)
     venues = sorted({venue_for(s)[0].code for s in symbols})
     print(f"[global-paper] PAPER. session_id={exec_broker.session_id} "
-          f"equity={args.paper_equity:,.0f} {numeraire} fills={args.fill_model} venues={venues}",
+          f"equity={paper_equity:,.0f} {numeraire} min_ticket={min_ticket:,.0f} "
+          f"fills={args.fill_model} venues={venues} ib_client_id={client_id}",
           flush=True)
-    print(f"[global-paper] {len(equities)} equities via IB {settings.ib_host}:{port}, "
-          f"{len(crypto)} crypto pairs via Kraken; FX via IB spot. Real accounts untouched.",
-          flush=True)
+    print(f"[global-paper] {len(futures)} futures via IB {settings.ib_host}:{port}, "
+          f"{len(crypto)} crypto pairs via Kraken; single-currency book in {numeraire} (no IB FX). "
+          f"Real accounts untouched.", flush=True)
 
     roller = make_roller(
         book, exec_broker, router, account_number=exec_account,
@@ -267,7 +391,23 @@ def main() -> None:
         overlay_for=overlay_for,
         interpret_for=interpret_for,
         persistence_for=persistence_for,
+        flatten_on_exit=args.flatten_on_exit,
+        stop_sentinel_dir=Path(settings.state_dir),
     )
+    print(f"[global-paper] graceful stop: touch {Path(settings.state_dir) / 'STOP'} "
+          f"(all sessions) or {Path(settings.state_dir) / ('STOP_' + exec_broker.session_id)} "
+          f"(this one). Exits within one poll and "
+          f"{'flattens' if args.flatten_on_exit else 'does NOT flatten'}.", flush=True)
+
+    def _on_signal(signum, _frame) -> None:
+        print(f"[global-paper] signal {signum} — finishing poll, then "
+              f"{'flattening' if args.flatten_on_exit else 'exiting'}.", flush=True)
+        monitor.request_stop()
+
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(_sig, _on_signal)
+
     try:
         monitor.run_forever(max_iterations=args.iterations or None)
     finally:
