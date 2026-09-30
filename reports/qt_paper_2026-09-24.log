@@ -1,0 +1,199 @@
+params EQB.TO: ts_momentum <- wf {'lookback': 126, 'threshold': 0.0, 'scale': 
+0.25, 'atr_window': 14}
+params QQQ: ts_momentum <- wf {'lookback': 189, 'threshold': 0.02, 'scale': 
+0.25, 'atr_window': 14}
+params XIC.TO: rsi_meanrevert <- wf {'window': 7, 'oversold': 35, 'neutral': 
+50.0, 'atr_window': 14}
+params ZEB.TO: atr_channel <- wf {'ema_window': 30, 'k': 1.5, 'atr_window': 14}
+params CGL.TO: atr_channel <- wf {'ema_window': 30, 'k': 1.5, 'atr_window': 14}
+params VALE: bollinger <- wf {'window': 15, 'n_std': 2.5, 'atr_window': 14}
+params DBC: bollinger <- wf {'window': 20, 'n_std': 2.0, 'atr_window': 14}
+params SRU.UN.TO: confirm_rsi_meanrevert <- calibrated {'base': 
+'rsi_meanrevert', 'patterns': ('hammer', 'inverted_hammer', 'dragonfly_doji', 
+'bullish_engulfing', 'bullish_harami', 'piercing_line', 'tweezer_bottom', 
+'belt_hold_bull'), 'lookback': 3, 'symbol': 'SRU.UN.TO'}  
+params CRT.UN.TO: rsi_meanrevert <- wf {'window': 7, 'oversold': 20, 'neutral':
+50.0, 'atr_window': 14}
+params ENB.TO: confirm_bollinger <- calibrated {'base': 'bollinger', 
+'patterns': ('hammer', 'inverted_hammer', 'dragonfly_doji', 
+'bullish_engulfing', 'bullish_harami', 'piercing_line', 'tweezer_bottom', 
+'belt_hold_bull'), 'lookback': 3, 'symbol': 'ENB.TO'}  
+params XIU.TO: composite <- default {}  
+params VDY.TO: ts_momentum <- wf {'lookback': 63, 'threshold': 0.02, 'scale': 
+0.25, 'atr_window': 14}
+params SLF.TO: bollinger <- wf {'window': 10, 'n_std': 1.5, 'atr_window': 14}
+params RSI.TO: bollinger <- calibrated {'window': 30, 'n_std': 1.5, 
+'atr_window': 14}  
+params ITA: ts_momentum <- default {'lookback': 126, 'threshold': 0.0, 'scale':
+0.25, 'atr_window': 14}  
+params LMT: ts_momentum <- default {'lookback': 126, 'threshold': 0.0, 'scale':
+0.25, 'atr_window': 14}  
+params RTX: ts_momentum <- default {'lookback': 126, 'threshold': 0.0, 'scale':
+0.25, 'atr_window': 14}  
+params NOC: ts_momentum <- default {'lookback': 126, 'threshold': 0.0, 'scale':
+0.25, 'atr_window': 14}  
+params GD: ts_momentum <- default {'lookback': 126, 'threshold': 0.0, 'scale': 
+0.25, 'atr_window': 14}  
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-24T14:08:00.215678Z"}
+{"api_server": "https://api02.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-24T14:08:00.437616Z"}
+PAPER mode simulated broker, starting equity $100,000, account PAPER-001. Real 
+account is untouched; fills are journaled.
+ 19 symbols checked: 19 ok, 0 warn, 0 fail
+{"configured": 0.75, "clamped_to": 0.5, "reason": "position_cap_ceiling_pct above max_position_notional_pct", "event": "position_cap.ceiling_clamped", "level": "warning", "timestamp": "2026-09-24T14:08:03.322774Z"}
+max open positions: 6 (CLI override; config says 3).
+intel overlay ON (refresh every 900s; de-risk + halt gate).
+interpret entry-filter ON (theses trim conviction; advisory, never blocks or 
+boosts).
+allocator bias ON over 13 names (equal-weight baseline = 1.0; live overlay 
+applied through apply_overlay):
+        ENB.TO  x2.60  (boost)
+        VDY.TO  x2.33  (boost)
+        XIU.TO  x1.87  (boost)
+        XIC.TO  x1.65  (boost)
+     SRU.UN.TO  x1.36  (boost)
+        ZEB.TO  x1.07  (boost)
+     CRT.UN.TO  x0.67  (trim)
+           DBC  x0.52  (trim)
+           QQQ  x0.38  (trim)
+        SLF.TO  x0.24  (trim)
+        EQB.TO  x0.17  (trim)
+          VALE  x0.08  (trim)
+        CGL.TO  x0.06  (trim)
+oversold entry ON (Variant #4): close < lower BB(20,2) or RSI(14) <= 30 on the 
+last completed bar adds a tranche to a held position while its trend signal is 
+on; own ATR stop; 1 per 5 bars. Applies to: ts_momentum. Not walk-forward 
+calibrated.
+sizing: parallel (joint allocation per poll).
+alerts muted for: RSI.TO (still traded and journaled).
+overbought exit ON (Variant #3): close > upper BB(20,2) or RSI(14) >= 70 on the
+last completed bar closes a long up >= 1 ATR and >= 2x round-trip cost; 
+re-entry lockout. Exempt: ts_momentum.
+candle exit ON (Variant #2): bearish reversal on the last completed bar closes 
+a long up >= 1 ATR and >= 2x round-trip cost; re-entry lockout. Exempt: 
+ts_momentum.
+profit lock ON (Variant #1): arms at +1 ATR, giveback 3 -> 1 ATR by +4 ATR, 
+net-breakeven floor, arms after 2x round-trip cost, re-entry lockout. Exempt: 
+ts_momentum.
+warm-up: polling every 60s for 60 min, then every 300s.
+graceful stop: touch state\STOP (all sessions) or 
+state\STOP_af9d28bcc0ce4682b33928dc91251ab0 (this one). Exits within one poll 
+and does NOT flatten.
+{"degraded": false, "scalars": {"equity": 0.51, "future": 0.4326, "commodity": 0.5824, "fx": 0.5226, "crypto": 0.445, "fixed_income": 0.7741, "precious_metals": 0.8107}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-24T14:08:10.232889Z"}
+{"candidates": 3, "slots": 6, "budget": 100000.0, "routed": ["QQQ", "RSI.TO", "EQB.TO"], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-24T14:08:14.633953Z"}
+{"order_id": 1, "symbol": "QQQ", "qty": 15.0, "fill_price": 737.8037175, "action": "Buy", "session_id": "af9d28bcc0ce4682b33928dc91251ab0", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-24T14:08:14.769908Z"}
+{"order_id": 2, "symbol": "RSI.TO", "qty": 1651.0, "fill_price": 6.7583775, "action": "Buy", "session_id": "af9d28bcc0ce4682b33928dc91251ab0", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-24T14:08:14.850138Z"}
+{"order_id": 3, "symbol": "EQB.TO", "qty": 18.0, "fill_price": 124.92243, "action": "Buy", "session_id": "af9d28bcc0ce4682b33928dc91251ab0", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-24T14:08:14.938138Z"}
+[ALERT] ENTRY  EQB.TO  ts_momentum  (NEW)
+Signal: entry at 124.8600. State: NEW.
+
+Why this trade (walk-forward evidence):
+  · Tier: robust (equity) — cleared WF gate: WFE>=0.5, OOS>0, trades>=class-min
+  · Evidence is for: ts_momentum with lookback=126, threshold=0.0
+  · OOS score: 8.17  ·  WFE: 1.36  (OOS beat in-sample)
+  · OOS return: +45.88%  ·  OOS max drawdown: -16.05%
+  · OOS trades: 11  ·  win rate: 57.1% (6/11)
+  · Running: ts_momentum with lookback=126, threshold=0.0
+
+Sizing chain:
+  · Position size: 18 shares (notional ~$2,247)
+  · OSINT overlay (equity): x0.510 — live intel de-risking this class
+  · Combined mitigation scalar: x0.510
+
+[ALERT] ENTRY  QQQ  ts_momentum  (NEW)
+Signal: entry at 737.3900. State: NEW.
+
+Why this trade (walk-forward evidence):
+  · Tier: robust (equity) — cleared WF gate: WFE>=0.5, OOS>0, trades>=class-min
+  · Evidence is for: ts_momentum with lookback=189, threshold=0.02
+  · OOS score: 7.70  ·  WFE: 2.72  (OOS beat in-sample)
+  · OOS return: +50.30%  ·  OOS max drawdown: -14.20%
+  · OOS trades: 16
+  · Running: ts_momentum with lookback=189, threshold=0.02
+
+Sizing chain:
+  · Position size: 15 shares (notional ~$11,061)
+  · OSINT overlay (equity): x0.510 — live intel de-risking this class
+  · Combined mitigation scalar: x0.510
+
+{"symbol": "RSI.TO", "kind": "entry", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:08:15.948592Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:09:19.354193Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:10:22.369689Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:11:24.826988Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:12:27.078854Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:13:29.363951Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:14:32.220550Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:15:34.467545Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:16:36.833685Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:17:39.572007Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:18:41.979572Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:19:44.429589Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:20:46.956637Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:21:49.581311Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:22:51.988597Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:23:54.117024Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:24:56.121013Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:25:59.421826Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:27:01.823909Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:28:04.268584Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:29:06.829201Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:30:09.384735Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:31:11.826257Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:32:14.128632Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:33:16.913200Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:34:19.366205Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:35:21.908342Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:36:24.423205Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-24T14:37:24.424485Z"}
+{"api_server": "https://api02.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-24T14:37:24.651179Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:37:27.203568Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:38:29.527344Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:39:32.292634Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:40:34.578907Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:41:37.679853Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:42:40.356691Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:43:43.008569Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:44:45.591774Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:45:48.436268Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:46:50.939821Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:47:53.793705Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:48:56.630682Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:49:58.864141Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:51:01.495161Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:52:04.074604Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:53:06.502193Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:54:08.966247Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:55:12.135980Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:56:15.069928Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:57:17.940001Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:58:20.352274Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T14:59:22.649472Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:00:25.037448Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:01:27.583681Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:02:30.167590Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:03:32.618039Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:04:35.134127Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:05:37.410008Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-24T15:06:37.411172Z"}
+{"api_server": "https://api02.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-24T15:06:37.665341Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:06:40.240530Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:07:42.423877Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:08:44.778806Z"}
+{"interval_seconds": 300, "warmup_minutes": 60.0, "event": "monitor.warmup.ended", "level": "info", "timestamp": "2026-09-24T15:08:44.779669Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:13:48.169131Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:18:51.071429Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:23:53.752642Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:28:56.797897Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:33:59.919655Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-24T15:38:59.923397Z"}
+{"api_server": "https://api02.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-24T15:39:00.154492Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:39:02.716349Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:44:05.711328Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:49:08.904572Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:54:11.281255Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T15:59:13.577084Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T16:04:16.717358Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-24T16:09:16.719297Z"}
+{"api_server": "https://api02.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-24T16:09:16.959864Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T16:09:19.214863Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-24T16:14:21.642715Z"}
+{"path": "state\\STOP_af9d28bcc0ce4682b33928dc91251ab0", "scope": "session", "flatten_on_exit": false, "event": "monitor.stop_sentinel.seen", "level": "info", "timestamp": "2026-09-24T16:14:21.646085Z"}

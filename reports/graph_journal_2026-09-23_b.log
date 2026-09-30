@@ -1,0 +1,52 @@
+[thicken] start: 13496 edges, 597 nodes
+[thicken] nodes by type: {'event': 300, 'market': 2, 'region': 62, 'poll': 162, 'symbol': 59, 'source': 5, 'domain': 3, 'analysis': 1, 'venue': 3}
+[thicken] polling via OverlayProvider (canonical live-path poller) - overlay decisions computed AND journaled per refresh
+[thicken] alerts: ON (persistence threshold 5, wash cadence >= 72.0h, heartbeat every 24h)
+[thicken] last wash 42.7h ago; next due in 29.3h
+2026-09-23 14:37:43 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.4552, 'future': 0.3049, 'commodity': 0.4048, 'fx': 0.4552, 'crypto': 0.4473, 'fixed_income': 0.7172, 'precious_metals': 0.7509}
+[thicken] iter 1/96: journal now has 13587 edges (+91 since start) in 4.0s
+[ALERT] THESIS  Conflict escalation watch  (tentative)
+What the feed shows:
+  · 6 critical cross-source escalations
+  · conflict event flow 1.0x baseline
+  · 24 countries carrying advisories
+
+How strong (0-1, bounded log of value x time):
+  intensity 0.33 = magnitude 0.66 (lead: conflict_events_active) x time 0.50 (0.0h firing)
+
+What it means:
+  Multiple independent sources are corroborating escalation. Corroboration across sources matters more than raw counts here, since a single wire story can inflate any one feed.
+
+What to do:
+  Watch defense and safe-haven exposure as a hedge on escalation, not as a directional bet. Re-check before adding risk in the affected geographies.
+
+Implicated exposures:
+  · Defense / geopolitical: ITA, LMT, RTX, NOC, GD
+  · Safe-haven: GLD, CGL.TO, SLV, PAXG/USD, XLU, /GC, /MGC, /SI, /SIL
+
+[ALERT] HEARTBEAT  1 thesis firing
+Graph journal is polling: poll 1/96, journal 13,587 edges.
+
+Theses firing:
+  · Conflict escalation watch (tentative), intensity 0.33
+
+Readings vs thesis gates:
+  · strategic-risk index 65/100 (complacency gate >= 67)
+  · active conflict escalations 6 (conflict gate >= 4)
+  · VIX 14.9
+  · fear/greed 60
+  · event flow vs baseline: energy 1.0x, conflict 1.0x, military 1.0x
+
+These are the inputs the interpret layer reads — research context, not a signal.
+Next heartbeat in ~24h.
+
+2026-09-23 14:52:49 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.4547, 'future': 0.3061, 'commodity': 0.4072, 'fx': 0.455, 'crypto': 0.4449, 'fixed_income': 0.7175, 'precious_metals': 0.7514}
+[thicken] iter 2/96: journal now has 13866 edges (+370 since start) in 4.2s
+2026-09-23 15:07:53 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.4335, 'future': 0.2634, 'commodity': 0.3503, 'fx': 0.4335, 'crypto': 0.4449, 'fixed_income': 0.6995, 'precious_metals': 0.7326}
+[thicken] iter 3/96: journal now has 13956 edges (+460 since start) in 4.1s
+2026-09-23 15:22:57 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.4626, 'future': 0.3213, 'commodity': 0.4273, 'fx': 0.4626, 'crypto': 0.4449, 'fixed_income': 0.7238, 'precious_metals': 0.7581}
+[thicken] iter 4/96: journal now has 14044 edges (+548 since start) in 3.7s
+2026-09-23 15:38:02 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.4615, 'future': 0.3225, 'commodity': 0.43, 'fx': 0.4636, 'crypto': 0.445, 'fixed_income': 0.7247, 'precious_metals': 0.759}
+[thicken] iter 5/96: journal now has 14130 edges (+634 since start) in 4.6s
+2026-09-23 15:53:06 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.4622, 'future': 0.3245, 'commodity': 0.4327, 'fx': 0.4646, 'crypto': 0.4451, 'fixed_income': 0.7256, 'precious_metals': 0.7599}
+[thicken] iter 6/96: journal now has 14216 edges (+720 since start) in 4.2s

@@ -1,0 +1,27 @@
+[thicken] start: 14482 edges, 610 nodes
+[thicken] nodes by type: {'poll': 173, 'event': 301, 'region': 63, 'symbol': 59, 'source': 5, 'market': 2, 'domain': 3, 'venue': 3, 'analysis': 1}
+[thicken] polling via OverlayProvider (canonical live-path poller) - overlay decisions computed AND journaled per refresh
+[thicken] alerts: ON (persistence threshold 5, wash cadence >= 72.0h, heartbeat every 24h)
+[thicken] last wash 62.2h ago; next due in 9.8h
+2026-09-24 10:08:03 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.51, 'future': 0.4326, 'commodity': 0.5823, 'fx': 0.5226, 'crypto': 0.4449, 'fixed_income': 0.7741, 'precious_metals': 0.8107}
+[thicken] iter 1/96: journal now has 14562 edges (+80 since start) in 4.2s
+[ALERT] HEARTBEAT  quiet tape
+Graph journal is polling: poll 1/96, journal 14,562 edges.
+
+Theses firing:
+  none — no configuration cleared its gate.
+
+Readings vs thesis gates:
+  · strategic-risk index 64/100 (complacency gate >= 67)
+  · active conflict escalations 3 (conflict gate >= 4)
+  · VIX 15.7
+  · fear/greed 59
+  · event flow vs baseline: energy 1.0x, conflict 1.0x, military 1.0x
+
+These are the inputs the interpret layer reads — research context, not a signal.
+Next heartbeat in ~24h.
+
+2026-09-24 10:23:08 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.5879, 'future': 0.4988, 'commodity': 0.6165, 'fx': 0.6008, 'crypto': 0.5549, 'fixed_income': 0.8075, 'precious_metals': 0.8359}
+[thicken] iter 2/96: journal now has 14803 edges (+321 since start) in 3.8s
+2026-09-24 10:38:12 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.589, 'future': 0.5003, 'commodity': 0.6181, 'fx': 0.6015, 'crypto': 0.5549, 'fixed_income': 0.8081, 'precious_metals': 0.8365}
+[thicken] iter 3/96: journal now has 14883 edges (+401 since start) in 3.8s

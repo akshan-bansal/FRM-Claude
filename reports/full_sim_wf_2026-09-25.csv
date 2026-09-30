@@ -1,0 +1,20 @@
+symbol,strategy,params_source,bars,asset_class,folds,oos_score,wfe,oos_return_pct,oos_maxdd_pct,oos_trades,oos_win_rate,verdict,params
+EQB.TO,ts_momentum,wf,1744,equity,9.0,0.0,0.0,0.0,0.0,0.0,0.0,watch,"{'lookback': 126, 'threshold': 0.0, 'scale': 0.25, 'atr_window':"
+QQQ,ts_momentum,wf,2200,equity,13.0,0.0,0.0,0.0,0.0,0.0,0.0,watch,"{'lookback': 189, 'threshold': 0.02, 'scale': 0.25, 'atr_window'"
+XIC.TO,rsi_meanrevert,wf,2024,equity,12.0,1.56,0.227,1.92,-4.77,28.0,71.4,watch,"{'window': 7, 'oversold': 35, 'neutral': 50.0, 'atr_window': 14}"
+ZEB.TO,atr_channel,wf,1744,equity,9.0,70.107,9.728,3.47,-6.55,12.0,33.3,robust,"{'ema_window': 30, 'k': 1.5, 'atr_window': 14}"
+CGL.TO,atr_channel,wf,1751,precious_metals,9.0,1.086,0.326,2.78,-13.53,23.0,47.8,watch,"{'ema_window': 30, 'k': 1.5, 'atr_window': 14}"
+VALE,bollinger,wf,1450,equity,7.0,2.362,1.176,3.26,-2.91,5.0,80.0,watch,"{'window': 15, 'n_std': 2.5, 'atr_window': 14}"
+DBC,bollinger,wf,1479,commodity,7.0,4.077,0.871,1.74,-7.01,11.0,63.6,robust,"{'window': 20, 'n_std': 2.0, 'atr_window': 14}"
+SRU.UN.TO,confirm_rsi_meanrevert,calibrated,1783,,,,,,,,,no scorable fold,
+CRT.UN.TO,rsi_meanrevert,wf,1504,equity,7.0,0.805,0.205,0.43,-2.9,7.0,85.7,watch,"{'window': 7, 'oversold': 20, 'neutral': 50.0, 'atr_window': 14}"
+ENB.TO,confirm_bollinger,calibrated,1853,,,,,,,,,no scorable fold,
+XIU.TO,composite,default,1837,equity,10.0,8.388,1.532,1.6,-6.0,22.0,68.2,robust,{}
+VDY.TO,ts_momentum,wf,1676,equity,9.0,41.286,9.906,2.9,-5.11,6.0,33.3,watch,"{'lookback': 63, 'threshold': 0.02, 'scale': 0.25, 'atr_window':"
+SLF.TO,bollinger,wf,1606,equity,8.0,14.741,1.599,4.68,-7.23,34.0,85.3,robust,"{'window': 10, 'n_std': 1.5, 'atr_window': 14}"
+RSI.TO,bollinger,calibrated,346,,,,,,,,,insufficient history for one fold,
+ITA,ts_momentum,default,388,,,,,,,,,insufficient history for one fold,
+LMT,ts_momentum,default,1278,equity,6.0,0.0,0.0,0.0,0.0,0.0,0.0,watch,"{'lookback': 126, 'threshold': 0.0, 'scale': 0.25, 'atr_window':"
+RTX,ts_momentum,default,1278,equity,6.0,0.0,0.0,0.0,0.0,0.0,0.0,watch,"{'lookback': 126, 'threshold': 0.0, 'scale': 0.25, 'atr_window':"
+NOC,ts_momentum,default,388,,,,,,,,,insufficient history for one fold,
+GD,ts_momentum,default,388,,,,,,,,,insufficient history for one fold,

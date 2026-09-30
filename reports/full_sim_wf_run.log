@@ -1,0 +1,21 @@
+EQB.TO     OOS     0.0 WFE    0.0 trades    0 -> watch
+QQQ        OOS     0.0 WFE    0.0 trades    0 -> watch
+XIC.TO     OOS    1.56 WFE  0.227 trades   28 -> watch
+ZEB.TO     OOS  70.107 WFE  9.728 trades   12 -> robust
+CGL.TO     OOS   1.086 WFE  0.326 trades   23 -> watch
+VALE       OOS   2.362 WFE  1.176 trades    5 -> watch
+DBC        OOS   4.077 WFE  0.871 trades   11 -> robust
+SRU.UN.TO  no scorable fold
+CRT.UN.TO  OOS   0.805 WFE  0.205 trades    7 -> watch
+ENB.TO     no scorable fold
+XIU.TO     OOS   8.388 WFE  1.532 trades   22 -> robust
+VDY.TO     OOS  41.286 WFE  9.906 trades    6 -> watch
+SLF.TO     OOS  14.741 WFE  1.599 trades   34 -> robust
+RSI.TO     skipped (bars=346)
+ITA        skipped (bars=388)
+LMT        OOS     0.0 WFE    0.0 trades    0 -> watch
+RTX        OOS     0.0 WFE    0.0 trades    0 -> watch
+NOC        skipped (bars=388)
+GD         skipped (bars=388)
+
+wrote reports/full_sim_wf_2026-09-25.csv/.md

@@ -1,0 +1,20 @@
+symbol,strategy,status,params_source,bars,sortino_over_dd,sortino,sharpe,return_pct,cagr_pct,maxdd_pct,trades,win_rate,exposure_pct,v_layer,params
+EQB.TO,ts_momentum,ok,wf,1744,1.252,0.453,0.465,58.18,6.85,-25.2,23,30.4,65.4,exempt,"{'lookback': 126, 'threshold': 0.0}"
+QQQ,ts_momentum,ok,wf,2200,1.668,0.714,0.765,108.85,8.8,-22.43,11,54.5,64.5,exempt,"{'lookback': 189, 'threshold': 0.02}"
+XIC.TO,rsi_meanrevert,ok,wf,2024,3.722,0.352,0.797,33.61,3.67,-7.6,41,68.3,7.7,on,"{'window': 7, 'oversold': 35}"
+ZEB.TO,atr_channel,ok,wf,1744,3.76,0.367,0.725,26.36,3.44,-7.78,39,69.2,16.5,on,"{'ema_window': 30, 'k': 1.5}"
+CGL.TO,atr_channel,ok,wf,1751,0.596,0.118,0.204,8.31,1.16,-16.42,48,64.6,16.1,on,"{'ema_window': 30, 'k': 1.5}"
+VALE,bollinger,ok,wf,1450,6.934,0.49,1.019,34.6,5.3,-2.91,7,71.4,3.7,on,"{'window': 15, 'n_std': 2.5}"
+DBC,bollinger,ok,wf,1479,-0.224,-0.051,-0.1,-6.16,-1.08,-16.39,26,57.7,15.6,on,"{'window': 20, 'n_std': 2.0}"
+SRU.UN.TO,confirm_rsi_meanrevert,ok,calibrated,1783,1.679,0.262,0.455,19.58,2.56,-10.87,23,78.3,14.0,on,{'symbol': 'SRU.UN.TO'}
+CRT.UN.TO,rsi_meanrevert,ok,wf,1504,4.771,0.374,0.838,21.16,3.27,-4.1,11,100.0,5.1,on,"{'window': 7, 'oversold': 20}"
+ENB.TO,confirm_bollinger,ok,calibrated,1853,0.326,0.053,0.226,3.76,0.5,-4.62,4,75.0,2.6,on,{'symbol': 'ENB.TO'}
+XIU.TO,composite,ok,default,1837,4.331,0.324,0.671,21.91,2.76,-5.66,31,67.7,7.7,on,{}
+VDY.TO,ts_momentum,ok,wf,1676,11.746,1.889,1.748,127.47,13.15,-8.04,10,70.0,62.2,exempt,"{'lookback': 63, 'threshold': 0.02}"
+SLF.TO,bollinger,ok,wf,1606,10.683,0.97,1.117,61.51,7.81,-7.83,63,74.6,19.9,on,"{'window': 10, 'n_std': 1.5}"
+RSI.TO,bollinger,ok,calibrated,346,-0.06,-0.007,-0.013,-0.25,-0.18,-3.47,4,50.0,14.5,on,"{'window': 30, 'n_std': 1.5}"
+ITA,ts_momentum,ok,default,388,0.651,0.351,0.29,5.65,3.63,-17.98,5,40.0,58.0,exempt,{}
+LMT,ts_momentum,ok,default,1278,0.707,0.295,0.281,18.18,3.35,-27.35,19,63.2,54.3,exempt,{}
+RTX,ts_momentum,ok,default,1278,0.63,0.306,0.285,20.5,3.75,-34.65,25,36.0,69.1,exempt,{}
+NOC,ts_momentum,ok,default,388,0.054,0.08,0.087,-0.01,-0.01,-24.45,2,50.0,40.2,exempt,{}
+GD,ts_momentum,ok,default,388,0.161,0.051,0.042,-1.02,-0.67,-15.7,10,40.0,60.1,exempt,{}

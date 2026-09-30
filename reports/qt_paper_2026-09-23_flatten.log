@@ -1,0 +1,51 @@
+params: class defaults for every symbol (--params default).
+{"session_id": "94ea903d025041bc8148a64163a11acf", "fills_replayed": 5, "positions": {"VDY.TO": 812.0, "QQQ": 13.0, "SRU.UN.TO": 622.0, "RSI.TO": 1342.0, "EQB.TO": 14.0}, "cash": 353.2, "realized_pnl": 0.0, "peak_equity": 100094.01, "next_order_id": 6, "event": "paper.resumed", "level": "info", "timestamp": "2026-09-23T18:11:03.152568Z"}
+RESUMED session 94ea903d025041bc8148a64163a11acf: 5 fills replayed, positions 
+{'VDY.TO': 812.0, 'QQQ': 13.0, 'SRU.UN.TO': 622.0, 'RSI.TO': 1342.0, 'EQB.TO': 
+14.0}, cash $353.20, realized $0.00.
+PAPER mode simulated broker, starting equity $100,000, account PAPER-001. Real 
+account is untouched; fills are journaled.
+ 5 symbols checked: 5 ok, 0 warn, 0 fail
+max open positions: 6 (CLI override; config says 3).
+allocator bias ON over 4 names (equal-weight baseline = 1.0):
+        EQB.TO  x0.80  (trim)
+           QQQ  x0.80  (trim)
+     SRU.UN.TO  x0.80  (trim)
+        VDY.TO  x0.80  (trim)
+sizing: parallel (joint allocation per poll).
+graceful stop: touch state\STOP (all sessions) or 
+state\STOP_94ea903d025041bc8148a64163a11acf (this one). Exits within one poll 
+and flattens.
+{"path": "state\\STOP_94ea903d025041bc8148a64163a11acf", "scope": "session", "flatten_on_exit": true, "event": "monitor.stop_sentinel.seen", "level": "info", "timestamp": "2026-09-23T18:11:04.007460Z"}
+{"positions": 5, "equity": 99492.08886999999, "event": "monitor.flatten.start", "level": "info", "timestamp": "2026-09-23T18:11:04.760921Z"}
+{"order_id": 6, "symbol": "VDY.TO", "qty": 812.0, "fill_price": 76.24685749999999, "action": "Sell", "session_id": "94ea903d025041bc8148a64163a11acf", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-23T18:11:04.888457Z"}
+[ALERT] EXIT  VDY.TO  ts_momentum  (flatten)
+Signal: exit at 76.2850. Closing 812 units.
+
+Reason: session stop. The book is closed out on exit; this is not a strategy signal. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+{"order_id": 7, "symbol": "QQQ", "qty": 13.0, "fill_price": 740.139745, "action": "Sell", "session_id": "94ea903d025041bc8148a64163a11acf", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-23T18:11:05.515003Z"}
+[ALERT] EXIT  QQQ  ts_momentum  (flatten)
+Signal: exit at 740.5100. Closing 13 units.
+
+Reason: session stop. The book is closed out on exit; this is not a strategy signal. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+{"order_id": 8, "symbol": "SRU.UN.TO", "qty": 622.0, "fill_price": 26.971507499999998, "action": "Sell", "session_id": "94ea903d025041bc8148a64163a11acf", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-23T18:11:06.298681Z"}
+[ALERT] EXIT  SRU.UN.TO  confirm_rsi_meanrevert  (flatten)
+Signal: exit at 26.9850. Closing 622 units.
+
+Reason: session stop. The book is closed out on exit; this is not a strategy signal. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+{"order_id": 9, "symbol": "RSI.TO", "qty": 1342.0, "fill_price": 6.7316325, "action": "Sell", "session_id": "94ea903d025041bc8148a64163a11acf", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-23T18:11:06.924590Z"}
+[ALERT] EXIT  RSI.TO  bollinger  (flatten)
+Signal: exit at 6.7350. Closing 1342 units.
+
+Reason: session stop. The book is closed out on exit; this is not a strategy signal. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+{"order_id": 10, "symbol": "EQB.TO", "qty": 14.0, "fill_price": 124.63265249999999, "action": "Sell", "session_id": "94ea903d025041bc8148a64163a11acf", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-23T18:11:07.594092Z"}
+[ALERT] EXIT  EQB.TO  ts_momentum  (flatten)
+Signal: exit at 124.6950. Closing 14 units.
+
+Reason: session stop. The book is closed out on exit; this is not a strategy signal. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+{"closed": 5, "event": "monitor.flatten.complete", "level": "info", "timestamp": "2026-09-23T18:11:08.087537Z"}

@@ -1,0 +1,51 @@
+2026-09-29 20:11:22 [info     ] paper.resumed                  cash=95704.96 fills_replayed=1 next_order_id=2 peak_equity=100037.08 positions={'LINK/USD': 306.97708194} realized_pnl=0.0 session_id=d53afb8fc77243e787024d2788ef204b
+[kraken-paper] RESUMED session d53afb8fc77243e787024d2788ef204b: 1 fills replayed, positions {'LINK/USD': 306.97708194}, cash $95,704.96, realized $0.00.
+[kraken-paper] PAPER mode. session_id=d53afb8fc77243e787024d2788ef204b starting_equity=$100,000 account=PAPER-001
+[kraken-paper] Kraken feed is quote/candle ONLY. Real Kraken account untouched.
+[symbol-validate] 12 symbols checked: 12 ok, 0 warn, 0 fail
+[kraken-paper] audit ledger ON -> 2026-09-30.kraken.jsonl (verify: python scripts/verify_ledger.py --stream kraken)
+2026-09-29 20:11:23 [warning  ] position_cap.ceiling_clamped   clamped_to=0.5 configured=0.75 reason='position_cap_ceiling_pct above max_position_notional_pct'
+[kraken-paper] sizing v2 ON — lot rules:
+       BTC/USD  step 1e-08  min 5e-05  min value $0.5
+       XMR/USD  step 1e-08  min 0.01  min value $0.5
+       XRP/USD  step 1e-08  min 1.65  min value $0.5
+       XLM/USD  step 1e-08  min 30  min value $0.5
+      LINK/USD  step 1e-08  min 0.55  min value $0.5
+       ETH/USD  step 1e-08  min 0.001  min value $0.5
+       SOL/USD  step 1e-08  min 0.06  min value $0.5
+       ADA/USD  step 1e-08  min 20  min value $0.5
+       POL/USD  step 1e-05  min 50  min value $0.5
+       UNI/USD  step 1e-08  min 1.5  min value $0.5
+      AAVE/USD  step 1e-08  min 0.05  min value $0.5
+       ZEC/USD  step 1e-08  min 0.01  min value $0.5
+[kraken-paper] monitoring 12 pairs: ['BTC/USD', 'XMR/USD', 'XRP/USD', 'XLM/USD', 'LINK/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD', 'POL/USD', 'UNI/USD', 'AAVE/USD', 'ZEC/USD']
+2026-09-29 20:11:28 [warning  ] worldmonitor.sources_stale     max_age_hours=48.0 stale_hours={'energy': 138.1}
+2026-09-29 20:11:28 [info     ] overlay.refreshed              degraded=True scalars={'equity': 0.4499, 'future': 0.2722, 'commodity': 0.3593, 'fx': 0.4249, 'crypto': 0.4739, 'fixed_income': 0.7196, 'precious_metals': 0.7182}
+[kraken-paper] intel overlay ON — crypto class scalar + interpret filter live; polls contribute to state/intel_graph.jsonl
+[kraken-paper] computing correlation-aware allocator weights...
+[kraken-paper] allocator conviction bias (baseline = 1.0):
+       BTC/USD  x3.60  (boost)
+       XMR/USD  x3.52  (boost)
+       XRP/USD  x1.48  (boost)
+       ZEC/USD  x0.93  (trim)
+       XLM/USD  x0.61  (trim)
+      LINK/USD  x0.56  (trim)
+       POL/USD  x0.54  (trim)
+       ETH/USD  x0.38  (trim)
+      AAVE/USD  x0.37  (trim)
+       SOL/USD  x0.00  (trim)
+       ADA/USD  x0.00  (trim)
+       UNI/USD  x0.00  (trim)
+[kraken-paper] live overlay applied to the allocation through apply_overlay
+[kraken-paper] sizing: parallel (joint allocation per poll).
+[kraken-paper] graceful stop: touch state\STOP (all sessions) or state\STOP_d53afb8fc77243e787024d2788ef204b (this one). Exits within one poll and flattens.
+2026-09-29 20:11:31 [info     ] monitor.stop_sentinel.seen     flatten_on_exit=True path=state\STOP_d53afb8fc77243e787024d2788ef204b scope=session
+2026-09-29 20:11:32 [info     ] monitor.flatten.start          equity=100142.17823753017 positions=1
+2026-09-29 20:11:32 [info     ] paper.order.filled             action=Sell fill_price=14.44733272 order_id=2 qty=306.97708194 session_id=d53afb8fc77243e787024d2788ef204b symbol=LINK/USD
+[kraken-paper] EXIT LINK/USD @ 14.4546 (NEW) detail={'shares': 306.97708194, 'reason': 'flatten'}
+[ALERT] EXIT  LINK/USD  atr_channel
+Signal: exit at 14.4546. Closing 306.977 units.
+
+Reason: strategy generated an exit signal on the latest bar. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+2026-09-29 20:11:32 [info     ] monitor.flatten.complete       closed=1

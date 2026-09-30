@@ -1,0 +1,57 @@
+2026-09-22 14:45:55 [info     ] paper.resumed                  cash=56952.76 fills_replayed=2 next_order_id=3 peak_equity=100176.09 positions={'PAXG/USD': 9.34441441, 'LINK/USD': 192.76469362} realized_pnl=0.0 session_id=fc48bf29729f45028316be6f42b0e0e5
+[kraken-paper] RESUMED session fc48bf29729f45028316be6f42b0e0e5: 2 fills replayed, positions {'PAXG/USD': 9.34441441, 'LINK/USD': 192.76469362}, cash $56,952.76, realized $0.00.
+[kraken-paper] PAPER mode. session_id=fc48bf29729f45028316be6f42b0e0e5 starting_equity=$100,000 account=PAPER-001
+[kraken-paper] Kraken feed is quote/candle ONLY. Real Kraken account untouched.
+[symbol-validate] 13 symbols checked: 13 ok, 0 warn, 0 fail
+[kraken-paper] sizing v2 ON — lot rules:
+       BTC/USD  step 1e-08  min 5e-05  min value $0.5
+      PAXG/USD  step 1e-08  min 0.001  min value $0.5
+       XMR/USD  step 1e-08  min 0.01  min value $0.5
+       XRP/USD  step 1e-08  min 1.65  min value $0.5
+       XLM/USD  step 1e-08  min 30  min value $0.5
+      LINK/USD  step 1e-08  min 0.55  min value $0.5
+       ETH/USD  step 1e-08  min 0.001  min value $0.5
+       SOL/USD  step 1e-08  min 0.06  min value $0.5
+       ADA/USD  step 1e-08  min 20  min value $0.5
+       POL/USD  step 1e-05  min 50  min value $0.5
+       UNI/USD  step 1e-08  min 1.5  min value $0.5
+      AAVE/USD  step 1e-08  min 0.05  min value $0.5
+       ZEC/USD  step 1e-08  min 0.01  min value $0.5
+[kraken-paper] monitoring 13 pairs: ['BTC/USD', 'PAXG/USD', 'XMR/USD', 'XRP/USD', 'XLM/USD', 'LINK/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD', 'POL/USD', 'UNI/USD', 'AAVE/USD', 'ZEC/USD']
+2026-09-22 14:46:04 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.4465, 'future': 0.3244, 'commodity': 0.449, 'fx': 0.4465, 'crypto': 0.4024, 'fixed_income': 0.7219, 'precious_metals': 0.7598}
+[kraken-paper] intel overlay ON — crypto class scalar + interpret filter live; polls contribute to state/intel_graph.jsonl
+[kraken-paper] computing correlation-aware allocator weights...
+[kraken-paper] allocator conviction bias (baseline = 1.0):
+       BTC/USD  x3.90  (boost)
+      PAXG/USD  x3.90  (boost)
+       XMR/USD  x2.11  (boost)
+       XRP/USD  x0.93  (trim)
+       ZEC/USD  x0.57  (trim)
+       XLM/USD  x0.39  (trim)
+      LINK/USD  x0.36  (trim)
+       POL/USD  x0.36  (trim)
+      AAVE/USD  x0.24  (trim)
+       ETH/USD  x0.24  (trim)
+       SOL/USD  x0.00  (trim)
+       ADA/USD  x0.00  (trim)
+       UNI/USD  x0.00  (trim)
+[kraken-paper] live overlay applied to the allocation through apply_overlay
+[kraken-paper] sizing: parallel (joint allocation per poll).
+[kraken-paper] graceful stop: touch state\STOP (all sessions) or state\STOP_fc48bf29729f45028316be6f42b0e0e5 (this one). Exits within one poll and flattens.
+2026-09-22 14:46:08 [info     ] monitor.stop_sentinel.seen     flatten_on_exit=True path=state\STOP_fc48bf29729f45028316be6f42b0e0e5 scope=session
+2026-09-22 14:46:08 [info     ] monitor.flatten.start          equity=100107.05051857315 positions=2
+2026-09-22 14:46:08 [info     ] paper.order.filled             action=Sell fill_price=4347.1503375 order_id=3 qty=9.34441441 session_id=fc48bf29729f45028316be6f42b0e0e5 symbol=PAXG/USD
+[kraken-paper] EXIT PAXG/USD @ 4349.3250 (NEW) detail={'shares': 9.34441441, 'reason': 'flatten'}
+[ALERT] EXIT  PAXG/USD  ts_momentum
+Signal: exit at 4349.3250. Closing 9.34441 units.
+
+Reason: strategy generated an exit signal on the latest bar. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+2026-09-22 14:46:09 [info     ] paper.order.filled             action=Sell fill_price=13.026968257499998 order_id=4 qty=192.76469362 session_id=fc48bf29729f45028316be6f42b0e0e5 symbol=LINK/USD
+[kraken-paper] EXIT LINK/USD @ 13.0335 (NEW) detail={'shares': 192.76469362, 'reason': 'flatten'}
+[ALERT] EXIT  LINK/USD  atr_channel
+Signal: exit at 13.0335. Closing 192.765 units.
+
+Reason: strategy generated an exit signal on the latest bar. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+2026-09-22 14:46:10 [info     ] monitor.flatten.complete       closed=2
