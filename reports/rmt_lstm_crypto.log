@@ -1,2 +1,0 @@
-[data] crypto: 19 assets, 719 returns 2024-10-02 -> 2026-09-20; train 503 (1.4y) / test 216
-[model] with diversifiers: N=19 signal=6 mse=0.6042 r2=-0.0486 (252s)
