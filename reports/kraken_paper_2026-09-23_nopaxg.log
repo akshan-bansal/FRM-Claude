@@ -1,0 +1,421 @@
+2026-09-23 09:32:06 [info     ] paper.resumed                  cash=76009.68 fills_replayed=2 next_order_id=3 peak_equity=100000.0 positions={'PAXG/USD': 5.53152508, 'LINK/USD': 9.41258728} realized_pnl=0.0 session_id=d2015d4b0e704e0f9e2ff087520ea0fc
+[kraken-paper] RESUMED session d2015d4b0e704e0f9e2ff087520ea0fc: 2 fills replayed, positions {'PAXG/USD': 5.53152508, 'LINK/USD': 9.41258728}, cash $76,009.68, realized $0.00.
+[kraken-paper] PAPER mode. session_id=d2015d4b0e704e0f9e2ff087520ea0fc starting_equity=$100,000 account=PAPER-001
+[kraken-paper] Kraken feed is quote/candle ONLY. Real Kraken account untouched.
+[symbol-validate] 12 symbols checked: 12 ok, 0 warn, 0 fail
+[kraken-paper] sizing v2 ON — lot rules:
+       BTC/USD  step 1e-08  min 5e-05  min value $0.5
+       XMR/USD  step 1e-08  min 0.01  min value $0.5
+       XRP/USD  step 1e-08  min 1.65  min value $0.5
+       XLM/USD  step 1e-08  min 30  min value $0.5
+      LINK/USD  step 1e-08  min 0.55  min value $0.5
+       ETH/USD  step 1e-08  min 0.001  min value $0.5
+       SOL/USD  step 1e-08  min 0.06  min value $0.5
+       ADA/USD  step 1e-08  min 20  min value $0.5
+       POL/USD  step 1e-05  min 50  min value $0.5
+       UNI/USD  step 1e-08  min 1.5  min value $0.5
+      AAVE/USD  step 1e-08  min 0.05  min value $0.5
+       ZEC/USD  step 1e-08  min 0.01  min value $0.5
+[kraken-paper] monitoring 12 pairs: ['BTC/USD', 'XMR/USD', 'XRP/USD', 'XLM/USD', 'LINK/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD', 'POL/USD', 'UNI/USD', 'AAVE/USD', 'ZEC/USD']
+2026-09-23 09:32:12 [info     ] overlay.refreshed              degraded=False scalars={'equity': 0.4347, 'future': 0.2665, 'commodity': 0.3549, 'fx': 0.4347, 'crypto': 0.4435, 'fixed_income': 0.7008, 'precious_metals': 0.734}
+[kraken-paper] intel overlay ON — crypto class scalar + interpret filter live; polls contribute to state/intel_graph.jsonl
+[kraken-paper] computing correlation-aware allocator weights...
+[kraken-paper] allocator conviction bias (baseline = 1.0):
+       BTC/USD  x3.60  (boost)
+       XMR/USD  x3.52  (boost)
+       XRP/USD  x1.48  (boost)
+       ZEC/USD  x0.93  (trim)
+       XLM/USD  x0.62  (trim)
+      LINK/USD  x0.56  (trim)
+       POL/USD  x0.54  (trim)
+       ETH/USD  x0.38  (trim)
+      AAVE/USD  x0.38  (trim)
+       SOL/USD  x0.00  (trim)
+       ADA/USD  x0.00  (trim)
+       UNI/USD  x0.00  (trim)
+[kraken-paper] live overlay applied to the allocation through apply_overlay
+[kraken-paper] sizing: parallel (joint allocation per poll).
+2026-09-23 09:32:16 [info     ] paper.order.filled             action=Sell fill_price=4303.097375 order_id=3 qty=5.53152508 session_id=d2015d4b0e704e0f9e2ff087520ea0fc symbol=PAXG/USD
+2026-09-23 09:32:16 [info     ] monitor.close_symbols          accepted=True price=4305.25 qty=5.53152508 reason= symbol=PAXG/USD
+[kraken-paper] EXIT PAXG/USD @ 4305.2500 (NEW) detail={'shares': 5.53152508, 'reason': 'drop_symbol'}
+[ALERT] EXIT  PAXG/USD  macd
+Signal: exit at 4305.2500. Closing 5.53153 units.
+
+Reason: strategy generated an exit signal on the latest bar. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+[kraken-paper] close PAXG/USD: 5.53153 @ 4305.2500 ACCEPTED
+[kraken-paper] warm-up: polling every 60s for 60 min, then every 300s.
+[kraken-paper] graceful stop: touch state\STOP (all sessions) or state\STOP_d2015d4b0e704e0f9e2ff087520ea0fc (this one). Exits within one poll and does NOT flatten.
+[kraken-paper] HOLD BTC/USD @ 85564.0500 (NEW) detail={}
+[kraken-paper] HOLD XMR/USD @ 561.2100 (NEW) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5741 (NEW) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2128 (NEW) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6920 (NEW) detail={}
+[kraken-paper] HOLD ETH/USD @ 2714.7450 (NEW) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.7850 (NEW) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2486 (NEW) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1064 (NEW) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5617 (NEW) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.2200 (NEW) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1635.2950 (NEW) detail={}
+[kraken-paper] HOLD BTC/USD @ 85646.9500 (persisting (2)) detail={}
+[kraken-paper] HOLD XMR/USD @ 561.5900 (persisting (2)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5750 (persisting (2)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2133 (persisting (2)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7032 (persisting (2)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2715.9900 (persisting (2)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.8550 (persisting (2)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2492 (persisting (2)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1065 (persisting (2)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5748 (persisting (2)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.4500 (persisting (2)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1633.7000 (persisting (2)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85586.0500 (persisting (3)) detail={}
+[kraken-paper] HOLD XMR/USD @ 560.6650 (persisting (3)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5725 (persisting (3)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2127 (persisting (3)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6798 (persisting (3)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2713.6400 (persisting (3)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.7050 (persisting (3)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2481 (persisting (3)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1064 (persisting (3)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5332 (persisting (3)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.0850 (persisting (3)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1632.0650 (persisting (3)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85551.1500 (persisting (4)) detail={}
+[kraken-paper] HOLD XMR/USD @ 560.6050 (persisting (4)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5730 (persisting (4)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2126 (persisting (4)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6711 (persisting (4)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2713.3350 (persisting (4)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6150 (persisting (4)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2481 (persisting (4)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1063 (persisting (4)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5213 (persisting (4)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.9300 (persisting (4)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1633.8750 (persisting (4)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85559.5500 (persisting (5)) detail={}
+[kraken-paper] HOLD XMR/USD @ 560.9800 (persisting (5)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5747 (persisting (5)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2128 (persisting (5)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6719 (persisting (5)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2713.4250 (persisting (5)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6050 (persisting (5)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2480 (persisting (5)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1062 (persisting (5)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5283 (persisting (5)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.9950 (persisting (5)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1636.8350 (persisting (5)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85685.7500 (persisting (6)) detail={}
+[kraken-paper] HOLD XMR/USD @ 562.4600 (persisting (6)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5761 (persisting (6)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2130 (persisting (6)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6927 (persisting (6)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2716.3100 (persisting (6)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6900 (persisting (6)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2483 (persisting (6)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1064 (persisting (6)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5666 (persisting (6)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.3400 (persisting (6)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1637.5200 (persisting (6)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85809.5500 (persisting (7)) detail={}
+[kraken-paper] HOLD XMR/USD @ 563.2550 (persisting (7)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5802 (persisting (7)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2136 (persisting (7)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7268 (persisting (7)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2721.3950 (persisting (7)) detail={}
+[kraken-paper] HOLD SOL/USD @ 117.0100 (persisting (7)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2492 (persisting (7)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1068 (persisting (7)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5905 (persisting (7)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.5900 (persisting (7)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1640.3900 (persisting (7)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85788.4500 (persisting (8)) detail={}
+[kraken-paper] HOLD XMR/USD @ 563.5100 (persisting (8)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5800 (persisting (8)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2134 (persisting (8)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7242 (persisting (8)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2721.2600 (persisting (8)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.9750 (persisting (8)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2490 (persisting (8)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1067 (persisting (8)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5899 (persisting (8)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.3600 (persisting (8)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1639.8700 (persisting (8)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85774.5500 (persisting (9)) detail={}
+[kraken-paper] HOLD XMR/USD @ 565.6550 (persisting (9)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5802 (persisting (9)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2136 (persisting (9)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7210 (persisting (9)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2720.6150 (persisting (9)) detail={}
+[kraken-paper] HOLD SOL/USD @ 117.0050 (persisting (9)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2495 (persisting (9)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1069 (persisting (9)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5864 (persisting (9)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.4600 (persisting (9)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1639.5100 (persisting (9)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85853.9500 (persisting (10)) detail={}
+[kraken-paper] HOLD XMR/USD @ 565.1200 (persisting (10)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5817 (persisting (10)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2139 (persisting (10)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7338 (persisting (10)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2721.9300 (persisting (10)) detail={}
+[kraken-paper] HOLD SOL/USD @ 117.1550 (persisting (10)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2496 (persisting (10)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1070 (persisting (10)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5985 (persisting (10)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.5550 (persisting (10)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1638.3050 (persisting (10)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85864.4500 (persisting (11)) detail={}
+[kraken-paper] HOLD XMR/USD @ 565.6600 (persisting (11)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5810 (persisting (11)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2137 (persisting (11)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7284 (persisting (11)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2721.2950 (persisting (11)) detail={}
+[kraken-paper] HOLD SOL/USD @ 117.1050 (persisting (11)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2496 (persisting (11)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1070 (persisting (11)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.6113 (persisting (11)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.5600 (persisting (11)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1641.9450 (persisting (11)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85783.3500 (persisting (12)) detail={}
+[kraken-paper] HOLD XMR/USD @ 565.2700 (persisting (12)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5793 (persisting (12)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2135 (persisting (12)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7098 (persisting (12)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2719.3450 (persisting (12)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.9950 (persisting (12)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2491 (persisting (12)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1068 (persisting (12)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.6138 (persisting (12)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.2750 (persisting (12)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1641.8950 (persisting (12)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85823.4500 (persisting (13)) detail={}
+[kraken-paper] HOLD XMR/USD @ 565.1300 (persisting (13)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5798 (persisting (13)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2133 (persisting (13)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7127 (persisting (13)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2720.1950 (persisting (13)) detail={}
+[kraken-paper] HOLD SOL/USD @ 117.0350 (persisting (13)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2492 (persisting (13)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1068 (persisting (13)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.6199 (persisting (13)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.3050 (persisting (13)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1641.3350 (persisting (13)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85733.4500 (persisting (14)) detail={}
+[kraken-paper] HOLD XMR/USD @ 564.8550 (persisting (14)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5763 (persisting (14)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2131 (persisting (14)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6951 (persisting (14)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2717.1050 (persisting (14)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.8850 (persisting (14)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2490 (persisting (14)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1068 (persisting (14)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5976 (persisting (14)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.1650 (persisting (14)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1641.0850 (persisting (14)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85706.2500 (persisting (15)) detail={}
+[kraken-paper] HOLD XMR/USD @ 564.1650 (persisting (15)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5768 (persisting (15)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2131 (persisting (15)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6859 (persisting (15)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2714.5550 (persisting (15)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.8450 (persisting (15)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2487 (persisting (15)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1066 (persisting (15)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5691 (persisting (15)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.8950 (persisting (15)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1637.0900 (persisting (15)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85708.2500 (persisting (16)) detail={}
+[kraken-paper] HOLD XMR/USD @ 562.7800 (persisting (16)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5754 (persisting (16)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2129 (persisting (16)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6734 (persisting (16)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2713.8250 (persisting (16)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.7650 (persisting (16)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2483 (persisting (16)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1065 (persisting (16)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5417 (persisting (16)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.7000 (persisting (16)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1639.1100 (persisting (16)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85668.4500 (persisting (17)) detail={}
+[kraken-paper] HOLD XMR/USD @ 562.7700 (persisting (17)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5741 (persisting (17)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2127 (persisting (17)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6625 (persisting (17)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2712.0250 (persisting (17)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6650 (persisting (17)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2481 (persisting (17)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1065 (persisting (17)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5365 (persisting (17)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.6350 (persisting (17)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1636.5100 (persisting (17)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85626.6500 (persisting (18)) detail={}
+[kraken-paper] HOLD XMR/USD @ 561.9950 (persisting (18)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5740 (persisting (18)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2125 (persisting (18)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6531 (persisting (18)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2712.1550 (persisting (18)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6350 (persisting (18)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2480 (persisting (18)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1065 (persisting (18)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5408 (persisting (18)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.7300 (persisting (18)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1635.8850 (persisting (18)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85634.5500 (persisting (19)) detail={}
+[kraken-paper] HOLD XMR/USD @ 562.9750 (persisting (19)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5740 (persisting (19)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2126 (persisting (19)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6550 (persisting (19)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2712.2650 (persisting (19)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6400 (persisting (19)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2482 (persisting (19)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1066 (persisting (19)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5384 (persisting (19)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.6900 (persisting (19)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1635.4200 (persisting (19)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85539.0500 (persisting (20)) detail={}
+[kraken-paper] HOLD XMR/USD @ 562.5400 (persisting (20)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5711 (persisting (20)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2122 (persisting (20)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6403 (persisting (20)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2707.7950 (persisting (20)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.4150 (persisting (20)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2476 (persisting (20)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1064 (persisting (20)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5146 (persisting (20)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.4450 (persisting (20)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1632.0250 (persisting (20)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85648.8500 (persisting (21)) detail={}
+[kraken-paper] HOLD XMR/USD @ 563.5350 (persisting (21)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5745 (persisting (21)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2127 (persisting (21)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6690 (persisting (21)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2713.5050 (persisting (21)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6900 (persisting (21)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2484 (persisting (21)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1069 (persisting (21)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5438 (persisting (21)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.8550 (persisting (21)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1633.5950 (persisting (21)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85673.9500 (persisting (22)) detail={}
+[kraken-paper] HOLD XMR/USD @ 564.0400 (persisting (22)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5738 (persisting (22)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2127 (persisting (22)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6738 (persisting (22)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2713.9350 (persisting (22)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6850 (persisting (22)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2484 (persisting (22)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1069 (persisting (22)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5260 (persisting (22)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.9450 (persisting (22)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1635.1750 (persisting (22)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85665.0500 (persisting (23)) detail={}
+[kraken-paper] HOLD XMR/USD @ 564.2950 (persisting (23)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5734 (persisting (23)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2125 (persisting (23)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6926 (persisting (23)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2712.6150 (persisting (23)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6500 (persisting (23)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2482 (persisting (23)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1067 (persisting (23)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5135 (persisting (23)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.8850 (persisting (23)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1633.9700 (persisting (23)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85683.2500 (persisting (24)) detail={}
+[kraken-paper] HOLD XMR/USD @ 564.0350 (persisting (24)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5725 (persisting (24)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2124 (persisting (24)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6888 (persisting (24)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2713.1850 (persisting (24)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6650 (persisting (24)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2483 (persisting (24)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1067 (persisting (24)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5307 (persisting (24)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.0300 (persisting (24)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1631.6450 (persisting (24)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85693.0500 (persisting (25)) detail={}
+[kraken-paper] HOLD XMR/USD @ 564.1600 (persisting (25)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5727 (persisting (25)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2124 (persisting (25)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.6932 (persisting (25)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2713.3850 (persisting (25)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6700 (persisting (25)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2483 (persisting (25)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1068 (persisting (25)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5382 (persisting (25)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.9850 (persisting (25)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1631.1250 (persisting (25)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85765.9500 (persisting (26)) detail={}
+[kraken-paper] HOLD XMR/USD @ 564.7950 (persisting (26)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5740 (persisting (26)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2126 (persisting (26)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7041 (persisting (26)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2714.9150 (persisting (26)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.7250 (persisting (26)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2486 (persisting (26)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1069 (persisting (26)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5389 (persisting (26)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.0250 (persisting (26)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1630.9900 (persisting (26)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85758.7500 (persisting (27)) detail={}
+[kraken-paper] HOLD XMR/USD @ 563.0300 (persisting (27)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5743 (persisting (27)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2125 (persisting (27)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7053 (persisting (27)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2714.6450 (persisting (27)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.6850 (persisting (27)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2484 (persisting (27)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1068 (persisting (27)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5354 (persisting (27)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 145.9800 (persisting (27)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1629.3900 (persisting (27)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85775.0500 (persisting (28)) detail={}
+[kraken-paper] HOLD XMR/USD @ 564.9650 (persisting (28)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5752 (persisting (28)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2127 (persisting (28)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7117 (persisting (28)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2715.1850 (persisting (28)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.7750 (persisting (28)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2485 (persisting (28)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1069 (persisting (28)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5396 (persisting (28)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.1050 (persisting (28)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1630.1700 (persisting (28)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85849.8500 (persisting (29)) detail={}
+[kraken-paper] HOLD XMR/USD @ 565.4250 (persisting (29)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5790 (persisting (29)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2130 (persisting (29)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7417 (persisting (29)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2719.0650 (persisting (29)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.9150 (persisting (29)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2490 (persisting (29)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1071 (persisting (29)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5537 (persisting (29)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.7050 (persisting (29)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1634.4800 (persisting (29)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85900.9500 (persisting (30)) detail={}
+[kraken-paper] HOLD XMR/USD @ 566.0900 (persisting (30)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5820 (persisting (30)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2133 (persisting (30)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7588 (persisting (30)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2722.4150 (persisting (30)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.9850 (persisting (30)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2497 (persisting (30)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1070 (persisting (30)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5792 (persisting (30)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 147.0100 (persisting (30)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1637.1950 (persisting (30)) detail={}
+[kraken-paper] HOLD BTC/USD @ 85789.0500 (persisting (31)) detail={}
+[kraken-paper] HOLD XMR/USD @ 565.3600 (persisting (31)) detail={}
+[kraken-paper] HOLD XRP/USD @ 1.5792 (persisting (31)) detail={}
+[kraken-paper] HOLD XLM/USD @ 0.2131 (persisting (31)) detail={}
+[kraken-paper] HOLD LINK/USD @ 12.7329 (persisting (31)) detail={}
+[kraken-paper] HOLD ETH/USD @ 2717.8250 (persisting (31)) detail={}
+[kraken-paper] HOLD SOL/USD @ 116.7650 (persisting (31)) detail={}
+[kraken-paper] HOLD ADA/USD @ 0.2491 (persisting (31)) detail={}
+[kraken-paper] HOLD POL/USD @ 0.1068 (persisting (31)) detail={}
+[kraken-paper] HOLD UNI/USD @ 9.5721 (persisting (31)) detail={}
+[kraken-paper] HOLD AAVE/USD @ 146.5150 (persisting (31)) detail={}
+[kraken-paper] HOLD ZEC/USD @ 1634.0850 (persisting (31)) detail={}
+2026-09-23 10:03:02 [info     ] monitor.stop_sentinel.seen     flatten_on_exit=False path=state\STOP_d2015d4b0e704e0f9e2ff087520ea0fc scope=session

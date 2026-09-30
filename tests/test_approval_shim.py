@@ -483,16 +483,24 @@ def test_stats_endpoint_returns_valid_shape(shim):
     assert isinstance(body["intents_total"], int)
 
 
-def test_stats_equity_defaults_to_100k(shim):
-    """With no fills, session_equity defaults to starting_equity."""
+def test_stats_reports_no_equity_when_it_has_no_journal(shim):
+    """A shim with no journal has no equity to report, so it must not invent one.
+
+    This test used to assert starting_equity == 100_000: a plausible default that a dashboard could
+    not distinguish from a measurement. The endpoint now zeroes those fields and names them in
+    `placeholders`, while the verdict counts — which the store really does know — stay real.
+    """
     status, body = _get(f"{shim['url']}/v1/stats")
     assert status == 200
-    assert body["starting_equity"] == 100_000.0
-    assert body["session_equity"] >= body["starting_equity"] - 1.0  # allow rounding
+    assert body["starting_equity"] == 0.0 and body["session_equity"] == 0.0
+    assert body["overlay_scalar"] is None and body["session_id"] is None
+    for field in ("starting_equity", "session_equity", "max_drawdown_pct", "overlay_scalar"):
+        assert field in body["placeholders"], field
+    assert body["intents_total"] == 0        # measured, not placeheld
 
 
 def test_conviction_matrix_returns_valid_shape(shim):
-    """GET /v1/conviction-matrix returns heatmap (symbols × strategies)."""
+    """Sparse grid of walk-forward scores: one value per validated pair, null elsewhere."""
     status, body = _get(f"{shim['url']}/v1/conviction-matrix")
     assert status == 200
     assert "symbols" in body
@@ -510,20 +518,28 @@ def test_conviction_matrix_returns_valid_shape(shim):
     assert len(matrix) == len(symbols), "Matrix rows must match symbol count"
     for row in matrix:
         assert len(row) == len(strategies), "Matrix columns must match strategy count"
-    # Validate conviction scores in [0, 1]
+    # Values are out-of-sample scores — an unbounded ratio, not a 0-1 conviction. They were
+    # previously clamped into [0, 1], which hid that every validated symbol saturated at 1.0.
     for row in matrix:
+        assert any(v is not None for v in row), "a listed symbol must have one measured pair"
         for score in row:
-            assert 0.0 <= score <= 1.0, f"Conviction score out of bounds: {score}"
+            assert score is None or score > 0.0, f"unexpected score: {score}"
+    assert body["available"] is True
+    assert "unbounded" in body["metric"]
 
 
-def test_conviction_matrix_has_expected_symbols(shim):
-    """Conviction matrix includes common symbols."""
+def test_conviction_matrix_lists_only_walk_forward_validated_symbols(shim):
+    """It used to list SPY and BTC/USD, neither of which has ever been walk-forward validated."""
+    from trading_live_claude.analysis.universe import WALK_FORWARD_VALIDATED
+
     status, body = _get(f"{shim['url']}/v1/conviction-matrix")
     assert status == 200
     symbols = body["symbols"]
-    # Check for a few expected symbols
-    assert "SPY" in symbols
-    assert "BTC/USD" in symbols
+    assert symbols, "the registry ships validated names, so this should not be empty"
+    assert set(symbols) <= set(WALK_FORWARD_VALIDATED)
+    assert "XIC.TO" in symbols          # measured
+    assert "SPY" not in symbols         # never validated; was previously fabricated
+    assert "BTC/USD" not in symbols
 
 
 def test_stats_metrics_reflect_passbook(shim):
@@ -550,3 +566,47 @@ def test_stats_metrics_reflect_passbook(shim):
     assert body["intents_approved"] == 2
     assert body["intents_declined"] == 1
     assert body["acceptance_rate"] == 2.0 / 3.0  # 2 out of 3 decided (non-expired)
+
+
+# --- venue-vocabulary regression (2026-09-17) -------------------------------
+# The response schema's ``Broker`` Literal listed only ib / kraken / questrade, so every prompt
+# from a PaperBroker-wrapped feed — i.e. every paper session, the only mode we run — failed
+# RESPONSE validation on GET /v1/intents/pending with a 500. The card never saw the prompt and it
+# expired unapproved. These tests fail if a venue tag is dropped from the Literal again.
+
+@pytest.mark.parametrize("venue", ["ib", "ib_web", "kraken", "questrade", "paper", "global"])
+def test_pending_serializes_every_venue_tag(shim, venue):
+    body = {
+        "symbol": "XIC.TO", "action": "Buy", "shares": 12, "entry": 31.05,
+        "stop": 30.40, "target": 32.10, "strategy": "test",
+        "risk_dollars": 7.80, "account_number": "paper-001",
+        "broker": venue, "ttl_seconds": 30,
+    }
+    status, prompt = _post(f"{shim['url']}/v1/intents", body)
+    assert status == 201, prompt
+    assert prompt["broker"] == venue
+    # The 500 was on the *read* side, so the publish passing is not enough.
+    status, pending = _get(f"{shim['url']}/v1/intents/pending")
+    assert status == 200, pending
+    assert venue in [p["broker"] for p in pending["prompts"]]
+    # ...and the canonical the card signs carries the same tag in field 0.
+    signed = next(p for p in pending["prompts"] if p["broker"] == venue)
+    assert signed["canonical"].split("|")[0] == venue
+
+
+def test_broker_literal_covers_every_declared_broker_venue() -> None:
+    """Drift guard: every adapter's ``.venue`` must be accepted by the wire schema."""
+    from typing import get_args
+
+    from trading_live_claude.brokers.ib import IBBroker
+    from trading_live_claude.brokers.ib_web import IBWebBroker
+    from trading_live_claude.brokers.kraken import KrakenBroker
+    from trading_live_claude.brokers.paper import PaperBroker
+    from trading_live_claude.brokers.questrade import QuestradeBroker
+    from trading_live_claude.brokers.routed import VenueRoutedFeed
+    from trading_live_claude.execution.approval_asgi import Broker
+
+    accepted = set(get_args(Broker))
+    for cls in (IBBroker, IBWebBroker, KrakenBroker, QuestradeBroker, PaperBroker,
+                VenueRoutedFeed):
+        assert cls.venue in accepted, f"{cls.__name__}.venue={cls.venue!r} not in Broker literal"

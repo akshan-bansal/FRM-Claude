@@ -1,0 +1,122 @@
+C:\Users\PC\Downloads\FRM-Claude\scripts\rmt_lstm_study.py:151: Pandas4Warning: Sorting by default when concatenating all DatetimeIndex is deprecated.  In the future, pandas will respect the default of `sort=False`. Specify `sort=True` or `sort=False` to silence this message. If you see this warnings when not directly calling concat, report a bug to pandas.
+  v = pd.concat({s: b["close"] * b["volume"] for s, b in bars.items()}, axis=1).reindex(c.index)
+[data] equities: 37 assets, 1456 returns 2020-09-01 -> 2026-08-26; train 1019 (4.0y) / test 437
+[model] with diversifiers: N=37 signal=11 mse=1.2670 r2=-0.0034 (415s)
+[model] raw-returns ablation (341s)
+[model] without diversifiers: N=34 signal=10 mse=1.1811 r2=-0.0035 (274s)
+{
+ "structure": {
+  "with diversifiers": {
+   "n_assets": 37,
+   "n_signal": 11,
+   "lambda1_share": 0.2599585033351293,
+   "spectral_snr": 2.4503516022568634,
+   "clean_minvar_vol": 0.0836627302305074,
+   "raw_minvar_vol": 0.08878890690261086
+  },
+  "without diversifiers": {
+   "n_assets": 34,
+   "n_signal": 10,
+   "lambda1_share": 0.2748068719307623,
+   "spectral_snr": 2.3651174828911192,
+   "clean_minvar_vol": 0.09756955075675493,
+   "raw_minvar_vol": 0.09388836960580386
+  }
+ },
+ "forecast": {
+  "with diversifiers": {
+   "mse_mean": 1.267,
+   "r2_vs_zero_mean": -0.0034,
+   "rank_ic_mean": 0.0086,
+   "ic_t_mean": 0.9752,
+   "hit_rate_mean": 0.5019,
+   "best_epoch_mean": 13.8,
+   "mse_seed_sd": 0.0025,
+   "r2_vs_zero_seed_sd": 0.002,
+   "rank_ic_seed_sd": 0.0078
+  },
+  "raw returns only (ablation)": {
+   "mse_mean": 1.2664,
+   "r2_vs_zero_mean": -0.0029,
+   "rank_ic_mean": -0.0001,
+   "ic_t_mean": 0.0154,
+   "hit_rate_mean": 0.4973,
+   "best_epoch_mean": 11.8,
+   "mse_seed_sd": 0.0015,
+   "r2_vs_zero_seed_sd": 0.0012,
+   "rank_ic_seed_sd": 0.0108
+  },
+  "without diversifiers": {
+   "mse_mean": 1.1811,
+   "r2_vs_zero_mean": -0.0035,
+   "rank_ic_mean": 0.0064,
+   "ic_t_mean": 0.7421,
+   "hit_rate_mean": 0.5015,
+   "best_epoch_mean": 8.6,
+   "mse_seed_sd": 0.0012,
+   "r2_vs_zero_seed_sd": 0.001,
+   "rank_ic_seed_sd": 0.0152
+  }
+ },
+ "effects": {
+  "without diversifiers vs with": {
+   "LSTM-Transformer forecast MSE (common assets)": {
+    "mean_diff": -0.0007602174828254011,
+    "ci95_lo": -0.002524168030439123,
+    "ci95_hi": 0.001003733064788321,
+    "t_stat": -0.8447097728184605,
+    "p_value": 0.3982729016558244,
+    "cohens_dz": -0.03774274217015231,
+    "n_days": 437,
+    "hac_lags": 5
+   },
+   "min-variance portfolio squared return": {
+    "mean_diff": 1.0228097528665971e-05,
+    "ci95_lo": 4.769862976726549e-06,
+    "ci95_hi": 1.5686332080605393e-05,
+    "t_stat": 3.6728123288623,
+    "p_value": 0.00023989566851450057,
+    "cohens_dz": 0.17985261878660797,
+    "n_days": 437,
+    "hac_lags": 5
+   }
+  }
+ },
+ "ablation": {
+  "mean_diff": -0.0006173280037014504,
+  "ci95_lo": -0.0022652747346266415,
+  "ci95_hi": 0.001030618727223741,
+  "t_stat": -0.7342245137836129,
+  "p_value": 0.4628119154630147,
+  "cohens_dz": -0.031292796313410066,
+  "n_days": 437,
+  "hac_lags": 5
+ }
+}
+    lower_frac  lower_cut     shape  n_lower_kept  spectral_snr  oos_nll  oos_minvar_vol
+0         1.00     0.3358  constant            10        3.1294   0.4926          0.0887
+1         1.00     0.3358        mp            10        3.1294   0.4878          0.0887
+2         1.00     0.3358   uniform            10        3.1294   0.4883          0.0887
+3         1.00     0.3358   arcsine            10        3.1294   0.4905          0.0890
+4         1.00     0.3358  binomial            10        3.1294   0.5030          0.0907
+5         0.75     0.2518  constant             6        2.7426   0.4953          0.0890
+6         0.75     0.2518        mp             6        2.7426   0.4865          0.0887
+7         0.75     0.2518   uniform             6        2.7426   0.4866          0.0887
+8         0.75     0.2518   arcsine             6        2.7426   0.4887          0.0888
+9         0.75     0.2518  binomial             6        2.7426   0.5039          0.0904
+10        0.50     0.1679  constant             2        2.5238   0.4947          0.0839
+11        0.50     0.1679        mp             2        2.5238   0.4796          0.0835
+12        0.50     0.1679   uniform             2        2.5238   0.4791          0.0837
+13        0.50     0.1679   arcsine             2        2.5238   0.4795          0.0838
+14        0.50     0.1679  binomial             2        2.5238   0.4953          0.0835
+15        0.25     0.0839  constant             0        2.4504   0.4991          0.0837
+16        0.25     0.0839        mp             0        2.4504   0.4797          0.0827
+17        0.25     0.0839   uniform             0        2.4504   0.4786          0.0829
+18        0.25     0.0839   arcsine             0        2.4504   0.4782          0.0832
+19        0.25     0.0839  binomial             0        2.4504   0.4935          0.0831
+20        0.00     0.0000  constant             0        2.4504   0.4991          0.0837
+21        0.00     0.0000        mp             0        2.4504   0.4797          0.0827
+22        0.00     0.0000   uniform             0        2.4504   0.4786          0.0829
+23        0.00     0.0000   arcsine             0        2.4504   0.4782          0.0832
+24        0.00     0.0000  binomial             0        2.4504   0.4935          0.0831
+[out] reports\rmt_lstm_equities_2026-09-21

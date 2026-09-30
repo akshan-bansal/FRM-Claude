@@ -115,6 +115,26 @@ class IBContract:
 # that want the depth-of-book surface (research on microstructure, execution-cost estimates).
 
 @dataclass(frozen=True)
+class StockDetails:
+    """Per-listing facts from IB contract details that price and size a stock correctly.
+
+    ``price_magnifier``: IB quotes and bars come in ``price * magnifier`` units — 100 for
+    pence-quoted LSE shares (BP. quotes in GBX), 1 almost everywhere else. ``size_increment``: the
+    board lot (Tokyo varies per name, e.g. 1306.T trades in 10s and 7203.T in 100s; Hong Kong
+    per name, e.g. 2800 in 500s); fractional (<1) where IB allows fractional shares.
+    """
+
+    price_magnifier: float
+    size_increment: float
+
+    @property
+    def board_lot(self) -> int | None:
+        """Whole-share lot when the listing has one (>1); ``None`` for 1 or fractional increments."""
+        inc = self.size_increment
+        return int(inc) if inc > 1 and float(inc).is_integer() else None
+
+
+@dataclass(frozen=True)
 class L2Level:
     price: float
     size: float
@@ -189,6 +209,7 @@ class IBBroker(Broker):
         # is the caller's job — this only guards a single drain cycle.
         self._news_seen: set[tuple[str, str]] = set()
         self._news_tick_handler: Any = None
+        self._stock_details: dict[str, StockDetails] = {}
 
     # ---- connection lifecycle ------------------------------------------------
 
@@ -278,16 +299,48 @@ class IBBroker(Broker):
         from ib_insync import Stock              # local import so module import stays lightweight
         contracts = [self._futures_contract(s) if s.startswith("/") else Stock(*_infer_stock_venue(s))
                      for s in symbols]
+        # Resolve every stock's magnifier BEFORE requesting tickers, so an unscalable listing
+        # fails the call instead of returning a pence price read as pounds.
+        scales = [1.0 if s.startswith("/") else self.stock_details(s).price_magnifier
+                  for s in symbols]
         tickers = ib.reqTickers(*contracts)
         out: list[Quote] = []
-        for sym, t in zip(symbols, tickers, strict=True):
+        for sym, t, k in zip(symbols, tickers, scales, strict=True):
             out.append(Quote(
                 symbol=sym, symbolId=int(t.contract.conId or 0),
-                bidPrice=float(t.bid) if t.bid and t.bid > 0 else None,
-                askPrice=float(t.ask) if t.ask and t.ask > 0 else None,
-                lastTradePrice=float(t.last) if t.last and t.last > 0 else None,
+                bidPrice=float(t.bid) / k if t.bid and t.bid > 0 else None,
+                askPrice=float(t.ask) / k if t.ask and t.ask > 0 else None,
+                lastTradePrice=float(t.last) / k if t.last and t.last > 0 else None,
             ))
         return out
+
+    def stock_details(self, symbol: str) -> StockDetails:
+        """Price magnifier + size increment for a stock listing, fetched once and cached.
+
+        Raises ``BrokerError`` when IB returns no details: guessing a magnifier of 1 would read a
+        pence-quoted LSE price 100x too high, which is worse than no quote at all.
+        """
+        key = symbol.upper()
+        cached = self._stock_details.get(key)
+        if cached is not None:
+            return cached
+        ib = self._require_ib()
+        from ib_insync import Stock
+        try:
+            details = list(ib.reqContractDetails(Stock(*_infer_stock_venue(symbol))))
+        except Exception as e:
+            raise BrokerError(f"IBBroker: contract details for {symbol} failed: {e}") from e
+        if not details:
+            raise BrokerError(f"IBBroker: no contract details for {symbol}; cannot scale its prices")
+        d = details[0]
+        magnifier = float(getattr(d, "priceMagnifier", 0) or 1.0)
+        increment = float(getattr(d, "sizeIncrement", 0) or getattr(d, "minSize", 0) or 1.0)
+        info = StockDetails(price_magnifier=magnifier, size_increment=increment)
+        self._stock_details[key] = info
+        if magnifier != 1.0 or info.board_lot:
+            log.info("ib.stock_details", symbol=symbol, price_magnifier=magnifier,
+                     board_lot=info.board_lot)
+        return info
 
     def _futures_resolution(self, symbol: str) -> tuple[int, str, str, str, str]:
         resolved = self.futures_contract_for(symbol) if self.futures_contract_for else None
@@ -332,6 +385,8 @@ class IBBroker(Broker):
             contract: Any = ContFuture(root, exchange, currency=currency, tradingClass=trading_class)
         else:
             contract = Stock(*_infer_stock_venue(symbol))
+        # Bars share the quote's units (pence for GBX listings); futures are rescaled elsewhere.
+        k = 1.0 if symbol.startswith("/") else self.stock_details(symbol).price_magnifier
         bars = ib.reqHistoricalData(
             contract, endDateTime=end.strftime("%Y%m%d %H:%M:%S"),
             durationStr=f"{duration_days} D", barSizeSetting=bar_size,
@@ -341,8 +396,8 @@ class IBBroker(Broker):
         for b in bars:
             ts = b.date if isinstance(b.date, datetime) else datetime.combine(b.date, datetime.min.time())
             out.append(Candle(
-                start=ts, end=ts, open=float(b.open), high=float(b.high),
-                low=float(b.low), close=float(b.close), volume=int(b.volume),
+                start=ts, end=ts, open=float(b.open) / k, high=float(b.high) / k,
+                low=float(b.low) / k, close=float(b.close) / k, volume=int(b.volume),
             ))
         return out
 
@@ -585,7 +640,8 @@ class IBBroker(Broker):
             ib_order = LimitOrder(
                 action="BUY" if order.action == OrderAction.BUY else "SELL",
                 totalQuantity=order.totalQuantity,
-                lmtPrice=order.limitPrice,
+                # Back into IB's quoted units: quotes() divided by the magnifier (GBX -> GBP).
+                lmtPrice=order.limitPrice * self.stock_details(order.symbol).price_magnifier,
             )
         else:
             ib_order = MarketOrder(
@@ -609,7 +665,8 @@ class IBBroker(Broker):
 
         ``algo_params`` maps to IB's ``algoParams`` list (e.g. ``{"startTime": "20261231-14:30:00
         US/Eastern", "endTime": "20261231-16:00:00 US/Eastern", "allowPastEndTime": False}`` for
-        VWAP). Returns the IB order id.
+        VWAP). Returns the IB order id. ``limit_price`` is in IB's quoted units for ``contract``
+        (pence for GBX listings), like ``quote_contract`` — not the rescaled ``quotes()`` units.
         """
         if not self._enable_live_orders:
             raise OrderRejected("IBBroker: live orders disabled; enable_live_orders=True required.")

@@ -16,7 +16,10 @@ from datetime import datetime
 
 import pandas as pd
 
+from ..signals.candle_exit import CandleExit
 from ..signals.generator import SignalSet
+from ..signals.overbought_exit import OverboughtExit
+from ..signals.profit_lock import ProfitLock
 from ..strategies.base import Strategy, StrategyContext
 from .costs import CostModel
 from .metrics import Metrics, compute_metrics
@@ -87,6 +90,9 @@ class BacktestEngine:
         df: pd.DataFrame,
         symbol: str,
         timeframe: str = "1d",
+        profit_lock: ProfitLock | None = None,
+        candle_exit: CandleExit | None = None,
+        overbought_exit: OverboughtExit | None = None,
     ) -> BacktestResult:
         if "close" not in df.columns:
             raise ValueError("DataFrame must contain a 'close' column.")
@@ -96,6 +102,11 @@ class BacktestEngine:
             atr_stop_mult=strategy.stop_atr_mult,
             trail_atr_mult=strategy.trail_atr_mult,
             time_stop_bars=strategy.time_stop_bars,
+            profit_lock=profit_lock,
+            # The lock's cost cross-check uses the same costs the engine charges below.
+            round_trip_cost_frac=2.0 * self.cost_model.per_side_frac(),
+            candle_exit=candle_exit,
+            overbought_exit=overbought_exit,
         )
 
         per_side = self.cost_model.per_side_frac()

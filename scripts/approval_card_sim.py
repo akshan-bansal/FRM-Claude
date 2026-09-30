@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import sys
 import time
@@ -26,7 +27,6 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
 
 # --------------------------------------------------------------------------- #
 # key management                                                              #
@@ -63,6 +63,37 @@ def pubkey_pem(key: Ed25519PrivateKey) -> bytes:
 _AUTH_HEADERS: dict[str, str] = {}
 
 
+def _decode(raw: bytes) -> dict:
+    """Body as a dict. A non-JSON body becomes {"error": "<text>"} instead of raising.
+
+    2026-09-17: these helpers did ``json.loads(e.read())`` on the error path, so a shim 500 —
+    which uvicorn returns as ``text/plain`` "Internal Server Error" — raised JSONDecodeError and
+    killed the whole card process. That hid the real status code and made a server bug look like a
+    client crash. Never let an error body's content type decide whether the card survives.
+    """
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {"error": text[:500]}
+    return parsed if isinstance(parsed, dict) else {"data": parsed}
+
+
+def _transport_error(e: OSError) -> str:
+    """Label for any transport failure, without letting it escape.
+
+    ``OSError``, not ``URLError``: when the shim shuts down mid-response urllib surfaces a raw
+    ``ConnectionResetError`` (WinError 10054) from the socket read, which is an OSError but NOT a
+    URLError — it killed the card with a traceback at the end of the 2026-09-17 end-to-end run.
+    A real card sitting on a desk must ride out the server restarting, so every transport fault
+    becomes status 0 and the poll loop simply tries again.
+    """
+    reason = getattr(e, "reason", None) or e
+    return f"{type(e).__name__}: {reason}"
+
+
 def _post(url: str, body: dict) -> tuple[int, dict]:
     req = urllib.request.Request(
         url,
@@ -72,28 +103,46 @@ def _post(url: str, body: dict) -> tuple[int, dict]:
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
-            return r.status, json.loads(r.read().decode("utf-8"))
+            return r.status, _decode(r.read())
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode("utf-8") or "{}")
+        return e.code, _decode(e.read())
+    except OSError as e:                    # shim down / refused / reset mid-read — keep polling
+        return 0, {"error": _transport_error(e)}
 
 
 def _get(url: str) -> tuple[int, dict]:
     req = urllib.request.Request(url, headers=_AUTH_HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
-            return r.status, json.loads(r.read().decode("utf-8"))
+            return r.status, _decode(r.read())
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode("utf-8") or "{}")
+        return e.code, _decode(e.read())
+    except OSError as e:
+        return 0, {"error": _transport_error(e)}
 
 
 # --------------------------------------------------------------------------- #
 # UI helpers                                                                  #
 # --------------------------------------------------------------------------- #
 
+REGISTER_TIMEOUT_SECONDS = 30.0   # a card may boot before the shim does
+
 CANONICAL_FIELDS = (
     "broker", "action", "symbol", "shares", "entry",
     "notional_usd", "account", "intent_id", "nonce",
 )
+
+
+def _fingerprint(canonical: str, chars: int = 8) -> str:
+    """``7F3A...91C2`` over the canonical bytes — computed HERE, not taken from the server.
+
+    Kept as a local implementation (like ``parse_canonical``) rather than importing the package
+    helper: a card verifies for itself, and real firmware has no access to our Python. Mirrors what
+    ``firmware/tradecard/main/main.c`` must display.
+    """
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest().upper()
+    half = chars // 2
+    return f"{digest[:half]}...{digest[-half:]}"
 
 
 def parse_canonical(p: dict) -> dict[str, str] | None:
@@ -141,12 +190,19 @@ def run(
     auto: str | None,
     poll_interval: float,
 ) -> None:
-    # Register (idempotent on the server side; re-registering is fine).
-    status, resp = _post(
-        f"{shim_url}/v1/card/register",
-        {"card_id": card_id, "pubkey_pem": pubkey_pem(key).decode("utf-8")},
-    )
-    if status >= 400:
+    # Register (idempotent on the server side; re-registering is fine). Status 0 means the
+    # transport failed, not that the server said yes — a card powered on before the shim must
+    # wait rather than fall through to polling as if it were paired.
+    body = {"card_id": card_id, "pubkey_pem": pubkey_pem(key).decode("utf-8")}
+    deadline = time.monotonic() + REGISTER_TIMEOUT_SECONDS
+    while True:
+        status, resp = _post(f"{shim_url}/v1/card/register", body)
+        if status == 0 and time.monotonic() < deadline:
+            print(f"waiting for shim at {shim_url}: {resp.get('error')}", file=sys.stderr)
+            time.sleep(min(poll_interval, 2.0))
+            continue
+        break
+    if status == 0 or status >= 400:
         print(f"registration failed: {status} {resp}", file=sys.stderr)
         sys.exit(1)
     print(f"registered card_id={card_id} with {shim_url}")
@@ -173,8 +229,20 @@ def run(
                 print(f"\nREFUSED {prompt['intent_id']}: canonical malformed or bound "
                       "to another intent — not signing", file=sys.stderr)
                 continue
+            # Continuity check (phase 6). The card recomputes the fingerprint from the bytes it is
+            # about to sign and compares it against the one the server sent for display. A mismatch
+            # means the dashboard and the device would show different things for a single
+            # signature — exactly the drift the fingerprint exists to catch — so refuse to sign.
+            local_fp = _fingerprint(prompt["canonical"])
+            served_fp = str(prompt.get("fingerprint", ""))
+            if served_fp and served_fp != local_fp:
+                print(f"\nREFUSED {prompt['intent_id']}: fingerprint mismatch — served "
+                      f"{served_fp}, computed {local_fp} over the bytes to be signed",
+                      file=sys.stderr)
+                continue
             print("\n" + "=" * 78)
             print(render_prompt(prompt, signed))
+            print(f"  HASH {local_fp}   (recomputed here, over the exact bytes to be signed)")
             print("=" * 78)
 
             decision = _decide(prompt, auto=auto)

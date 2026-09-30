@@ -6,13 +6,23 @@ concurrently — overlapping them trips the limiter and both come back short. Th
 them: it waits for any fetch already in flight, then alternates one pair's deep history with one
 bounded tick pass across the sleeve, and repeats down the priority order.
 
-Pairs whose ``<WIRE>_daily.parquet`` already exists are skipped, so stopping and restarting never
-redoes finished work. ``fetch_crypto_history.py`` writes its parquet only at the end of a pair, so
-a hard kill mid-pair loses that pair's progress: stop between steps instead, by creating the
-``--stop-file`` sentinel (default ``state/STOP_KRAKEN_FETCH``).
+A pair is skipped once its ``<WIRE>_history.json`` checkpoint reports ``complete``, so stopping and
+restarting never redoes finished work, and a partially fetched pair resumes from its cursor rather
+than from the earliest trade. Stop cleanly by creating the ``--stop-file`` sentinel (default
+``state/STOP_KRAKEN_FETCH``), which is checked between steps; a hard kill now costs at most the
+current chunk, since ``fetch_crypto_history.py`` checkpoints every ``--chunk-pages``.
 
 Each tick pass moves every sleeve pair forward by at most ``--tick-pages`` * 1000 trades, so a
-cache that is days behind closes its gap over several passes rather than in one.
+cache that is days behind closes its gap over several passes rather than in one. ``--skip-ticks``
+runs history only — use it while a paper session is live, since the tick passes are the burstier
+load on the shared Kraken rate limit and can starve a session's quotes.
+
+A pair needing more than ``--history-pages`` in one run is re-run until its checkpoint reports
+``complete`` (bounded by ``--history-runs-per-pair`` so one stubborn pair can't block the queue).
+
+``--until HH:MM`` (local) gives the driver a hard finish time and is what keeps a scheduled
+overnight run from still fetching during market hours: before each run it shortens that run's page
+budget to what fits in the time left, and it stops rather than start a run it cannot finish.
 
 Usage::
 
@@ -24,10 +34,12 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -53,8 +65,41 @@ def log(msg: str) -> None:
 
 
 def needs_history(pair: str, cache_dir: Path) -> bool:
-    """False when ``<pair>_daily.parquet`` is already cached — that pair's deep pull is done."""
-    return not (cache_dir / f"{pair}_daily.parquet").exists()
+    """False only when the pair's checkpoint says ``complete``.
+
+    Deliberately NOT "does the parquet exist": since 2026-09-23 ``fetch_crypto_history.py``
+    checkpoints every chunk, so a partial pair has a parquet after its first few minutes. Keying
+    on the file would abandon a pair mid-history.
+    """
+    ck = cache_dir / f"{pair}_history.json"
+    if not ck.exists():
+        return True
+    try:
+        return not json.loads(ck.read_text(encoding="utf-8")).get("complete", False)
+    except (OSError, ValueError):
+        return True                    # unreadable checkpoint: safer to resume than to skip
+
+
+def parse_deadline(until: str, *, now: datetime | None = None) -> datetime | None:
+    """``"HH:MM"`` local -> the next such moment. Empty string means no deadline."""
+    if not until.strip():
+        return None
+    hh, _, mm = until.strip().partition(":")
+    target = dtime(int(hh), int(mm or 0))
+    now = now or datetime.now()
+    today = datetime.combine(now.date(), target)
+    return today if today > now else today + timedelta(days=1)
+
+
+def pages_for_run(cap: int, deadline: datetime | None, *, sleep_s: float,
+                  now: datetime | None = None) -> int:
+    """Page budget for the next run: the cap, or what fits before ``deadline``, whichever is less."""
+    if deadline is None:
+        return cap
+    remaining_s = (deadline - (now or datetime.now())).total_seconds()
+    if remaining_s <= 0:
+        return 0
+    return max(0, min(cap, int(remaining_s / max(sleep_s, 0.01)) - 30))   # 30-page safety margin
 
 
 def fetch_running() -> bool:
@@ -93,15 +138,30 @@ def main() -> int:
                     help="Comma-separated Kraken wire pairs, in the order to fetch them.")
     ap.add_argument("--tick-pages", type=int, default=150,
                     help="--max-pages for each tick catch-up pass (applies per sleeve pair).")
-    ap.add_argument("--history-pages", type=int, default=15000,
-                    help="--max-pages cap for one pair's deep-history pull.")
+    ap.add_argument("--history-pages", type=int, default=7500,
+                    help="--max-pages for ONE history run (~2h at 1 req/s). A pair needing more "
+                         "is re-run from its checkpoint.")
+    ap.add_argument("--history-runs-per-pair", type=int, default=6,
+                    help="Cap on resume runs per pair per driver pass, so one pair can't block "
+                         "the rest of the queue forever.")
+    ap.add_argument("--until", dest="until", default="",
+                    help="Local HH:MM to finish by (e.g. 08:45). Each run's page budget is "
+                         "trimmed to fit the remaining time; empty = run until the queue is done.")
+    ap.add_argument("--min-run-pages", dest="min_run_pages", type=int, default=250,
+                    help="Don't start a history run smaller than this near the deadline — one "
+                         "chunk is the smallest useful unit of work.")
+    ap.add_argument("--skip-ticks", action="store_true",
+                    help="History only — no tick catch-up passes (use while a paper session is "
+                         "live so it keeps the Kraken rate limit).")
     ap.add_argument("--cache", type=Path, default=REPO / "data" / "cache")
     ap.add_argument("--stop-file", type=Path, default=REPO / "state" / "STOP_KRAKEN_FETCH",
                     help="Create this file to stop cleanly between steps (never mid-pair).")
     args = ap.parse_args()
 
     pairs = [p.strip().upper() for p in args.pairs.split(",") if p.strip()]
-    log(f"{len(pairs)} pair(s) queued; stop cleanly with: touch {args.stop_file}")
+    deadline = parse_deadline(args.until)
+    log(f"{len(pairs)} pair(s) queued; stop cleanly with: touch {args.stop_file}"
+        + (f"; finishing by {deadline:%Y-%m-%d %H:%M} local" if deadline else ""))
 
     while fetch_running():
         log("another Kraken fetch is running; waiting 60s")
@@ -111,16 +171,31 @@ def main() -> int:
         if args.stop_file.exists():
             log("stop file seen; exiting between steps")
             return 0
-        if needs_history(pair, args.cache):
+        runs = 0
+        while needs_history(pair, args.cache) and runs < args.history_runs_per_pair:
+            if args.stop_file.exists():
+                log("stop file seen; exiting between steps")
+                return 0
+            budget = pages_for_run(args.history_pages, deadline, sleep_s=1.05)
+            if budget < args.min_run_pages:
+                log(f"deadline reached (room for {budget} pages); stopping with {pair} at its "
+                    f"checkpoint")
+                return 0
+            runs += 1
+            # No --since: the fetch resumes from the pair's own checkpoint.
             run_step("fetch_crypto_history.py",
-                     ["--pair", pair, "--since", "0",
-                      "--max-pages", str(args.history_pages), "--sleep", "1.05"],
-                     f"history {pair}")
-        else:
-            log(f"SKIP {pair}: {pair}_daily.parquet already cached")
+                     ["--pair", pair, "--max-pages", str(budget), "--sleep", "1.05"],
+                     f"history {pair} run {runs}/{args.history_runs_per_pair} ({budget} pages)")
+        if not needs_history(pair, args.cache):
+            log(f"DONE {pair}: history complete")
+        elif runs:
+            log(f"PARTIAL {pair}: still incomplete after {runs} run(s); queued for a later pass")
         if args.stop_file.exists():
             log("stop file seen; exiting between steps")
             return 0
+        if args.skip_ticks:
+            log(f"SKIP tick pass after {pair} (--skip-ticks)")
+            continue
         run_step("deepen_kraken_trades.py",
                  ["--max-pages", str(args.tick_pages), "--sleep", "1.1"],
                  f"tick pass after {pair}")

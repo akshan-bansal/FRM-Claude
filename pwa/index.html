@@ -94,6 +94,15 @@
   .prompt .broker { font-weight: 700; }
   .prompt .thesis { grid-column: 1 / -1; padding-top: 6px; margin-top: 4px;
     border-top: 1px dashed rgba(0,0,0,0.35); font-size: 11px; }
+  /* Cryptographic continuity: the same 8 hex characters the card shows and the audit ledger
+     records, over the exact bytes being signed. Deliberately prominent — its whole purpose is to
+     be compared by eye against the device screen. */
+  .prompt .attest { grid-column: 1 / -1; display: grid;
+    grid-template-columns: auto 1fr; gap: 2px 10px; padding-top: 6px; margin-top: 4px;
+    border-top: 1px dashed rgba(0,0,0,0.35); font-size: 11px; }
+  .prompt .attest .k { color: rgba(0,0,0,0.55); letter-spacing: 0.1em; }
+  .prompt .attest .hash { font-weight: 700; font-size: 13px; letter-spacing: 0.06em; }
+  .row .fp { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; }
   .passbook { border-top: 1px solid var(--rule); }
   .row {
     display: grid;
@@ -200,6 +209,11 @@ function fmtTime(iso) {
     : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function fmtTTL(iso) {
+  const left = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+  return left > 0 ? left + "s LEFT" : "EXPIRED";
+}
+
 function renderPending(prompts) {
   const el = $("pending");
   if (!prompts.length) {
@@ -212,6 +226,11 @@ function renderPending(prompts) {
       <span>${p.action} ${p.symbol} ${p.shares}sh @ ${p.entry.toFixed(2)}</span>
       <span class="amount">${fmtAmount(p.notional_usd)}</span>
       ${p.thesis ? `<div class="thesis">${p.thesis}</div>` : ""}
+      <div class="attest">
+        <span class="k">HASH</span><span class="hash">${p.fingerprint || "unavailable"}</span>
+        <span class="k">ACCOUNT</span><span>${p.account}</span>
+        <span class="k">STATUS</span><span>AWAITING APPROVAL · ${fmtTTL(p.expires_at)}</span>
+      </div>
     </div>
   `).join("");
 }
@@ -226,7 +245,9 @@ function renderPassbook(entries) {
     <div class="row">
       <span class="verdict ${e.verdict[0]}">${e.verdict[0]}</span>
       <span class="broker">${e.broker}</span>
-      <span class="line">${e.action} ${e.symbol} ${e.shares}sh</span>
+      <span class="line">${e.action} ${e.symbol} ${e.shares}sh
+        <span class="fp">${e.fingerprint || ""}${e.card_id ? " · " + e.card_id : ""}</span>
+      </span>
       <span class="amount">${fmtAmount(e.notional_usd)}</span>
       <span class="ts">${fmtTime(e.resolved_at)}</span>
     </div>

@@ -323,3 +323,68 @@ def test_publish_carries_broker_and_thesis(paper_router: Router, store):
     assert prompt.broker == "kraken"
     assert "kraken" in prompt.canonical
     assert prompt.thesis.startswith("reg-shift")
+
+
+# --- broker tag sourcing (2026-09-17) --------------------------------------
+# ApprovalRouter published ``broker.name``, but the wire vocabulary is ``broker.venue``:
+# IBBroker.name is "interactive-brokers" and IBWebBroker.name is "interactive-brokers-web",
+# neither of which the shim's Broker literal accepts. Prompts from those adapters would fail
+# response validation the same way "paper" did.
+
+class _VenueBroker(_StubBroker):
+    """Shaped like IBBroker: a venue tag that differs from the adapter's name."""
+    name = "interactive-brokers"
+    venue = "ib"
+
+
+class _PaperShapedBroker(_StubBroker):
+    """Shaped like PaperBroker wrapping a feed."""
+    name = "paper"
+    venue = "paper"
+
+
+class _NamedOnlyBroker(_StubBroker):
+    """No ``.venue`` at all — the fallback path must still produce something."""
+    name = "static-feed"
+
+
+def _published_broker_tag(router_broker, tmp_path: Path, store) -> str:
+    inner_store, _ = store
+    inner = Router.build_default(mode="paper", broker=router_broker, state_dir=tmp_path)
+    approval = ApprovalRouter(inner, store=inner_store, ttl_seconds=10)
+    t = threading.Thread(
+        target=lambda: approval.submit(
+            _intent(), equity=100_000, existing_risk=0, open_positions=0
+        ),
+        daemon=True,
+    )
+    t.start()
+    pending: list = []
+    for _ in range(200):
+        pending = inner_store.pending()
+        if pending:
+            break
+        threading.Event().wait(0.01)
+    assert pending, "no prompt published"
+    return pending[0].broker
+
+
+def test_publish_uses_broker_venue_not_name(tmp_path: Path, store):
+    tag = _published_broker_tag(_VenueBroker(), tmp_path, store)
+    assert tag == "ib"                 # not "interactive-brokers"
+
+
+def test_publish_falls_back_to_name_without_venue(tmp_path: Path, store):
+    tag = _published_broker_tag(_NamedOnlyBroker(), tmp_path, store)
+    assert tag == "static-feed"
+
+
+def test_published_tag_is_accepted_by_the_wire_schema(tmp_path: Path, store):
+    """The tag a real paper session publishes must survive the shim's response model."""
+    from typing import get_args
+
+    from trading_live_claude.execution.approval_asgi import Broker
+
+    accepted = set(get_args(Broker))
+    assert _published_broker_tag(_VenueBroker(), tmp_path, store) in accepted
+    assert _published_broker_tag(_PaperShapedBroker(), tmp_path, store) in accepted

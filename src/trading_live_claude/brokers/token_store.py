@@ -5,12 +5,18 @@ refresh token. Lose it (or use it twice) and the chain breaks. So we:
   1. Write atomically (tmpfile + replace) on every refresh.
   2. Encrypt with Fernet using TOKEN_ENCRYPTION_KEY (derived via PBKDF2).
   3. Keep a backup of the previous token so a crash mid-write doesn't lose access.
+
+File format (2026-09-21): ``TLC2$`` + 16-byte random salt + Fernet token. The legacy format (a bare
+Fernet token keyed with a fixed salt) is still read, so an existing file keeps working; it is
+rewritten in the new format by the next ordinary save (every token refresh), with no separate
+migration step touching the file.
 """
 from __future__ import annotations
 
 import base64
 import json
 import os
+import secrets
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -32,11 +38,15 @@ class TokenSet:
         return asdict(self)
 
 
-def _derive_fernet_key(secret: str) -> bytes:
-    """Stretch user secret to a Fernet-shaped key. Salt is fixed; rotate the secret to rotate keys."""
+_MAGIC = b"TLC2$"
+_SALT_LEN = 16
+_LEGACY_SALT = b"trading-live-claude/v1/tokens"  # read-only: pre-2026-09-21 files
+
+
+def _derive_fernet_key(secret: str, salt: bytes = _LEGACY_SALT) -> bytes:
+    """Stretch user secret to a Fernet-shaped key with PBKDF2-SHA256."""
     if not secret:
         raise ValueError("TOKEN_ENCRYPTION_KEY is empty; set it in .env before using the broker.")
-    salt = b"trading-live-claude/v1/tokens"
     kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=200_000)
     return base64.urlsafe_b64encode(kdf.derive(secret.encode("utf-8")))
 
@@ -52,7 +62,22 @@ class TokenStore:
     def __init__(self, path: Path, secret: str) -> None:
         self.path = path
         self.backup_path = path.with_suffix(path.suffix + ".bak")
-        self._fernet = Fernet(_derive_fernet_key(secret))
+        self._secret = secret
+        # One fresh salt per store instance; the derived key is cached so each save stays cheap.
+        self._salt = secrets.token_bytes(_SALT_LEN)
+        self._fernet = Fernet(_derive_fernet_key(secret, self._salt))
+        self._legacy: Fernet | None = None
+
+    def _decrypt(self, blob: bytes) -> bytes:
+        if blob.startswith(_MAGIC):
+            salt = blob[len(_MAGIC):len(_MAGIC) + _SALT_LEN]
+            body = blob[len(_MAGIC) + _SALT_LEN:]
+            fernet = (self._fernet if salt == self._salt
+                      else Fernet(_derive_fernet_key(self._secret, salt)))
+            return fernet.decrypt(body)
+        if self._legacy is None:
+            self._legacy = Fernet(_derive_fernet_key(self._secret, _LEGACY_SALT))
+        return self._legacy.decrypt(blob)
 
     def exists(self) -> bool:
         return self.path.exists()
@@ -63,7 +88,7 @@ class TokenStore:
                 continue
             try:
                 blob = candidate.read_bytes()
-                raw = self._fernet.decrypt(blob)
+                raw = self._decrypt(blob)
                 data = json.loads(raw)
                 return TokenSet(**data)
             except (InvalidToken, json.JSONDecodeError):
@@ -72,7 +97,8 @@ class TokenStore:
 
     def save(self, tokens: TokenSet) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = self._fernet.encrypt(json.dumps(tokens.to_dict()).encode("utf-8"))
+        payload = _MAGIC + self._salt + self._fernet.encrypt(
+            json.dumps(tokens.to_dict()).encode("utf-8"))
 
         # Move current -> backup before writing new file.
         if self.path.exists():

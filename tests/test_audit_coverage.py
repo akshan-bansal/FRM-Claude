@@ -15,9 +15,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-from tests.test_router import _StubBroker, _intent
+from tests.test_router import _intent, _StubBroker
 from trading_live_claude.audit import Ledger
-from trading_live_claude.brokers.models import OrderAction
 from trading_live_claude.execution.approval import (
     ApprovalRouter,
     CardRegistry,
@@ -87,7 +86,7 @@ def test_a_broker_rejection_is_recorded(tmp_path: Path) -> None:
                                   ledger=led)
     assert router.submit(_intent(), equity=100_000.0, existing_risk=0.0,
                          open_positions=0) is None
-    assert _events(led) == ["RISK_CHECK", "BROKER_SUBMITTED", "BROKER_REJECTED"]
+    assert _events(led) == ["INTENT_CREATED", "RISK_CHECK", "BROKER_SUBMITTED", "BROKER_REJECTED"]
     assert "venue closed" in led.rows()[-1]["payload"]["error"]
 
 
@@ -115,9 +114,8 @@ def test_a_closed_venue_queue_and_release_are_both_recorded(tmp_path: Path) -> N
 
 def test_a_suppressed_signal_leaves_a_trace(tmp_path: Path) -> None:
     """The phase 3 ambiguity: an empty ledger looked identical to a broken one."""
-    from trading_live_claude.monitor.live_loop import LiveMonitor
-
     from tests.test_monitor import _Broker, _Market
+    from trading_live_claude.monitor.live_loop import LiveMonitor
 
     led = _led(tmp_path)
     router = Router.build_default(mode="paper", broker=_StubBroker(), state_dir=tmp_path,
@@ -147,9 +145,8 @@ def test_a_suppressed_signal_leaves_a_trace(tmp_path: Path) -> None:
 
 
 def test_a_routable_signal_is_recorded_as_a_signal(tmp_path: Path) -> None:
-    from trading_live_claude.monitor.live_loop import LiveMonitor
-
     from tests.test_monitor import _Broker, _Market
+    from trading_live_claude.monitor.live_loop import LiveMonitor
 
     led = _led(tmp_path)
     router = Router.build_default(mode="paper", broker=_StubBroker(), state_dir=tmp_path,
@@ -264,8 +261,8 @@ def test_a_gate_rejection_on_the_card_path_is_recorded(tmp_path: Path) -> None:
     assert router.submit(_intent(), equity=100_000.0, existing_risk=0.0,
                          open_positions=0) is None
     rows = led.rows()
-    assert [r["event"] for r in rows] == ["RISK_REJECTED"]
-    assert rows[0]["payload"]["via"] == "approval-router"
+    assert [r["event"] for r in rows] == ["INTENT_CREATED", "RISK_REJECTED"]
+    assert rows[1]["payload"]["via"] == "approval-router"
 
 
 # --- the acceptance criterion ----------------------------------------------------------------
@@ -302,9 +299,9 @@ def test_one_intents_whole_history_reconstructs_from_the_ledger_alone(tmp_path: 
 
     mine = [r for r in led.rows() if r["intent_id"] == intent.intent_id]
     assert [r["event"] for r in mine] == [
-        "RISK_CHECK", "INTENT_SENT", "APPROVED", "SIGNED", "RISK_CHECK", "BROKER_SUBMITTED",
-        "FILLED",
-    ]
+        "INTENT_CREATED", "RISK_CHECK", "INTENT_SENT", "APPROVED", "SIGNED", "RISK_CHECK",
+        "BROKER_SUBMITTED", "FILLED",
+    ]   # one INTENT_CREATED, not two: the card path submits the same intent again after the verdict
     # Every row carries the gate version, so the rules in force are part of the record.
     assert {r["risk_check_version"] for r in mine} == {inner.risk_check_version()}
     # The fill's broker order id ties the audit record to the broker's own record.
@@ -317,3 +314,66 @@ def test_one_intents_whole_history_reconstructs_from_the_ledger_alone(tmp_path: 
     pub.verify(b64decode(signed["signature"]), signed["payload"]["canonical"].encode("utf-8"))
     assert signed["payload"]["fingerprint"] == fingerprint(
         signed["payload"]["canonical"].encode("utf-8"))
+
+
+# --- INTENT_CREATED (2026-09-25) --------------------------------------------------------------
+
+def test_intent_created_leads_the_chain_and_carries_the_pre_gate_gap(tmp_path: Path) -> None:
+    """The taxonomy declared this event and nothing emitted it, so a chain began at RISK_CHECK."""
+    led = _led(tmp_path)
+    router = Router.build_default(mode="paper", broker=_StubBroker(), state_dir=tmp_path,
+                                  ledger=led)
+    intent = _intent()
+    router.submit(intent, equity=100_000.0, existing_risk=0.0, open_positions=0)
+
+    rows = led.rows()
+    assert rows[0]["event"] == "INTENT_CREATED"
+    payload = rows[0]["payload"]
+    assert payload["created_at"] == intent.timestamp.isoformat()
+    assert payload["pre_gate_ms"] >= 0
+    assert payload["symbol"] == intent.symbol and payload["shares"] == intent.shares
+
+
+def test_it_is_announced_once_even_when_the_card_path_submits_twice(tmp_path: Path) -> None:
+    """ApprovalRouter gates, waits for a verdict, then submits again — one creation, not two."""
+    import threading
+
+    key, pem = _keypair()
+    reg = CardRegistry()
+    store = InMemoryApprovalStore(reg)
+    reg.register("c1", pem)
+    led = _led(tmp_path)
+    inner = Router.build_default(mode="paper", broker=_StubBroker(), state_dir=tmp_path,
+                                 ledger=led)
+    router = ApprovalRouter(inner=inner, store=store, ttl_seconds=5)
+    intent = _intent()
+
+    def _accept() -> None:
+        for _ in range(300):
+            pending = store.pending()
+            if pending:
+                store.respond(pending[0].intent_id, decision="ACCEPT", card_id="c1",
+                              signature=key.sign(pending[0].canonical.encode()))
+                return
+            threading.Event().wait(0.01)
+
+    t = threading.Thread(target=_accept)
+    t.start()
+    router.submit(intent, equity=100_000.0, existing_risk=0.0, open_positions=0)
+    t.join(5)
+
+    events = [r["event"] for r in led.rows()]
+    assert events.count("INTENT_CREATED") == 1
+    assert events[0] == "INTENT_CREATED"          # leads, rather than landing after SIGNED
+
+
+def test_the_taxonomy_now_has_an_emitter_for_every_order_path_event(tmp_path: Path) -> None:
+    """Each of these must appear from real code, not from a hand-written row."""
+    led = _led(tmp_path)
+    broker = _StubBroker()
+    router = Router.build_default(mode="paper", broker=broker, state_dir=tmp_path, ledger=led,
+                                  max_position_notional_pct=0.02)
+    router.submit(_intent(shares=100, entry=100.0), equity=100_000.0, existing_risk=0.0,
+                  open_positions=0)
+    emitted = {r["event"] for r in led.rows()}
+    assert {"INTENT_CREATED", "RISK_TRIMMED", "RISK_CHECK", "BROKER_SUBMITTED", "FILLED"} <= emitted

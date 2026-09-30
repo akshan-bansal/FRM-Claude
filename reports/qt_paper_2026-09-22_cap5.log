@@ -1,0 +1,498 @@
+params: class defaults for every symbol (--params default).
+{"session_id": "fba831e3352a447da48268c40fa2617f", "fills_replayed": 4, "positions": {"EQB.TO": 24.0, "QQQ": 19.0, "SRU.UN.TO": 1278.0, "VDY.TO": 627.0}, "cash": 30.69, "realized_pnl": 0.0, "peak_equity": 100065.54, "next_order_id": 5, "event": "paper.resumed", "level": "info", "timestamp": "2026-09-22T16:15:46.934802Z"}
+RESUMED session fba831e3352a447da48268c40fa2617f: 4 fills replayed, positions 
+{'EQB.TO': 24.0, 'QQQ': 19.0, 'SRU.UN.TO': 1278.0, 'VDY.TO': 627.0}, cash 
+$30.69, realized $0.00.
+PAPER mode simulated broker, starting equity $100,000, account PAPER-001. Real 
+account is untouched; fills are journaled.
+ 19 symbols checked: 19 ok, 0 warn, 0 fail
+max open positions: 5 (CLI override; config says 3).
+intel overlay ON (refresh every 900s; de-risk + halt gate).
+interpret entry-filter ON (theses trim conviction; advisory, never blocks or 
+boosts).
+allocator bias ON over 13 names (equal-weight baseline = 1.0; live overlay 
+applied through apply_overlay):
+        ENB.TO  x2.60  (boost)
+        VDY.TO  x2.35  (boost)
+        XIU.TO  x1.88  (boost)
+        XIC.TO  x1.66  (boost)
+     SRU.UN.TO  x1.34  (boost)
+        ZEB.TO  x1.08  (boost)
+     CRT.UN.TO  x0.66  (trim)
+           DBC  x0.50  (trim)
+           QQQ  x0.38  (trim)
+        SLF.TO  x0.24  (trim)
+        EQB.TO  x0.17  (trim)
+          VALE  x0.08  (trim)
+        CGL.TO  x0.06  (trim)
+oversold entry ON (Variant #4): close < lower BB(20,2) or RSI(14) <= 30 on the 
+last completed bar adds a tranche to a held position while its trend signal is 
+on; own ATR stop; 1 per 5 bars. Applies to: ts_momentum. Not walk-forward 
+calibrated.
+sizing: parallel (joint allocation per poll).
+alerts muted for: RSI.TO (still traded and journaled).
+overbought exit ON (Variant #3): close > upper BB(20,2) or RSI(14) >= 70 on the
+last completed bar closes a long up >= 1 ATR and >= 2x round-trip cost; 
+re-entry lockout. Exempt: ts_momentum.
+candle exit ON (Variant #2): bearish reversal on the last completed bar closes 
+a long up >= 1 ATR and >= 2x round-trip cost; re-entry lockout. Exempt: 
+ts_momentum.
+profit lock ON (Variant #1): arms at +1 ATR, giveback 3 -> 1 ATR by +4 ATR, 
+net-breakeven floor, arms after 2x round-trip cost, re-entry lockout. Exempt: 
+ts_momentum.
+graceful stop: touch state\STOP (all sessions) or 
+state\STOP_fba831e3352a447da48268c40fa2617f (this one). Exits within one poll 
+and does NOT flatten.
+{"order_id": 5, "symbol": "EQB.TO", "qty": 5.0, "fill_price": 126.33180250000001, "action": "Sell", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T16:15:50.494517Z"}
+{"symbol": "EQB.TO", "held": 24.0, "sold": 5.0, "kept": 19.0, "price": 126.39500000000001, "scale": 0.8002, "accepted": true, "event": "monitor.trim_to_slots", "level": "info", "timestamp": "2026-09-22T16:15:50.502000Z"}
+[ALERT] EXIT  EQB.TO  ts_momentum  (slot_trim)
+Signal: exit at 126.3950. Closing 5 units.
+
+Reason: strategy generated an exit signal on the latest bar. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+{"order_id": 6, "symbol": "QQQ", "qty": 4.0, "fill_price": 744.3376450000001, "action": "Sell", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T16:15:51.036590Z"}
+{"symbol": "QQQ", "held": 19.0, "sold": 4.0, "kept": 15.0, "price": 744.71, "scale": 0.8002, "accepted": true, "event": "monitor.trim_to_slots", "level": "info", "timestamp": "2026-09-22T16:15:51.043195Z"}
+[ALERT] EXIT  QQQ  ts_momentum  (slot_trim)
+Signal: exit at 744.7100. Closing 4 units.
+
+Reason: strategy generated an exit signal on the latest bar. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+{"order_id": 7, "symbol": "SRU.UN.TO", "qty": 256.0, "fill_price": 26.84657, "action": "Sell", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T16:15:51.623334Z"}
+{"symbol": "SRU.UN.TO", "held": 1278.0, "sold": 256.0, "kept": 1022.0, "price": 26.86, "scale": 0.8002, "accepted": true, "event": "monitor.trim_to_slots", "level": "info", "timestamp": "2026-09-22T16:15:51.629429Z"}
+[ALERT] EXIT  SRU.UN.TO  confirm_rsi_meanrevert  (slot_trim)
+Signal: exit at 26.8600. Closing 256 units.
+
+Reason: strategy generated an exit signal on the latest bar. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+{"order_id": 8, "symbol": "VDY.TO", "qty": 126.0, "fill_price": 76.98149000000001, "action": "Sell", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T16:15:52.311057Z"}
+{"symbol": "VDY.TO", "held": 627.0, "sold": 126.0, "kept": 501.0, "price": 77.02000000000001, "scale": 0.8002, "accepted": true, "event": "monitor.trim_to_slots", "level": "info", "timestamp": "2026-09-22T16:15:52.314032Z"}
+[ALERT] EXIT  VDY.TO  ts_momentum  (slot_trim)
+Signal: exit at 77.0200. Closing 126 units.
+
+Reason: strategy generated an exit signal on the latest bar. Realized P&L will land in the session's paper_equity.csv row for this fill.
+
+slot trim EQB.TO: sold 5 of 24 @ 126.3950, kept 19 (scale x0.8002) ACCEPTED
+slot trim QQQ: sold 4 of 19 @ 744.7100, kept 15 (scale x0.8002) ACCEPTED
+slot trim SRU.UN.TO: sold 256 of 1278 @ 26.8600, kept 1022 (scale x0.8002) 
+ACCEPTED
+slot trim VDY.TO: sold 126 of 627 @ 77.0200, kept 501 (scale x0.8002) ACCEPTED
+{"degraded": false, "scalars": {"equity": 0.4937, "future": 0.3807, "commodity": 0.5061, "fx": 0.4937, "crypto": 0.4456, "fixed_income": 0.7498, "precious_metals": 0.7852}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T16:15:58.326152Z"}
+{"candidates": 2, "slots": 1, "budget": 20192.28, "routed": ["RSI.TO"], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:15:58.799536Z"}
+{"order_id": 9, "symbol": "RSI.TO", "qty": 1861.0, "fill_price": 6.7083525, "action": "Buy", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T16:15:58.865598Z"}
+{"symbol": "RSI.TO", "kind": "entry", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:15:58.871646Z"}
+[ALERT] ENTRY  GD  ts_momentum  (NEW)
+Signal: entry at 344.7300. State: NEW.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.494 — live intel de-risking this class
+  · Combined mitigation scalar: x0.494
+
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T16:20:59.406288Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T16:20:59.649175Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:21:02.687424Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:21:02.687623Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 2 polls)
+Signal: entry at 345.2350. State: persisting 2 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.494 — live intel de-risking this class
+  · Combined mitigation scalar: x0.494
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:26:05.592889Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:26:05.593557Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 3 polls)
+Signal: entry at 345.3700. State: persisting 3 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.494 — live intel de-risking this class
+  · Combined mitigation scalar: x0.494
+
+{"degraded": false, "scalars": {"equity": 0.4946, "future": 0.3824, "commodity": 0.5083, "fx": 0.4946, "crypto": 0.4457, "fixed_income": 0.7505, "precious_metals": 0.7859}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T16:31:12.759178Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:31:12.760327Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:31:12.760519Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 4 polls)
+Signal: entry at 345.3000. State: persisting 4 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.495 — live intel de-risking this class
+  · Combined mitigation scalar: x0.495
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T16:36:13.520155Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T16:36:13.520876Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T16:36:13.866594Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:36:16.514625Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:36:16.514817Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 5 polls)
+Signal: entry at 345.1200. State: persisting 5 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.495 — live intel de-risking this class
+  · Combined mitigation scalar: x0.495
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:41:20.030912Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:41:20.031505Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 6 polls)
+Signal: entry at 344.4250. State: persisting 6 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.495 — live intel de-risking this class
+  · Combined mitigation scalar: x0.495
+
+{"degraded": false, "scalars": {"equity": 0.4939, "future": 0.3828, "commodity": 0.5098, "fx": 0.4939, "crypto": 0.4431, "fixed_income": 0.7505, "precious_metals": 0.7861}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T16:46:27.293638Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:46:27.294460Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:46:27.294615Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 7 polls)
+Signal: entry at 344.3350. State: persisting 7 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.494 — live intel de-risking this class
+  · Combined mitigation scalar: x0.494
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T16:51:27.985912Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T16:51:27.986322Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T16:51:28.293652Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:51:31.290378Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:51:31.290573Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 8 polls)
+Signal: entry at 344.5500. State: persisting 8 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.494 — live intel de-risking this class
+  · Combined mitigation scalar: x0.494
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T16:56:35.004897Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T16:56:35.005339Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 9 polls)
+Signal: entry at 344.2350. State: persisting 9 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.494 — live intel de-risking this class
+  · Combined mitigation scalar: x0.494
+
+{"degraded": false, "scalars": {"equity": 0.4405, "future": 0.3122, "commodity": 0.432, "fx": 0.4405, "crypto": 0.4028, "fixed_income": 0.7166, "precious_metals": 0.7542}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T17:01:41.723681Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:01:41.725530Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:01:41.725851Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 10 polls)
+Signal: entry at 344.0200. State: persisting 10 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.441 — live intel de-risking this class
+  · Combined mitigation scalar: x0.441
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T17:06:42.814049Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T17:06:42.814658Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T17:06:43.192812Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:06:46.006634Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:06:46.006831Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 11 polls)
+Signal: entry at 343.8250. State: persisting 11 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.441 — live intel de-risking this class
+  · Combined mitigation scalar: x0.441
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:11:50.787438Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:11:50.788140Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 12 polls)
+Signal: entry at 343.8100. State: persisting 12 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.441 — live intel de-risking this class
+  · Combined mitigation scalar: x0.441
+
+{"degraded": false, "scalars": {"equity": 0.4956, "future": 0.3861, "commodity": 0.5141, "fx": 0.4956, "crypto": 0.4434, "fixed_income": 0.7519, "precious_metals": 0.7875}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T17:16:57.588707Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:16:57.590310Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:16:57.590628Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 13 polls)
+Signal: entry at 343.4300. State: persisting 13 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.496 — live intel de-risking this class
+  · Combined mitigation scalar: x0.496
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:22:00.890305Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:22:00.890721Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 14 polls)
+Signal: entry at 342.9600. State: persisting 14 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.496 — live intel de-risking this class
+  · Combined mitigation scalar: x0.496
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:27:04.184053Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:27:04.184465Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 15 polls)
+Signal: entry at 342.8300. State: persisting 15 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.496 — live intel de-risking this class
+  · Combined mitigation scalar: x0.496
+
+{"degraded": false, "scalars": {"equity": 0.4979, "future": 0.3889, "commodity": 0.5168, "fx": 0.4979, "crypto": 0.446, "fixed_income": 0.7532, "precious_metals": 0.7887}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T17:32:11.417124Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:32:11.418619Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:32:11.418929Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 16 polls)
+Signal: entry at 343.6250. State: persisting 16 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.498 — live intel de-risking this class
+  · Combined mitigation scalar: x0.498
+
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T17:37:11.919641Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T17:37:12.181279Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:37:14.753438Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:37:14.753651Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 17 polls)
+Signal: entry at 343.2950. State: persisting 17 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.498 — live intel de-risking this class
+  · Combined mitigation scalar: x0.498
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:42:18.084426Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:42:18.084620Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 18 polls)
+Signal: entry at 343.5800. State: persisting 18 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.498 — live intel de-risking this class
+  · Combined mitigation scalar: x0.498
+
+{"degraded": false, "scalars": {"equity": 0.4972, "future": 0.3892, "commodity": 0.5182, "fx": 0.4972, "crypto": 0.4435, "fixed_income": 0.7532, "precious_metals": 0.7889}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T17:47:25.493717Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:47:25.494562Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:47:25.494738Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 19 polls)
+Signal: entry at 343.5100. State: persisting 19 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.497 — live intel de-risking this class
+  · Combined mitigation scalar: x0.497
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T17:52:26.230968Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T17:52:26.231273Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T17:52:26.533288Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:52:29.456350Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:52:29.456711Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 20 polls)
+Signal: entry at 343.5800. State: persisting 20 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.497 — live intel de-risking this class
+  · Combined mitigation scalar: x0.497
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T17:57:32.715662Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T17:57:32.715844Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 21 polls)
+Signal: entry at 343.6600. State: persisting 21 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.497 — live intel de-risking this class
+  · Combined mitigation scalar: x0.497
+
+{"degraded": false, "scalars": {"equity": 0.498, "future": 0.3908, "commodity": 0.5203, "fx": 0.498, "crypto": 0.4436, "fixed_income": 0.7539, "precious_metals": 0.7896}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T18:02:39.653945Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:02:39.655337Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:02:39.655680Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 22 polls)
+Signal: entry at 343.4350. State: persisting 22 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.498 — live intel de-risking this class
+  · Combined mitigation scalar: x0.498
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:07:42.736008Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:07:42.736376Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 23 polls)
+Signal: entry at 342.9950. State: persisting 23 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.498 — live intel de-risking this class
+  · Combined mitigation scalar: x0.498
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:12:46.179246Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:12:46.179465Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 24 polls)
+Signal: entry at 342.9800. State: persisting 24 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.498 — live intel de-risking this class
+  · Combined mitigation scalar: x0.498
+
+{"degraded": false, "scalars": {"equity": 0.4437, "future": 0.3203, "commodity": 0.4441, "fx": 0.4437, "crypto": 0.4005, "fixed_income": 0.7199, "precious_metals": 0.758}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T18:17:53.315916Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:17:53.316685Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:17:53.316855Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 25 polls)
+Signal: entry at 342.9200. State: persisting 25 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.444 — live intel de-risking this class
+  · Combined mitigation scalar: x0.444
+
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T18:22:53.822789Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T18:22:54.190339Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:22:56.677057Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:22:56.677438Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 26 polls)
+Signal: entry at 342.3500. State: persisting 26 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.444 — live intel de-risking this class
+  · Combined mitigation scalar: x0.444
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:28:00.028813Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:28:00.029184Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 27 polls)
+Signal: entry at 342.9700. State: persisting 27 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.444 — live intel de-risking this class
+  · Combined mitigation scalar: x0.444
+
+{"degraded": false, "scalars": {"equity": 0.4446, "future": 0.322, "commodity": 0.4465, "fx": 0.4446, "crypto": 0.4004, "fixed_income": 0.7207, "precious_metals": 0.7588}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T18:33:07.771237Z"}
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:33:07.772779Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:33:07.773092Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 28 polls)
+Signal: entry at 342.6950. State: persisting 28 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.445 — live intel de-risking this class
+  · Combined mitigation scalar: x0.445
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:38:10.785248Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:38:10.785453Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 29 polls)
+Signal: entry at 343.7100. State: persisting 29 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.445 — live intel de-risking this class
+  · Combined mitigation scalar: x0.445
+
+{"candidates": 1, "slots": 0, "budget": 7703.09, "routed": [], "event": "monitor.allocation", "level": "info", "timestamp": "2026-09-22T18:43:13.865334Z"}
+{"symbol": "RSI.TO", "kind": "hold", "event": "monitor.alert_muted", "level": "info", "timestamp": "2026-09-22T18:43:13.865531Z"}
+[ALERT] ENTRY  GD  ts_momentum  (persisting 30 polls)
+Signal: entry at 343.7950. State: persisting 30 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 0 shares (notional ~$0)
+  · OSINT overlay (equity): x0.445 — live intel de-risking this class
+  · Combined mitigation scalar: x0.445
+
+{"path": "state\\STOP_fba831e3352a447da48268c40fa2617f", "scope": "session", "flatten_on_exit": false, "event": "monitor.stop_sentinel.seen", "level": "info", "timestamp": "2026-09-22T18:43:14.363085Z"}

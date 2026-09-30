@@ -275,3 +275,233 @@ def test_passbook_survives_restart(db_path, keypair):
     assert len(pb) == 1
     assert pb[0].verdict == "ACCEPT"
     assert pb[0].intent_id == p.intent_id
+
+
+# --- fractional quantity fidelity (2026-09-17) -----------------------------
+# The ``shares`` column was INTEGER and both decoders cast with int(), so a crypto-sleeve size
+# like 4.18347861 PAXG came back as 4 — the passbook disagreed with the fill, and a prompt
+# rehydrated after a restart would have DISPLAYED a size the card never signed. Found by the
+# end-to-end card run on 2026-09-17 (passbook said shares=4.0 for a 4.18347861 fill).
+
+def _crypto_intent(shares: float) -> OrderIntent:
+    return OrderIntent(
+        symbol="PAXG/USD", action=OrderAction.BUY, shares=shares, entry=4356.40,
+        stop=4100.0, target=4600.0, strategy="ts_momentum",
+        risk_dollars=508.69, account_number="PAPER-001", symbolId=1,
+    )
+
+
+@pytest.mark.parametrize("shares", [4.18347861, 0.00012345, 0.000000005, 3.0])
+def test_pending_prompt_round_trips_fractional_shares(db_path, keypair, shares):
+    _, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+
+    published = store.publish(_crypto_intent(shares), mode="paper", broker="paper",
+                              ttl_seconds=30)
+    assert published.shares == shares
+    # Read back through the row decoder — this is the path a restarted shim serves from.
+    assert store.pending()[0].shares == shares
+
+
+def test_rehydrated_canonical_still_verifies(db_path, keypair):
+    """The bytes a card signs must survive persistence, or a restart invalidates the tap."""
+    key, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+    prompt = store.publish(_crypto_intent(4.18347861), mode="paper", broker="paper",
+                           ttl_seconds=30)
+
+    reloaded = SqliteApprovalStore(SqliteCardRegistry(db_path), db_path).pending()[0]
+    assert reloaded.canonical == prompt.canonical
+    assert reloaded.canonical.split("|")[3] == "4.18347861"
+    sig = key.sign(reloaded.canonical.encode())
+    assert store.respond(reloaded.intent_id, decision="ACCEPT", card_id="c1",
+                         signature=sig) is True
+
+
+def test_passbook_keeps_the_fractional_size(db_path, keypair):
+    key, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+    prompt = store.publish(_crypto_intent(4.18347861), mode="paper", broker="paper",
+                           ttl_seconds=30)
+    store.respond(prompt.intent_id, decision="ACCEPT", card_id="c1",
+                  signature=key.sign(prompt.canonical.encode()))
+    assert store.passbook()[0].shares == 4.18347861
+
+
+# --------------------------------------------------------------------------- #
+# audit evidence (2026-09-24): the signature is kept, not just checked        #
+# --------------------------------------------------------------------------- #
+
+def test_signature_is_persisted_and_reverifies_offline(db_path, keypair):
+    """Before this, `verify()` checked the signature and dropped it — the only record that an
+    approval was genuine was the router's own word. Now it re-verifies from the DB alone."""
+    from trading_live_claude.execution.approval import verify_audit_record
+
+    key, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+    prompt = store.publish(_intent(), mode="paper", broker="ib", ttl_seconds=5)
+    sig = key.sign(prompt.canonical.encode())
+    assert store.respond(prompt.intent_id, decision="ACCEPT", card_id="c1", signature=sig) is True
+
+    rec = store.audit_record(prompt.intent_id)
+    assert rec is not None
+    assert rec["signature"] and rec["signature_alg"] == "ed25519"
+    assert rec["canonical"] == prompt.canonical
+    assert rec["signer_card_id"] == "c1"
+    assert verify_audit_record(rec) == (True, "ok")
+
+
+def test_audit_record_survives_a_restart_and_a_card_revocation(db_path, keypair):
+    """Revoking a card today must not erase the evidence that it was valid when it signed."""
+    from trading_live_claude.execution.approval import verify_audit_record
+
+    key, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+    prompt = store.publish(_intent(), mode="paper", broker="ib", ttl_seconds=5)
+    store.respond(prompt.intent_id, decision="ACCEPT", card_id="c1",
+                  signature=key.sign(prompt.canonical.encode()))
+    reg.revoke("c1")
+    del store, reg
+
+    reg2 = SqliteCardRegistry(db_path)
+    store2 = SqliteApprovalStore(reg2, db_path)
+    rec = store2.audit_record(prompt.intent_id)
+    assert rec is not None and rec["card_revoked_at"]
+    assert verify_audit_record(rec) == (True, "ok")
+
+
+def test_tampered_canonical_bytes_fail_verification(db_path, keypair):
+    """The point of storing the signature: an edited audit row is detectable."""
+    from trading_live_claude.execution.approval import verify_audit_record
+
+    key, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+    prompt = store.publish(_intent(shares=10), mode="paper", broker="ib", ttl_seconds=5)
+    store.respond(prompt.intent_id, decision="ACCEPT", card_id="c1",
+                  signature=key.sign(prompt.canonical.encode()))
+    rec = dict(store.audit_record(prompt.intent_id) or {})
+    rec["canonical"] = str(rec["canonical"]).replace("|10|", "|1000|")   # resize after the fact
+    ok, reason = verify_audit_record(rec)
+    assert ok is False and "does not verify" in reason
+
+
+def test_missing_or_unsigned_evidence_never_reads_as_verified(db_path, keypair):
+    """"No signature on file" must not be reported as a pass — that was the old silent state."""
+    from trading_live_claude.execution.approval import verify_audit_record
+
+    key, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+
+    expired = store.publish(_intent(), mode="paper", broker="ib", ttl_seconds=0.01)
+    threading.Event().wait(0.05)
+    store.pending()                                        # sweeps it to EXPIRED
+    ok, reason = verify_audit_record(store.audit_record(expired.intent_id) or {})
+    assert ok is False and "nothing signed it" in reason
+
+    accepted = store.publish(_intent(), mode="paper", broker="ib", ttl_seconds=5)
+    store.respond(accepted.intent_id, decision="ACCEPT", card_id="c1",
+                  signature=key.sign(accepted.canonical.encode()))
+    legacy = dict(store.audit_record(accepted.intent_id) or {})
+    legacy["signature"] = None                             # a pre-2026-09-24 row
+    ok, reason = verify_audit_record(legacy)
+    assert ok is False and "predates" in reason
+
+    assert store.audit_record("no-such-intent") is None
+
+
+def test_an_existing_database_gains_the_signature_columns(db_path, keypair):
+    """state/approval.db already exists; CREATE TABLE IF NOT EXISTS would never add a column."""
+    import sqlite3
+
+    # The pre-2026-09-24 schema, spelled out: no signature / signature_alg columns.
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE cards (card_id TEXT PRIMARY KEY, pubkey_pem TEXT NOT NULL,
+                            created_at TEXT NOT NULL, revoked_at TEXT);
+        CREATE TABLE intents (
+            intent_id TEXT PRIMARY KEY, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+            resolved_at TEXT, verdict TEXT, consumed INTEGER NOT NULL DEFAULT 0,
+            broker TEXT NOT NULL, symbol TEXT NOT NULL, action TEXT NOT NULL,
+            shares REAL NOT NULL, entry REAL NOT NULL, stop REAL NOT NULL, target REAL,
+            notional_usd REAL NOT NULL, risk_dollars REAL NOT NULL, strategy TEXT NOT NULL,
+            account TEXT NOT NULL, mode TEXT NOT NULL, thesis TEXT NOT NULL DEFAULT '',
+            intel_ref TEXT NOT NULL DEFAULT '', nonce TEXT NOT NULL, canonical TEXT NOT NULL,
+            signer_card_id TEXT);
+    """)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(intents)")}
+    conn.close()
+    assert "signature" not in cols                         # the old shape, as deployed
+
+    key, pem = keypair
+    reg = SqliteCardRegistry(db_path)                      # opening runs the migration
+    reg.register("c1", pem)
+    store = SqliteApprovalStore(reg, db_path)
+    prompt = store.publish(_intent(), mode="paper", broker="ib", ttl_seconds=5)
+    store.respond(prompt.intent_id, decision="ACCEPT", card_id="c1",
+                  signature=key.sign(prompt.canonical.encode()))
+    rec = store.audit_record(prompt.intent_id)
+    assert rec is not None and rec["signature"]
+
+
+def test_fingerprint_is_stable_and_bound_to_the_exact_bytes():
+    """The dashboard/device/ledger comparison value. Same bytes -> same fingerprint."""
+    from trading_live_claude.execution.approval import canonical_bytes, fingerprint
+
+    args = dict(broker="ib", action="Buy", symbol="AAPL", shares=100, entry=245.50,
+                notional_usd=24550.0, account="acct", intent_id="iid", nonce="n1")
+    fp = fingerprint(canonical_bytes(**args))
+    assert fp == fingerprint(canonical_bytes(**args))       # deterministic
+    assert "..." in fp and len(fp.replace("...", "")) == 8
+    resized = fingerprint(canonical_bytes(**{**args, "shares": 1000}))
+    assert resized != fp                                   # a resize changes it
+
+
+# --- connection lifecycle (2026-09-25) -------------------------------------- #
+
+def test_close_is_idempotent_and_releases_the_connection(db_path, keypair):
+    """45 ResourceWarnings a run came from instances reclaimed with their connection open."""
+    _, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    reg.close()
+    reg.close()                                  # twice must not raise
+    assert reg._conn is None
+
+
+def test_the_registry_and_store_work_as_context_managers(db_path, keypair):
+    key, pem = keypair
+    with SqliteCardRegistry(db_path) as reg:
+        reg.register("c1", pem)
+        with SqliteApprovalStore(reg, db_path) as store:
+            prompt = store.publish(_intent(), mode="paper", broker="ib", ttl_seconds=5)
+            assert store.respond(prompt.intent_id, decision="ACCEPT", card_id="c1",
+                                 signature=key.sign(prompt.canonical.encode())) is True
+        assert store._conn is None
+    assert reg._conn is None
+    # The data is still on disk: closing a connection is not losing the record.
+    with SqliteCardRegistry(db_path) as reg2, SqliteApprovalStore(reg2, db_path) as store2:
+        assert store2.audit_record(prompt.intent_id) is not None
+
+
+def test_a_closed_instance_does_not_leak_the_file_handle(db_path, keypair, tmp_path):
+    """On Windows an open handle also keeps the .db locked against a later cleanup."""
+    _, pem = keypair
+    reg = SqliteCardRegistry(db_path)
+    reg.register("c1", pem)
+    reg.close()
+    db_path.unlink()                             # would raise PermissionError if still held
+    assert not db_path.exists()

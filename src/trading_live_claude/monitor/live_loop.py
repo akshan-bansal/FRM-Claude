@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -196,6 +196,14 @@ class LiveMonitor:
         self.strategy_map = strategy_map or {}
         self.sizer = sizer
         self.router = router
+        # Audit phase 4: give the router a name -> strategy-version resolver built from the actual
+        # instances running here, so a tuned parameter set versions differently from the default.
+        # One wiring point instead of stamping every OrderIntent construction site, and it is only
+        # installed when the router has no resolver yet (a caller's explicit one wins).
+        self._install_strategy_version_resolver(router)
+        # Audit ledger, shared with the router so one stream carries the whole chain from signal to
+        # fill. Taken from the router rather than passed separately: a runner wires it once.
+        self.ledger = getattr(getattr(router, "inner", router), "ledger", None)
         self.account_number = account_number
         self.symbols = symbols
         # How the heat gate estimates risk: per-trade model (atr/var/cvar) and aggregation
@@ -630,11 +638,20 @@ class LiveMonitor:
                     if persistence_halt:
                         self._persistence_last_reason[symbol] = persistence_reason
                 routable = sized.shares > 0 and not overlay_halt and not persistence_halt
+                # Audit phase 5: record that a signal existed and whether anything suppressed it,
+                # BEFORE any routing decision. Without this an empty ledger is ambiguous between
+                # "nothing fired" and "the ledger is broken".
+                self._ledger_signal(symbol, strat, price, sized=sized, routable=routable,
+                                    overlay_halt=overlay_halt, persistence_halt=persistence_halt,
+                                    conviction=conviction, v4=v4_add)
                 entry_rets = df["close"].pct_change() if self.risk_model != "atr" else None
                 if routable and not self.parallel_sizing:
                     self._route_entry(symbol, sized.shares, sized, strat.name, price, entry_rets,
                                       equity=equity, existing_risk=existing_risk,
-                                      open_positions=len(open_positions), v4=v4_add)
+                                      open_positions=len(open_positions), v4=v4_add,
+                                      overlay={"scalar": mitigation.scalar,
+                                               "class": decision.asset_class if decision else "",
+                                               "reasons": list(mitigation.reasons)})
                 journal_row: dict[str, object] | None = None
                 if policy is not None:
                     journal_row = {
@@ -809,9 +826,53 @@ class LiveMonitor:
         if t is not None:
             self._v4_last_bar[symbol] = t
 
+    def _emit_scaled_edge(self, intent: OrderIntent, symbol: str, strategy: str,
+                          overlay: Mapping[str, object] | None) -> None:
+        """Journal the intel influence that just resized this intent, as a ``scaled`` graph edge.
+
+        The overlay scalar already changes the order size; before this it was computed, applied and
+        discarded, leaving the graph with two disconnected components and no way to trace a fill
+        back to the intelligence behind it. Emitted here rather than at sizing time because
+        ``intent.intent_id`` — the join key that makes the edge more than decorative — does not
+        exist until the intent is built.
+
+        Never raises: a graph write must not interrupt a trading step. Same posture as the
+        ``traded`` edge in ``brokers/paper.py``.
+        """
+        if not overlay:
+            return
+        scalar = overlay.get("scalar")
+        if scalar is None:
+            return
+        try:
+            from ..intel.graph import append_edges, scaled_edge
+            snap = getattr(self.overlay_for, "last_snapshot", None)
+            poll_id = str(getattr(snap, "as_of", "") or datetime.now(UTC).isoformat())
+            reasons = overlay.get("reasons") or ()
+            edge = scaled_edge(
+                poll_id=poll_id, symbol=symbol, scalar=float(cast(float, scalar)),
+                asset_class=str(overlay.get("class") or ""),
+                intent_id=str(getattr(intent, "intent_id", "")),
+                strategy=strategy,
+                reasons=[str(r) for r in cast("Sequence[object]", reasons)],
+                as_of=poll_id,
+            )
+            # Co-locate with the broker's other journals, exactly as the ``traded`` edge does in
+            # brokers/paper.py. NO FALLBACK to DEFAULT_GRAPH_JOURNAL: a broker with no journal dir
+            # is a test double, and falling back wrote test fixtures (AAA/BBB/CCC/LIVE/7203.T) into
+            # the real state/intel_graph.jsonl on 2026-09-29. A graph edge is only ever written
+            # beside the journals of the broker that produced it; no dir, no edge.
+            jdir = getattr(self.broker, "_journal_dir", None)
+            if not jdir:
+                return
+            append_edges([edge], path=Path(jdir) / "intel_graph.jsonl")
+        except Exception as e:                                      # pragma: no cover
+            log.warning("monitor.scaled_edge_failed", symbol=symbol, error=str(e))
+
     def _route_entry(self, symbol: str, shares: float, sized: SizingResult, strategy: str, price: float,
                      entry_rets: pd.Series | None, *, equity: float, existing_risk: float,
-                     open_positions: int, v4: bool) -> bool:
+                     open_positions: int, v4: bool,
+                     overlay: Mapping[str, object] | None = None) -> bool:
         """Build and submit one BUY intent through the Router. True when the Router accepted it."""
         stop = float(sized.stop)
         risk_dollars = per_trade_risk(shares, price, stop_distance=abs(price - stop),
@@ -821,6 +882,7 @@ class LiveMonitor:
             stop=stop, target=sized.target, strategy=strategy,
             risk_dollars=risk_dollars, account_number=self.account_number,
         )
+        self._emit_scaled_edge(intent, symbol, strategy, overlay)
         order = self.router.submit(intent, equity=equity, existing_risk=existing_risk,
                                    open_positions=open_positions)
         if self.sizing_policy is not None:
@@ -874,10 +936,13 @@ class LiveMonitor:
             detail["allocation"] = {"proposed": a.proposed_shares, "scale": round(a.scale, 4),
                                     **({"dropped": a.dropped} if a.dropped else {})}
             if a.routed:
+                _mit = cast("dict[str, object] | None", detail.get("mitigation"))
                 accepted = self._route_entry(
                     a.symbol, a.shares, cast(SizingResult, pe["sized"]), str(pe["strategy"]), float(cast(float, pe["price"])),
                     cast("pd.Series | None", pe["rets"]), equity=equity, existing_risk=existing_risk,
-                    open_positions=len(open_positions) + opened, v4=bool(pe["v4"]))
+                    open_positions=len(open_positions) + opened, v4=bool(pe["v4"]),
+                    overlay=({"scalar": _mit.get("scalar"), "class": _mit.get("class") or "",
+                              "reasons": []} if _mit else None))
                 if accepted and not pe["v4"]:
                     opened += 1
             elif pe["v4"]:
@@ -887,6 +952,59 @@ class LiveMonitor:
                 row.update({"qty": a.shares, "routed": a.routed, "allocation_scale": round(a.scale, 4),
                             "reason": a.dropped or row.get("reason", "")})
                 self.sizing_policy.journal(row)
+
+    def _ledger_signal(self, symbol: str, strat: object, price: float, *, sized: object,
+                       routable: bool, overlay_halt: bool, persistence_halt: bool,
+                       conviction: float, v4: bool) -> None:
+        """Emit STRATEGY_SIGNAL, or SIGNAL_SUPPRESSED with the reason it went no further."""
+        if self.ledger is None:
+            return
+        shares = float(getattr(sized, "shares", 0.0) or 0.0)
+        reason = ("overlay halt" if overlay_halt else
+                  "persistence halt" if persistence_halt else
+                  "sized to zero shares" if shares <= 0 else "")
+        payload = {
+            "symbol": symbol, "price": price, "shares": shares,
+            "stop": getattr(sized, "stop", None), "conviction": round(float(conviction), 4),
+            "v4_entry": bool(v4), "reason": reason,
+        }
+        try:
+            self.ledger.append("STRATEGY_SIGNAL" if routable else "SIGNAL_SUPPRESSED", payload,
+                               strategy_id=str(getattr(strat, "name", "")),
+                               strategy_version=self._strategy_version_of(strat))
+        except Exception as e:                    # never let the audit path break a poll
+            log.warning("monitor.ledger_signal_failed", symbol=symbol, error=str(e))
+
+    def _strategy_version_of(self, strat: object) -> str | None:
+        from ..audit.versioning import strategy_version
+        if not hasattr(self, "_strategy_version_cache"):
+            self._strategy_version_cache: dict[int, str] = {}
+        key = id(strat)
+        if key not in self._strategy_version_cache:
+            self._strategy_version_cache[key] = strategy_version(strat)
+        return self._strategy_version_cache[key] or None
+
+    def _install_strategy_version_resolver(self, router: object) -> None:
+        """Wire ``Router.strategy_version_for`` from this monitor's strategy instances."""
+        inner = getattr(router, "inner", router)          # unwrap SessionRouter / ApprovalRouter
+        if getattr(inner, "strategy_version_for", "missing") is None:
+            from ..audit.versioning import strategy_version
+
+            instances: dict[str, object] = {}
+            for strat in (self.strategy, *self.strategy_map.values()):
+                if strat is not None:
+                    instances.setdefault(str(getattr(strat, "name", "")), strat)
+            cache: dict[str, str] = {}
+
+            def resolve(name: str) -> str:
+                if name not in cache:
+                    inst = instances.get(name)
+                    # Unknown name (a flatten or hedge intent, say): record nothing rather than
+                    # attributing it to a strategy that did not produce it.
+                    cache[name] = strategy_version(inst) if inst is not None else ""
+                return cache[name]
+
+            inner.strategy_version_for = resolve
 
     def request_stop(self) -> None:
         """Ask ``run_forever`` to leave the loop after the current poll.
@@ -1031,7 +1149,84 @@ class LiveMonitor:
                       failed=sorted(failed))
         else:
             log.info("monitor.flatten.complete", closed=len(open_positions))
+        # Audit phase 5: a session's book closing is a state transition in its own right, and an
+        # INCOMPLETE flatten is the one an auditor most wants to find — record both outcomes.
+        if self.ledger is not None:
+            try:
+                self.ledger.append("POSITION_FLATTENED", {
+                    "requested": sorted(open_positions),
+                    "closed": sorted(set(open_positions) - set(remaining)),
+                    "failed": sorted(failed),
+                    "remaining": sorted(remaining),
+                    "complete": not remaining,
+                })
+            except Exception as e:                     # pragma: no cover - audit must not raise here
+                log.warning("monitor.ledger_flatten_failed", error=str(e))
         return failed
+
+    def close_symbols(self, symbols: frozenset[str] | set[str] | list[str]) -> list[dict[str, object]]:
+        """Close the named positions in full through the Router. Returns one row per attempt.
+
+        For dropping a name from the sleeve without flattening the rest of the book: the sells are
+        ordinary SELL intents, so they pass the risk gate and land in this session's own journals,
+        and a later ``--resume-session`` replays a book that no longer holds the name. Needed
+        because a symbol removed from the watchlist is never evaluated again, so its position would
+        otherwise sit in the book with no exit path. Symbols whose venue is closed are skipped and
+        reported, not silently dropped.
+        """
+        wanted = {s.upper() for s in symbols}
+        if not wanted:
+            return []
+        if hasattr(self.broker, "mark_to_market"):
+            try:
+                self.broker.mark_to_market()
+            except Exception as e:                         # pragma: no cover
+                log.warning("monitor.close_symbols.mtm_failed", error=str(e))
+        open_positions = self._open_positions()
+        equity = self.broker.equity(self.account_number, currency=self.account_currency)
+        existing_risk = self._book_risk(open_positions)
+        out: list[dict[str, object]] = []
+        for symbol, qty in sorted(open_positions.items()):
+            if symbol.upper() not in wanted or qty <= 0:
+                continue
+            if not self._is_open(symbol):
+                log.info("monitor.close_symbols.venue_closed", symbol=symbol, qty=qty)
+                out.append({"symbol": symbol, "qty": qty, "accepted": False, "reason": "venue closed"})
+                continue
+            price = self._exit_price(symbol)
+            if price <= 0:
+                log.error("monitor.close_symbols.no_price", symbol=symbol, qty=qty)
+                out.append({"symbol": symbol, "qty": qty, "accepted": False, "reason": "no price"})
+                continue
+            intent = OrderIntent(
+                symbol=symbol, action=OrderAction.SELL, shares=abs(qty), entry=price,
+                stop=price * 1.10, target=None, strategy="drop_symbol", risk_dollars=0.0,
+                account_number=self.account_number,
+            )
+            order = self.router.submit(intent, equity=equity, existing_risk=existing_risk,
+                                       open_positions=len(open_positions))
+            row: dict[str, object] = {"symbol": symbol, "qty": abs(qty), "price": price,
+                                      "accepted": order is not None,
+                                      "reason": "" if order is not None else "rejected by the Router"}
+            out.append(row)
+            log.info("monitor.close_symbols", **row)
+            if order is not None:
+                self._v4_tranche.pop(symbol, None)
+                self._pl_peak.pop(symbol, None)
+                self._pl_entry_atr.pop(symbol, None)
+                if self.sizing_policy is not None:
+                    self.sizing_policy.clear_stop(symbol)
+                self.on_event(MonitorEvent(datetime.now(UTC), symbol, "exit", price,
+                                           {"shares": abs(qty), "reason": "drop_symbol"}))
+        missing = wanted - {s.upper() for s in open_positions}
+        if missing:
+            log.info("monitor.close_symbols.not_held", symbols=sorted(missing))
+        if hasattr(self.broker, "mark_to_market"):
+            try:
+                self.broker.mark_to_market()
+            except Exception as e:                         # pragma: no cover
+                log.warning("monitor.close_symbols.final_mtm_failed", error=str(e))
+        return out
 
     def trim_to_slots(self, *, tolerance: float = 0.05) -> list[dict[str, object]]:
         """Trim every holding by the same factor so a raised position cap has room, via the Router.

@@ -33,6 +33,9 @@ class Broker(Protocol):
     """Minimal broker surface for strategies/router."""
 
     name: str
+    # Where orders actually go ("questrade", "kraken", "ib", "ib_web", "paper", "global"). Every
+    # concrete broker sets it; declared here so callers can rely on it (audit gap, 2026-09-18).
+    venue: str
 
     def accounts(self) -> list[Account]: ...
 

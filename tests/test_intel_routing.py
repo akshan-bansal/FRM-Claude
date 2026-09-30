@@ -172,3 +172,16 @@ def test_classifier_routes_metals_to_precious_metals_not_commodity() -> None:
     assert classify_symbol("GLD") == "precious_metals"
     assert classify_symbol("CGL.TO") == "precious_metals"
     assert classify_symbol("USO") == "commodity"                 # oil ETF still commodity
+
+
+def test_fx_slash_notation_is_fx_not_crypto() -> None:
+    """2026-09-18: EUR/USD used to hit the crypto '/' branch first (wrong vol profile and scalar)."""
+    from trading_live_claude.intel.routing import classify_symbol
+    assert classify_symbol("EUR/USD") == "fx"
+    assert classify_symbol("usd/cad") == "fx"
+    assert classify_symbol("EURUSD") == "fx"
+    assert classify_symbol("BTC/USD") == "crypto"
+    assert classify_symbol("BTC/EUR") == "crypto"           # fiat quote, crypto base
+    assert classify_symbol("PAXG/USD") == "crypto"
+    assert classify_symbol("BTC-USD") == "crypto"
+    assert classify_symbol("/ES") == "future"

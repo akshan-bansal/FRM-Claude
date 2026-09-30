@@ -6,12 +6,14 @@ populate /v1/stats and /v1/conviction-matrix endpoints.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+import statistics
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..audit.meters import JournalMismatch, read_equity
+
 if TYPE_CHECKING:
-    from .approval import InMemoryApprovalStore
     from .journal import OrderJournal
     from .router import Router
 
@@ -28,10 +30,20 @@ class ApprovalMetrics:
         store,  # InMemoryApprovalStore | SqliteApprovalStore
         journal: OrderJournal,
         router: Router | None = None,
+        *,
+        state_dir: Path | None = None,
+        session_id: str | None = None,
+        account_currency: str = "USD",
     ) -> None:
         self.store = store
         self.journal = journal
         self.router = router
+        # Which book to report on, and where its journals are. Without them the equity fields are
+        # null: a shim that does not know its session has nothing to say about that session's
+        # equity, and saying 100,000 instead is what this replaced.
+        self.state_dir = state_dir
+        self.session_id = session_id
+        self.account_currency = account_currency
 
     def get_stats(self) -> dict[str, Any]:
         """Compute real-time metrics for /v1/stats endpoint.
@@ -54,99 +66,98 @@ class ApprovalMetrics:
         # Avg TTL response (from passbook entry timestamps)
         avg_ttl = self.get_avg_ttl_response()
 
-        # Equity metrics (from journal fills)
-        starting_equity, session_equity, peak_equity = self.compute_session_equity()
-        max_dd = (session_equity - peak_equity) / peak_equity * 100 if peak_equity else 0
+        # Equity: read from the session's own journal rows, or reported as unread.
+        snap = self.equity_snapshot()
 
         # Gate rejections (from journal)
         gate_rejects = self._count_gate_rejections()
         last_gate_reason = self._last_gate_rejection_reason()
 
         # Overlay scalar (from router or store context)
-        overlay_scalar = 0.47  # TODO: pull from live overlay state
+        # Fields with no live source are reported as null and named in `placeholders`, not filled
+        # with a plausible-looking number. A dashboard that read 0.47 as the live overlay scalar —
+        # the previous behaviour — would be showing invented risk state as measured risk state.
+        placeholders = ["overlay_scalar", "overlay_risk_zone"]
+        if self.session_id is None:
+            placeholders.append("session_id")
+        if snap is None:
+            # No marked row for this session: the book has no equity to report yet.
+            placeholders += ["starting_equity", "session_equity", "peak_equity",
+                             "max_drawdown_pct"]
+        if avg_ttl is None:
+            # No prompt has been decided yet, so there is no median to report.
+            placeholders.append("avg_ttl_response")
 
         return {
-            "session_id": "trading-session-1",  # TODO: pull from context
-            "starting_equity": starting_equity,
-            "session_equity": session_equity,
-            "peak_equity": peak_equity,
-            "max_drawdown_pct": max_dd,
+            "session_id": self.session_id,
+            "starting_equity": snap.peak_equity if snap else None,
+            "session_equity": snap.equity if snap else None,
+            "peak_equity": snap.peak_equity if snap else None,
+            "max_drawdown_pct": snap.max_drawdown_pct if snap else None,
             "acceptance_rate": float(acceptance_rate),
             "intents_total": total,
             "intents_approved": accepted,
             "intents_declined": declined,
+            "intents_expired": expired,
+            "intents_pending": len(pending),
             "avg_ttl_response": avg_ttl,
             "gate_rejections": gate_rejects,
             "last_gate_reason": last_gate_reason,
-            "overlay_scalar": overlay_scalar,
-            "overlay_risk_zone": "crypto",  # TODO: detect from overlay snapshot
+            "overlay_scalar": None,
+            "overlay_risk_zone": None,
+            "placeholders": placeholders,
         }
 
     def get_conviction_matrix(self) -> dict[str, Any]:
-        """Compute conviction heatmap for /v1/conviction-matrix endpoint.
+        """Walk-forward scores per (symbol, strategy) for /v1/conviction-matrix.
 
-        Returns symbol × strategy matrix of conviction scores.
-        Queries allocator state if available; falls back to demo data.
+        Rebuilt 2026-09-25 to stop inventing. What it used to do:
+
+        * hard-coded 13 symbols including SPY and BTC/USD, **neither of which has a walk-forward
+          score at all**, and gave every unvalidated symbol a flat 0.5 "neutral conviction";
+        * derived five per-strategy columns from one number with fixed offsets — `+0.15` because
+          "momentum tends higher", `-0.20` for a "bearish overlay" — presenting invented
+          differentiation as measured conviction;
+        * clamped the result into [0, 1], which hid that `oos_score` is an unbounded ratio around
+          19-28 for validated names, so every real symbol saturated at 1.0;
+        * and fell back to a hard-coded demo grid when none of that was available.
+
+        Now it reports only what `WALK_FORWARD_VALIDATED` measured: the score for the
+        (symbol, strategy) pair that was actually validated, and **null everywhere else**. The holes
+        are the point — a sparse grid says which pairs have evidence, where a full grid of plausible
+        numbers said nothing true. Per-strategy conviction is not computed anywhere in this codebase,
+        so this endpoint does not pretend otherwise.
         """
-        symbols = [
-            "BTC/USD",
-            "ETH/USD",
-            "PAXG/USD",
-            "SPY",
-            "QQQ",
-            "XIC.TO",
-            "VFV",
-            "XLM/USD",
-            "AAPL",
-            "MSFT",
-            "VTI",
-            "BND",
-            "SCHP",
-        ]
-        strategies = [
-            "signal.momentum",
-            "overlay.bearish",
-            "composite.mean_rev",
-            "heat.pulse",
-            "allocator",
-        ]
+        try:
+            from ..analysis.universe import WALK_FORWARD_VALIDATED as validated
+        except ImportError:                      # pragma: no cover - registry always ships
+            return {"symbols": [], "strategies": [], "matrix": [], "available": False,
+                    "source": "analysis.universe.WALK_FORWARD_VALIDATED",
+                    "metric": "", "note": "walk-forward registry unavailable",
+                    "updated_at": datetime.now(UTC).isoformat()}
 
-        # Attempt to load live conviction scores from universe data
-        matrix = self._compute_live_conviction_matrix(symbols, strategies)
-        if matrix is None:
-            # Fall back to demo data (same structure)
-            matrix = [
-                [0.95, 0.62, 0.71, 0.84, 0.92],  # BTC/USD
-                [0.88, 0.55, 0.78, 0.81, 0.89],  # ETH/USD
-                [0.75, 0.68, 0.72, 0.70, 0.75],  # PAXG/USD
-                [0.82, 0.65, 0.85, 0.78, 0.80],  # SPY
-                [0.71, 0.60, 0.68, 0.75, 0.72],  # QQQ
-                [0.92, 0.71, 0.82, 0.88, 0.90],  # XIC.TO
-                [0.65, 0.58, 0.62, 0.68, 0.65],  # VFV
-                [0.45, 0.40, 0.48, 0.52, 0.48],  # XLM/USD
-                [0.78, 0.66, 0.75, 0.80, 0.78],  # AAPL
-                [0.81, 0.69, 0.77, 0.82, 0.80],  # MSFT
-                [0.68, 0.62, 0.70, 0.72, 0.70],  # VTI
-                [0.55, 0.50, 0.52, 0.58, 0.55],  # BND
-                [0.98, 0.75, 0.88, 0.92, 0.95],  # SCHP
-            ]
-
+        entries = sorted(validated.values(), key=lambda v: -v.oos_score)
+        symbols = [v.symbol for v in entries]
+        strategies = sorted({v.strategy for v in entries})
+        by_symbol = {v.symbol: v for v in entries}
+        matrix: list[list[float | None]] = [
+            [round(by_symbol[sym].oos_score, 3) if by_symbol[sym].strategy == strat else None
+             for strat in strategies]
+            for sym in symbols
+        ]
         return {
             "symbols": symbols,
             "strategies": strategies,
             "matrix": matrix,
+            "available": bool(symbols),
+            "source": "analysis.universe.WALK_FORWARD_VALIDATED",
+            "metric": "out-of-sample score (unbounded ratio, NOT normalised to 0-1)",
+            "note": ("One value per validated (symbol, strategy) pair; null means that pair was "
+                     "never walk-forward validated, not that its conviction is zero. Per-strategy "
+                     "conviction is not computed in this codebase."),
+            "tiers": {v.symbol: v.tier for v in entries},
             "updated_at": datetime.now(UTC).isoformat(),
         }
-
-    def _compute_live_conviction_matrix(
-        self, symbols: list[str], strategies: list[str]
-    ) -> list[list[float]] | None:
-        """Compute conviction matrix from live allocator state.
-
-        Returns None if allocator data unavailable; caller falls back to demo.
-        """
-        if not self.router:
-            return None
 
         try:
             # Attempt to load walk-forward validated scores from universe
@@ -195,7 +206,7 @@ class ApprovalMetrics:
                             count += 1
                         except json.JSONDecodeError:
                             pass
-        except (OSError, IOError):
+        except OSError:
             pass
 
         return count
@@ -216,19 +227,39 @@ class ApprovalMetrics:
                         if reason:
                             return reason
                         # Fallback to any string representation
-                        return str(last.get("gate", "unknown gate"))
+                        return str(last.get("gate", "reason not recorded"))
                     except json.JSONDecodeError:
                         pass
-        except (OSError, IOError):
+        except OSError:
             pass
 
         return ""
 
-    def compute_session_equity(self) -> tuple[float, float, float]:
-        """Compute current, peak, and starting equity from journal fills.
+    def equity_snapshot(self):
+        """The session's latest marked row from ``state/paper_equity.csv``, or None.
 
-        Returns (starting_equity, session_equity, peak_equity).
+        ``state/`` is ground truth for equity (CLAUDE.md), so this reads it. What it replaced
+        walked the Router journal's fills from a hard-coded 100,000 and subtracted the full cost
+        of every BUY without adding the position back, which meant a live panel showed the default
+        and labelled it session equity.
         """
+        if self.state_dir is None or not self.session_id:
+            return None
+        try:
+            return read_equity(Path(self.state_dir), self.session_id)
+        except (JournalMismatch, OSError, KeyError, ValueError):
+            # A row that contradicts itself is reported as no reading, never as a rounded one.
+            return None
+
+    def compute_session_equity(self) -> tuple[float, float, float]:
+        """Deprecated shape kept for callers that still want a 3-tuple. Zeros mean "unknown"."""
+        snap = self.equity_snapshot()
+        if snap is None:
+            return 0.0, 0.0, 0.0
+        return snap.peak_equity, snap.equity, snap.peak_equity
+
+    def _legacy_fill_walk(self) -> tuple[float, float, float]:
+        """The pre-2026-09-28 estimate. Unused; kept only to document what was wrong with it."""
         starting_equity = 100_000.0  # Default starting capital
         current_equity = starting_equity
         peak_equity = starting_equity
@@ -258,26 +289,28 @@ class ApprovalMetrics:
                             peak_equity = max(peak_equity, current_equity)
                         except (json.JSONDecodeError, KeyError, TypeError):
                             continue
-            except (OSError, IOError):
+            except OSError:
                 pass
 
         return starting_equity, current_equity, peak_equity
 
-    def get_avg_ttl_response(self) -> float:
-        """Compute median card response time from passbook.
+    def get_avg_ttl_response(self) -> float | None:
+        """Median seconds between a prompt being issued and the card answering it.
 
-        Returns average TTL in seconds.
+        Until 2026-09-28 this returned the constant 4.2 in every case: the loop that was meant to
+        compute the deltas was a ``pass``, and the passbook did not carry ``issued_at`` anyway, so
+        a dashboard reading "median card response 4.2s" was reading a literal. The passbook now
+        carries the issue time, so this is measured.
+
+        EXPIRED rows are excluded: their ``resolved_at`` is when the expiry sweep noticed them, not
+        a decision by a holder. ``None`` when nothing has been decided — the median of no
+        observations is not zero, and it is certainly not 4.2.
         """
-        passbook = self.store.passbook(limit=100, offset=0)
-        if not passbook:
-            return 4.2
-
-        ttl_deltas = []
-        for entry in passbook:
-            # Estimate TTL from resolved_at (passbook only has resolved_at, not issued_at)
-            # For now, use fixed estimate based on typical card response times
-            # TODO: store issued_at in passbook to compute actual deltas
-            pass
-
-        # Return median or average
-        return 4.2 if not ttl_deltas else sum(ttl_deltas) / len(ttl_deltas)
+        deltas = []
+        for entry in self.store.passbook(limit=500, offset=0):
+            if entry.verdict not in ("ACCEPT", "DECLINE") or entry.issued_at is None:
+                continue
+            took = (entry.resolved_at - entry.issued_at).total_seconds()
+            if took >= 0:                       # a negative interval is a clock fault, not a speed
+                deltas.append(took)
+        return round(statistics.median(deltas), 2) if deltas else None

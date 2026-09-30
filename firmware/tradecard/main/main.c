@@ -52,6 +52,8 @@
 
 #include "sodium.h"
 
+#include "font5x7.h"
+
 /* --------------------------------------------------------------------- */
 /* config — overrides in menuconfig                                      */
 /* --------------------------------------------------------------------- */
@@ -87,6 +89,8 @@
 
 #define LCD_WIDTH           84
 #define LCD_HEIGHT          48
+#define LCD_COLS            (LCD_WIDTH / FONT_ADVANCE)   /* 14 characters */
+#define LCD_ROWS            (LCD_HEIGHT / 8)             /* 6 text rows   */
 
 /* NVS keys ------------------------------------------------------------ */
 #define NVS_NS              "tradecard"
@@ -215,11 +219,54 @@ static void lcd_flush(void) {
     lcd_write(1, s_fb, sizeof(s_fb));
 }
 
-/* TODO: link a real 5x7 font (Adafruit-GFX / u8g2 style) — this is a stub. */
-static void lcd_puts(int row, const char *s) {
-    (void)row;
-    /* Stub — mirror to log so you can iterate on layout before the LCD's up. */
-    ESP_LOGI(TAG, "LCD row %d: %s", row, s);
+/* Paint one 8-pixel text row. The font is stored in the PCD8544's own
+ * column-major order, so a glyph is a straight byte copy into the bank — no
+ * shifting. Anything outside printable ASCII renders as '?' rather than a
+ * garbage glyph, which matters because a thesis string can carry UTF-8 (an
+ * em dash arrives as three bytes and shows as "???").
+ *
+ * `inverse` swaps ink and paper across the full row. It flips only bits 0..6,
+ * leaving the 8th scanline clear so adjacent inverted bars keep a 1px gap.
+ * On a 84x48 mono panel it is the only emphasis available. */
+static void lcd_puts_ex(int row, const char *s, int inverse) {
+    if (row < 0 || row >= LCD_ROWS) return;
+    uint8_t *bank = &s_fb[row * LCD_WIDTH];
+    int x = 0;
+    for (const unsigned char *p = (const unsigned char *)s;
+         *p && x + FONT_ADVANCE <= LCD_WIDTH; p++) {
+        unsigned char ch = *p;
+        if (ch < FONT_FIRST_CH || ch > FONT_LAST_CH) ch = '?';
+        const uint8_t *g = FONT5X7[ch - FONT_FIRST_CH];
+        for (int i = 0; i < FONT_WIDTH; i++) bank[x + i] = g[i];
+        bank[x + FONT_WIDTH] = 0x00;            /* inter-character spacing */
+        x += FONT_ADVANCE;
+    }
+    while (x < LCD_WIDTH) bank[x++] = 0x00;     /* blank the rest of the row */
+    if (inverse) for (int i = 0; i < LCD_WIDTH; i++) bank[i] ^= 0x7F;
+}
+
+static void lcd_puts(int row, const char *s)     { lcd_puts_ex(row, s, 0); }
+static void lcd_puts_inv(int row, const char *s) { lcd_puts_ex(row, s, 1); }
+
+/* Copy `src` into a row-width field. A string too long to fit has its last
+ * visible character replaced with '~' — a truncated quantity or symbol must
+ * never read as if it were the whole value. `dst` must hold LCD_COLS + 1. */
+static const char *fit(char *dst, const char *src) {
+    size_t n = strlen(src);
+    if (n <= (size_t)LCD_COLS) { memcpy(dst, src, n); dst[n] = '\0'; return dst; }
+    memcpy(dst, src, LCD_COLS);
+    dst[LCD_COLS - 1] = '~';
+    dst[LCD_COLS] = '\0';
+    return dst;
+}
+
+/* Boot / transition screen, so the panel is never blank while the card works. */
+static void lcd_status(const char *l1, const char *l2) {
+    lcd_clear();
+    lcd_puts_inv(0, "  TradeCard");
+    if (l1) lcd_puts(2, l1);
+    if (l2) lcd_puts(3, l2);
+    lcd_flush();
 }
 
 /* --------------------------------------------------------------------- */
@@ -462,34 +509,68 @@ static int prompt_ttl_seconds(cJSON *p) {
 /* rendering                                                             */
 /* --------------------------------------------------------------------- */
 
-static void render_prompt(char *f[CANON_FIELDS], const char *thesis) {
-    char l1[24], l2[24], l3[24], l4[24];
-    snprintf(l1, sizeof(l1), "[%s]", f[CF_BROKER]);
-    snprintf(l2, sizeof(l2), "%s %s", f[CF_ACTION], f[CF_SYMBOL]);
-    snprintf(l3, sizeof(l3), "%s sh $%.0f", f[CF_SHARES], strtod(f[CF_NOTIONAL], NULL));
-    snprintf(l4, sizeof(l4), "%.20s", thesis ? thesis : "");
+/* Every field on this screen comes from the parsed `canonical` — the exact
+ * bytes the key signs. The countdown is the only thing here that does not. */
+/* Every field on rows 0-4 comes from the parsed `canonical` — the exact bytes
+ * the key signs. Each signed value gets a row to itself: at 14 columns a
+ * combined "$notional @entry" line overflows on anything priced like BTC, and
+ * a silently clipped price is precisely what WYSIWYS exists to prevent.
+ * `frame` counts redraws (~1 Hz) and only drives row 5. */
+static void render_prompt(char *f[CANON_FIELDS], const char *thesis,
+                          int secs_left, unsigned frame) {
+    char buf[LCD_COLS + 1], line[64];
+    if (secs_left < 0) secs_left = 0;
 
-    lcd_clear();
-    lcd_puts(0, l1);
-    lcd_puts(1, l2);
-    lcd_puts(2, l3);
-    lcd_puts(3, l4);
-    lcd_puts(5, "L=DEC R=ACC C=?");
+    snprintf(line, sizeof(line), "%-9.9s%4ds", f[CF_BROKER], secs_left);
+    lcd_puts_inv(0, line);
+
+    snprintf(line, sizeof(line), "%s %s", f[CF_ACTION], f[CF_SYMBOL]);
+    lcd_puts(1, fit(buf, line));
+
+    snprintf(line, sizeof(line), "%ssh", f[CF_SHARES]);
+    lcd_puts(2, fit(buf, line));
+
+    snprintf(line, sizeof(line), "@%s", f[CF_ENTRY]);
+    lcd_puts(3, fit(buf, line));
+
+    snprintf(line, sizeof(line), "$%s", f[CF_NOTIONAL]);
+    lcd_puts(4, fit(buf, line));
+
+    /* Row 5 alternates the key legend (needed before the first tap) with the
+     * thesis, which is unsigned context and almost always wider than the
+     * panel, so it pans three seconds at a time. */
+    size_t tlen = thesis ? strlen(thesis) : 0;
+    if (tlen && (frame % 6) >= 3) {
+        size_t span = tlen > (size_t)LCD_COLS ? tlen - (size_t)LCD_COLS : 0;
+        size_t off  = span ? (size_t)((frame / 6) % (span + 1)) : 0;
+        lcd_puts(5, fit(buf, thesis + off));
+    } else {
+        lcd_puts_inv(5, "L=NO     R=OK");
+    }
     lcd_flush();
 }
 
 static void render_passbook(uint16_t cursor) {
+    char buf[LCD_COLS + 1], line[64];
     lcd_clear();
-    lcd_puts(0, "== Passbook ==");
+    lcd_puts_inv(0, "== Passbook ==");
+
+    int shown = 0;
     for (int r = 0; r < 4; r++) {
         const pb_entry_t *e = passbook_at(cursor + r);
         if (!e) break;
-        char row[32];
-        snprintf(row, sizeof(row), "%c %-6.6s %s",
-                 e->verdict, e->broker, e->line);
-        lcd_puts(r + 1, row);
+        snprintf(line, sizeof(line), "%c %-4.4s%s", e->verdict, e->broker, e->line);
+        lcd_puts(r + 1, fit(buf, line));
+        shown++;
     }
-    lcd_puts(5, "UP/DN scroll");
+    if (shown == 0) lcd_puts(2, " (no trades)");
+
+    if (g_pb.count)
+        snprintf(line, sizeof(line), "UP/DN  %u/%u",
+                 (unsigned)(cursor + 1), (unsigned)g_pb.count);
+    else
+        snprintf(line, sizeof(line), "waiting...");
+    lcd_puts_inv(5, fit(buf, line));
     lcd_flush();
 }
 
@@ -534,20 +615,35 @@ static void handle_prompt(cJSON *p) {
     if (!ok) {
         ESP_LOGW(TAG, "refusing %s: canonical malformed or bound to another intent", id);
         lcd_clear();
-        lcd_puts(0, "!! REFUSED !!");
-        lcd_puts(1, "bad prompt");
+        lcd_puts_inv(0, " !! REFUSED !!");
+        lcd_puts(2, "bad prompt");
+        lcd_puts(3, "nothing signed");
         lcd_flush();
         wait_key(2000);
         passbook_append('R', "?", "malformed canonical");
         return;
     }
 
-    render_prompt(f, thesis);
+    /* Tick the countdown against a fixed deadline. The previous loop called
+     * wait_key(ttl_ms) again after any non-decision key, which handed the
+     * prompt a fresh full TTL on every stray CENTER/UP/DOWN press and could
+     * hold it open past the window the shim granted. The deadline is computed
+     * once, so keypresses can no longer extend it. */
+    const int ttl_s = prompt_ttl_seconds(p);
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(ttl_s * 1000);
+    key_t k = KEY_NONE;
+    int last_drawn = -1;
 
-    int ttl_ms = prompt_ttl_seconds(p) * 1000;
-    key_t k;
-    while ((k = wait_key(ttl_ms)) != KEY_NONE) {
-        if (k == KEY_RIGHT || k == KEY_LEFT) break;
+    for (;;) {
+        TickType_t now = xTaskGetTickCount();
+        if (now >= deadline) break;
+        int left = (int)((deadline - now + configTICK_RATE_HZ - 1) / configTICK_RATE_HZ);
+        if (left != last_drawn) {
+            render_prompt(f, thesis, left, (unsigned)(ttl_s > left ? ttl_s - left : 0));
+            last_drawn = left;
+        }
+        key_t got = wait_key(200);
+        if (got == KEY_RIGHT || got == KEY_LEFT) { k = got; break; }
         /* KEY_CENTER = detail view (TODO); UP/DOWN ignored in prompt mode. */
     }
 
@@ -641,9 +737,12 @@ void app_main(void) {
 
     gpio_setup();
     lcd_init();
+    lcd_status("booting", NULL);
     passbook_load();
     ESP_ERROR_CHECK(keys_load_or_create());
+    lcd_status("wifi:", WIFI_SSID);
     wifi_bringup();
+    lcd_status("pairing", CARD_ID);
     register_if_needed();
     poll_loop();
 }

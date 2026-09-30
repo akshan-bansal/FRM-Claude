@@ -32,18 +32,11 @@ data/*.parquet
 data/*.csv
 logs/
 reports/*.md
-state/positions.json
-state/equity.csv
-state/orders.jsonl
-state/fills.jsonl
-state/rejected.jsonl
-state/paper_fills.jsonl
-state/paper_orders.jsonl
-state/paper_equity.csv
-state/intel_overlay.jsonl
-state/intel_graph.jsonl
-state/autonomous.pid
-state/HALTED
+# state/ is runtime ground truth (journals, tokens, sentinels): ignore everything except the
+# placeholder. An allow-list, so new journals (sizing_decisions.jsonl, *.bak, *.last_wash, STOP_*)
+# are never tracked by accident. The old per-file deny-list missed each new one.
+state/*
+!state/.gitkeep
 
 # IDE
 .vscode/

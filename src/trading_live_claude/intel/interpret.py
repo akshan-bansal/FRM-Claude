@@ -60,6 +60,30 @@ FX was taken off-policy on 2026-09-14. ``crypto_chg`` (12% coverage) belongs to 
 substituting IB VIX will NOT change any firing rate — both ``calm_market`` legs were already
 satisfied most of the time, so the saturation was never on the market side.
 
+Revision 2026-09-18 (user decision)
+-----------------------------------
+Gates lowered to ``strategic_risk >= 67`` and ``conflict_events_active >= 4`` so thesis alerts
+reach Telegram on typical reads. The user chose this knowing the base rates below and that the
+same constants drive the live-loop conviction trim. Measured by replaying :func:`interpret` over
+``state/intel_overlay.jsonl`` (336 rows, 2026-08-29 -> 2026-09-18). **89 of those rows are empty
+or degraded** (no strategic-risk reading and no VIX, most still flagged ``degraded: false``).
+The 09-16 measurement above included such rows, which diluted its base rates: the original
+``>= 60`` gate fired on 96% of *real* reads, not 75%. On the 247 real rows:
+
+===============================  ==================  ====================
+setting                          Complacency fires   Conflict watch fires
+===============================  ==================  ====================
+09-16 (``>= 73`` / ``>= 6``)            23.9%               19.4%
+09-18 (``>= 67`` / ``>= 4``)            81.4%               70.0%
+===============================  ==================  ====================
+
+The quiet-tape null falls from 59.1% to 8.1% of real reads. Thesis *onsets* (what the
+de-duplicated alert stream actually sends) barely move, about 1.5/day versus 1.6/day, because a
+thesis that fires most of the time also stays on. Real-row distribution: ``strategic_risk``
+p25/p50/p75/p90 = 67/70/72/73, ``conflict_events_active`` = 3/4/5/6. Sizing impact: Complacency
+divergence at ``moderate`` trims conviction x0.75 for its safe-haven / convexity exemplars
+(CGL.TO, PAXG/USD and the others in ``THEME_EXEMPLARS``), now on ~81% of reads instead of ~24%.
+
 **Caveat.** These cutoffs are fitted to one regime. If WorldMonitor recentres its strategic-risk
 index the constants go stale silently. A trailing-percentile gate would be regime-robust where a
 hard constant is not; that is a design change and is queued rather than done here.
@@ -76,8 +100,8 @@ from trading_live_claude.intel.overlay import IntelSnapshot
 # Calibrated 2026-09-16 against the 280-snapshot corpus — see the module header for the
 # measurement and the base rates these produce. Named rather than inline so the regression test
 # can assert on them directly and a future recalibration is a one-line change with a visible diff.
-STRATEGIC_RISK_STRESSED: float = 73.0     # was 60.0 (corpus p25=65 — the old gate never bound)
-CONFLICT_EVENTS_ELEVATED: int = 6         # was 3   (corpus median=4 — same problem)
+STRATEGIC_RISK_STRESSED: float = 67.0     # 60.0 -> 73.0 (09-16) -> 67.0 (09-18, user decision)
+CONFLICT_EVENTS_ELEVATED: int = 4         # 3 -> 6 (09-16) -> 4 (09-18, user decision)
 
 # Themes an intel domain implicates, as ticker exemplars already present in this project's universe.
 # Deliberately small and explicit: these are starting points for research, not a sector database.
@@ -135,9 +159,10 @@ def interpret(snap: IntelSnapshot) -> list[Thesis]:
     military_accel = accel.get("military", 1.0)
 
     # --- 1. Complacency divergence: exogenous risk building while the market prices calm ---------
-    # ``STRATEGIC_RISK_STRESSED`` was 60.0 until the 2026-09-16 threshold calibration (see the
-    # module header) showed it sitting below the corpus p25, which made ``stressed_world``
-    # ~always true and drove this thesis to a 75% base rate. 73.0 is the measured p90.
+    # ``STRATEGIC_RISK_STRESSED``: 60.0 until the 2026-09-16 calibration moved it to the corpus p90
+    # (73.0); lowered to 67.0 on 2026-09-18 by user decision so alerts reach the phone on typical
+    # reads (~81% base rate on real snapshots, see the module header "Revision 2026-09-18").
+    # This gate also drives the live-loop conviction trim for the safe-haven / convexity names.
     calm_market = (vix is not None and vix < 18.0) or (fg is not None and fg >= 60.0)
     stressed_world = (snap.strategic_risk >= STRATEGIC_RISK_STRESSED
                       or energy_accel >= 2.0 or conflict_accel >= 2.0)
@@ -238,11 +263,11 @@ def interpret(snap: IntelSnapshot) -> list[Thesis]:
         ))
 
     # --- 3. Conflict escalation --------------------------------------------------------------
-    # Count gate was >=3 until the 2026-09-16 calibration: the corpus median is 4, so >=3 fired on
-    # 71% of reads. 6 is the measured p90. The ``conflict_accel`` leg is retained but has never
-    # been satisfiable on observed data (max 1.20 vs a 2.5 cutoff) — see the module header.
-    # ``moderate`` cutoff raised 5 -> 7 because with the gate at 6 every fire would otherwise be
-    # moderate, collapsing the tentative band entirely (measured: 48/48 moderate at >=5).
+    # Count gate: >=3 until the 2026-09-16 calibration moved it to the p90 (6); lowered to >=4 on
+    # 2026-09-18 by user decision (~70% base rate on real snapshots). The ``conflict_accel`` leg
+    # is retained but has never been satisfiable on observed data (max 1.20 vs a 2.5 cutoff).
+    # ``moderate`` stays at >=7, so fires at 4-6 are tentative, which the live-loop trim ignores
+    # (factor 1.0); only 7+ trims conviction.
     if snap.conflict_events_active >= CONFLICT_EVENTS_ELEVATED or conflict_accel >= 2.5:
         out.append(Thesis(
             name="Conflict escalation watch",

@@ -1,0 +1,1679 @@
+<title>TradeCard Desk Panel</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" />
+<style>
+  :root {
+    color-scheme: dark;
+    --ground: #0b1417; --surface: #12222a; --surface-2: #172c35; --line: #213d48;
+    --ink: #e6eef0; --ink-2: #b9cbd1; --muted: #7d99a3;
+    /* dataviz reference palette, dark steps, fixed slot order */
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s7: #9085e9; --s8: #e66767;
+    /* sequential: one hue, blue 600 -> 100 (darker = smaller on this ground) */
+    --q1: #184f95; --q2: #256abf; --q3: #3987e5; --q4: #6da7ec; --q5: #9ec5f4; --q6: #cde2fb;
+    --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b;
+    --accent: #3fb8c4;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  /* .takeover sets display, which outranks the UA rule for [hidden]; without this the prompt
+     overlay can be opened but never closed outside a host page that already patches it. */
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--sans);
+         font-size: 13px; line-height: 1.4; -webkit-font-smoothing: antialiased; }
+  .panel { min-height: 100%; padding-block: 11px; padding-left: 14px; padding-right: 14px;
+           display: grid; gap: 9px; grid-template-rows: auto auto auto 1fr auto; max-width: 1280px; margin: 0 auto; }
+
+  .bar { display: flex; align-items: baseline; gap: 13px; flex-wrap: wrap; }
+  .mark { font-family: var(--mono); font-weight: 600; font-size: 14px; letter-spacing: 0.14em; }
+  .mark span { color: var(--accent); }
+  .draft { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--warn);
+           border: 1px solid var(--warn); border-radius: 2px; padding: 2px 6px; }
+  .stat { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .stat b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .grow { flex: 1 1 auto; }
+
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+  .tabs button { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; min-height: 36px;
+                 padding: 0 16px; border: 1px solid transparent; border-bottom: 0; border-radius: 2px 2px 0 0;
+                 background: transparent; color: var(--muted); cursor: pointer; }
+  .tabs button[aria-selected="true"] { color: var(--ink); background: var(--surface);
+                 border-color: var(--line); margin-bottom: -1px; }
+  .tabs .grow { border: 0; }
+
+  .kpis { display: grid; gap: 7px; grid-template-columns: repeat(6, 1fr); }
+  @media (max-width: 900px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; padding: 7px 9px; }
+  .kpi.lead { border-color: var(--accent); }
+  .kpi.ref { opacity: 0.7; }
+  .kpi .l { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.12em; color: var(--muted); }
+  .kpi .v { font-family: var(--mono); font-size: 18px; font-variant-numeric: tabular-nums; margin-top: 1px; }
+  .kpi .sub { font-family: var(--mono); font-size: 9px; color: var(--muted); }
+  .v.neg { color: var(--crit); } .v.pos { color: var(--good); }
+
+  .cols2 { display: grid; gap: 9px; grid-template-columns: 1.5fr 1fr; align-items: start; }
+  .cols2even { display: grid; gap: 9px; grid-template-columns: 1fr 1fr; align-items: start; }
+  @media (max-width: 1000px) { .cols2, .cols2even { grid-template-columns: 1fr; } }
+  .col { display: grid; gap: 9px; align-content: start; }
+
+  section { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; }
+  .head { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-bottom: 1px solid var(--line);
+          font-family: var(--mono); font-size: 9px; letter-spacing: 0.13em; color: var(--muted); }
+  .head .n { margin-left: auto; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .head button.link { min-height: 0; border: 0; background: none; color: var(--muted); font-size: 9px;
+                      letter-spacing: 0.1em; padding: 0 0 0 7px; cursor: pointer; font-family: var(--mono); }
+  .head button.link[aria-pressed="true"] { color: var(--accent); }
+  .body { padding: 8px 10px; }
+  .legend { display: flex; gap: 11px; flex-wrap: wrap; font-family: var(--mono); font-size: 9.5px; color: var(--muted); margin-bottom: 4px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .tick { font-family: var(--mono); font-size: 8.5px; fill: var(--muted); }
+  .grid { stroke: var(--line); stroke-width: 1; }
+  .dlabel { font-family: var(--mono); font-size: 9px; fill: var(--ink-2); }
+  .axis { font-family: var(--mono); font-size: 8.5px; fill: var(--muted); letter-spacing: 0.08em; }
+
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 10.5px; }
+  th { text-align: left; font-weight: 400; font-size: 8.5px; letter-spacing: 0.11em; color: var(--muted); padding: 0 6px 4px 0; }
+  td { padding: 3px 6px 3px 0; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; }
+  .flagged td { color: var(--muted); }
+  .wrap { overflow-x: auto; }
+  .note { font-size: 10px; color: var(--muted); margin: 5px 0 0; }
+  .pill { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.08em; border: 1px solid var(--line);
+          border-radius: 2px; padding: 1px 5px; color: var(--muted); }
+  .pill.noise { border-color: var(--warn); color: var(--warn); }
+  .pill.thin { border-color: var(--serious); color: var(--serious); }
+
+  .stream { display: grid; grid-template-columns: auto 1fr auto; gap: 3px 8px; align-items: center;
+            font-family: var(--mono); font-size: 10.5px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .stream:first-child { border-top: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+  .dot.bad { background: var(--crit); } .dot.idle { background: var(--muted); }
+  .stream .meta { grid-column: 2 / -1; color: var(--muted); font-size: 9.5px; }
+
+  .tape { font-family: var(--mono); font-size: 10px; max-height: 168px; overflow-y: auto; }
+  .ev { display: grid; grid-template-columns: 42px 1fr auto; gap: 6px; padding: 3px 0;
+        border-top: 1px solid var(--line); align-items: baseline; }
+  .ev:first-child { border-top: 0; }
+  .ev .t, .ev .s { color: var(--muted); }
+  .e.sig { color: var(--accent); } .e.fill { color: var(--good); }
+  .e.rej { color: var(--crit); } .e.trim { color: var(--warn); }
+
+  .takeover { position: fixed; inset: 0; background: rgba(6, 12, 14, 0.93); display: grid;
+              place-items: center; padding: 20px; z-index: 40; }
+  .card-prompt { width: min(720px, 100%); background: var(--surface); border: 1px solid var(--accent);
+                 border-left: 4px solid var(--accent); border-radius: 3px; padding: 18px 20px; display: grid; gap: 12px; }
+  .ribbon { font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; color: var(--warn);
+            border: 1px solid var(--warn); border-radius: 2px; padding: 2px 6px; justify-self: start; }
+  .ribbon.live { color: var(--accent); border-color: var(--accent); }
+  .card-prompt .order { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; font-family: var(--mono); }
+  .side { font-weight: 600; letter-spacing: 0.05em; } .side.buy { color: var(--good); } .side.sell { color: var(--crit); }
+  .sym { font-size: 26px; font-weight: 600; } .qty { font-size: 19px; font-variant-numeric: tabular-nums; }
+  .venue { margin-left: auto; font-size: 9.5px; letter-spacing: 0.1em; color: var(--muted);
+           border: 1px solid var(--line); padding: 1px 6px; border-radius: 2px; }
+  .kv { display: grid; grid-template-columns: 86px 1fr; gap: 3px 12px; font-family: var(--mono); font-size: 12px; margin: 0; }
+  .kv dt { color: var(--muted); letter-spacing: 0.08em; } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .hash { font-size: 21px; font-weight: 600; letter-spacing: 0.1em; color: var(--accent); }
+  .ttl { display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .meter { flex: 1 1 auto; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--warn); }
+  .acts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button.big { font-family: var(--mono); font-size: 13px; font-weight: 600; letter-spacing: 0.1em;
+           min-height: 54px; border-radius: 2px; cursor: pointer; color: var(--ink);
+           background: transparent; border: 1px solid var(--line); }
+  button.big.ok { border-color: var(--good); color: var(--good); }
+  button.big.no { border-color: var(--crit); color: var(--crit); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #tk-intel { display: grid; gap: 8px; font-family: var(--mono); font-size: 11.5px; max-height: 34vh; overflow: auto; }
+  #tk-intel h4 { margin: 0 0 2px; font-size: 9.5px; font-weight: 500; letter-spacing: 0.12em; color: var(--muted); }
+  #tk-intel ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+  #tk-intel li::before { content: "· "; color: var(--muted); }
+  #tk-intel li.warn { color: var(--warn); }
+  .queued { font-family: var(--mono); font-size: 10px; color: var(--muted); text-align: center; }
+
+  footer { display: flex; gap: 13px; flex-wrap: wrap; font-family: var(--mono); font-size: 9.5px;
+           color: var(--muted); border-top: 1px solid var(--line); padding-top: 7px; }
+  footer b { color: var(--ink-2); font-weight: 500; }
+  .tip { position: fixed; pointer-events: none; z-index: 50; background: var(--surface-2);
+         border: 1px solid var(--line); border-radius: 2px; padding: 6px 8px; font-family: var(--mono);
+         font-size: 10px; color: var(--ink); white-space: pre; }
+  .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+           background: var(--surface-2); border: 1px solid var(--warn); color: var(--ink); font-family: var(--mono);
+           font-size: 11px; padding: 9px 13px; border-radius: 2px; z-index: 60; max-width: min(620px, calc(100% - 28px)); }
+  @media (prefers-reduced-motion: no-preference) { .meter i { transition: width 1s linear; } }
+  /* ---- atlas: the 120-meter evidence catalogue, folded in from its own page ---- */
+  .mt-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mt-bar select, .mt-bar input, .mt-bar .file, .mt-bar button, dialog.mt button {
+           font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.06em; color: var(--ink);
+           background: var(--surface-2); border: 1px solid var(--line); border-radius: 2px;
+           padding: 5px 8px; cursor: pointer; }
+  .mt-bar input { min-width: 170px; cursor: text; letter-spacing: 0; }
+  .mt-legend { display: flex; gap: 10px; flex-wrap: wrap; margin-left: auto;
+           font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.1em; color: var(--muted); }
+  .mt-legend i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; }
+  .mt-grid { display: grid; gap: 9px; grid-template-columns: repeat(auto-fill, minmax(286px, 1fr)); }
+  .mt-tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 5px; }
+  .mt-tile { background: transparent; border: 0; border-radius: 2px; padding: 4px 1px; min-width: 0;
+           text-align: center; color: inherit; font: inherit; cursor: pointer; }
+  .mt-tile:hover, .mt-tile:focus-visible { background: var(--surface-2); }
+  .mt-tile svg { display: block; width: 100%; height: 38px; }
+  .mt-id { font-family: var(--mono); font-size: 8px; color: var(--muted); }
+  .mt-label { font-size: 9.5px; line-height: 1.15; min-height: 22px; color: var(--ink-2); }
+  .mt-val { font-family: var(--mono); font-size: 10.5px; font-variant-numeric: tabular-nums;
+           min-height: 14px; overflow-wrap: anywhere; color: var(--muted); }
+  .mt-val.has { color: var(--ink); }
+  .mt-st { font-family: var(--mono); font-size: 7.5px; letter-spacing: 0.05em; color: var(--muted); }
+  .mt-empty { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 14px; }
+  dialog.mt { width: min(680px, 92vw); padding: 16px 18px; color: var(--ink);
+           background: var(--surface); border: 1px solid var(--accent); border-radius: 3px; }
+  dialog.mt::backdrop { background: rgba(6, 12, 14, 0.88); }
+  dialog.mt h3 { margin: 0 0 11px; font-family: var(--mono); font-size: 13px; letter-spacing: 0.06em; }
+  dialog.mt dl { display: grid; grid-template-columns: 104px 1fr; gap: 5px 12px; margin: 0;
+           font-family: var(--mono); font-size: 11px; }
+  dialog.mt dt { color: var(--muted); letter-spacing: 0.07em; }
+  dialog.mt dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  dialog.mt a { color: var(--accent); }
+  dialog.mt .close { margin-top: 13px; text-align: right; }
+
+  /* the atlas kept a print path when it was its own page; printing repaints the tokens light
+     and drops the chrome, so whichever tab is open prints as a document. */
+  @media print {
+    :root { color-scheme: light;
+            --ground: #fff; --surface: #fff; --surface-2: #f3f6f6; --line: #c4d0d4;
+            --ink: #101717; --ink-2: #32464c; --muted: #5c7076; }
+    .tabs, .mt-bar, .takeover, .tip, .toast, .draft { display: none !important; }
+    .panel { min-height: 0; max-width: none; }
+    .mt-grid { grid-template-columns: repeat(3, 1fr); }
+    section, .kpi { break-inside: avoid; }
+  }
+
+/* ---- GRAPH tab ------------------------------------------------------------------ */
+.gwrap{overflow-x:auto; background:var(--ground); border:1px solid var(--line); border-radius:2px;
+       padding:6px; margin:10px 0;}
+#g-svg{display:block; min-width:700px; width:100%; height:auto;}
+#g-svg .gnode{fill:var(--surface); stroke:var(--ink); stroke-width:1.2;}
+#g-svg .glabel{font-family:var(--mono); font-size:11px; fill:var(--ink); text-anchor:middle;}
+#g-svg .gcount{font-family:var(--mono); font-size:9.5px; fill:var(--muted); text-anchor:middle;}
+#g-svg .gedge{fill:none; stroke:var(--muted); opacity:.55; stroke-linecap:round;}
+#g-svg .gedge.exec{stroke:var(--accent); opacity:.8;}
+#g-svg .gpred{font-family:var(--mono); font-size:9px; fill:var(--muted); text-anchor:middle;}
+.glegend{display:flex; flex-wrap:wrap; gap:14px; align-items:center; font-family:var(--mono);
+         font-size:10px; color:var(--muted); letter-spacing:.06em;}
+.glegend i{display:inline-block; width:16px; height:3px; margin-right:5px; vertical-align:middle;}
+.glegend i.gk-obs{background:var(--muted);} .glegend i.gk-exec{background:var(--accent);}
+.gnote{font-size:12px; line-height:1.5; color:var(--muted); margin:6px 0;}
+.gnote b{color:var(--ink);}
+.gnote.gwarn{border-left:2px solid var(--warn); padding-left:8px;}
+.gpower{display:flex; flex-direction:column; gap:3px; margin:10px 0;}
+.gpower .row{display:grid; grid-template-columns:5.5rem 1fr 4rem; align-items:center; gap:8px;
+             font-family:var(--mono); font-size:10px; color:var(--muted);}
+.gpower .bar{height:8px; background:var(--ground); border:1px solid var(--line); border-radius:1px;}
+.gpower .bar i{display:block; height:100%; background:var(--muted);}
+.gpower .row.exec .bar i{background:var(--accent);}
+.gpower .val{text-align:right; color:var(--ink);}
+</style>
+
+<div class="panel">
+  <div class="bar">
+    <div class="mark">TRADE<span>CARD</span> DESK</div>
+    <div class="draft" id="mode-chip">—</div>
+    <div class="grow"></div>
+    <div class="stat" id="kill-chip">kill-switch <b>—</b></div>
+    <div class="stat">mode <b>paper</b></div>
+    <div class="stat" id="card-chip">card <b>—</b></div>
+    <div class="stat" id="link">link <b>—</b></div>
+    <div class="stat" id="clock">—</div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-approvals" aria-selected="true" aria-controls="v-approvals">APPROVALS</button>
+    <button role="tab" id="tab-book" aria-selected="false" aria-controls="v-book">BOOK</button>
+    <button role="tab" id="tab-integrity" aria-selected="false" aria-controls="v-integrity">INTEGRITY</button>
+    <button role="tab" id="tab-atlas" aria-selected="false" aria-controls="v-atlas">ATLAS</button>
+    <button role="tab" id="tab-graph" aria-selected="false" aria-controls="v-graph">GRAPH</button>
+    <button role="tab" id="tab-oasis" aria-selected="false" aria-controls="v-oasis">OASIS</button>
+    <button role="tab" id="tab-ib" aria-selected="false" aria-controls="v-ib">IB ACCESS</button>
+    <button class="link" id="show-prompt" style="align-self:center">▸ SHOW A PROMPT</button>
+    <div class="grow"></div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <!-- ============================ OPS ============================ -->
+  <!-- ======================= 1 · APPROVALS ======================= -->
+  <div id="v-approvals" role="tabpanel" aria-labelledby="tab-approvals">
+    <section aria-label="Live session" id="live-strip" hidden style="margin-bottom:9px">
+      <div class="head">CARD SHIM · LIVE <span class="n" id="live-src"></span></div>
+      <div class="body"><div class="kpis" id="live-kpis"></div>
+        <p class="note" id="live-note"></p></div>
+    </section>
+    <div class="cols2">
+      <div class="col">
+        <section aria-label="Pending approvals">
+          <div class="head">AWAITING APPROVAL <span class="n" id="pending-n"></span></div>
+          <div class="body"><div id="pending"></div>
+            <p class="note">A prompt takes over the screen when it arrives; this is what waits behind
+              it. Each row carries the fingerprint of the exact bytes the card signs.</p></div>
+        </section>
+        <section aria-label="Card response time">
+          <div class="head">CARD RESPONSE TIME <span class="n" id="lat-n"></span></div>
+          <div class="body">
+            <div class="legend"><span><i style="background:var(--s3)"></i>ACCEPT</span>
+              <span><i style="background:var(--s8)"></i>DECLINE</span>
+              <span><i style="background:var(--line)"></i>TTL granted</span></div>
+            <div id="latency"></div>
+            <p class="note" id="lat-note"></p>
+          </div>
+        </section>
+        <section aria-label="Approvals by symbol">
+          <div class="head">APPROVALS BY SYMBOL <span class="n" id="asym-n"></span></div>
+          <div class="body"><div id="asym"></div></div>
+        </section>
+      </div>
+      <div class="col">
+        <section aria-label="Verdict mix">
+          <div class="head">VERDICT MIX <span class="n" id="verd-n"></span></div>
+          <div class="body"><div id="verdict"></div><p class="note" id="verd-note"></p></div>
+        </section>
+        <section aria-label="Re-verifiability of past approvals">
+          <div class="head">RE-VERIFIABILITY</div>
+          <div class="body">
+            <div class="kpis" id="reverify" style="grid-template-columns:repeat(2,1fr)"></div>
+            <p class="note">A verdict is evidence only if its signature was kept. Signatures have been
+              stored since 2026-09-24; every approval before that sits on the record as a verdict with
+              no signature and cannot be re-verified. That gap cannot be backfilled.</p>
+          </div>
+        </section>
+        <section aria-label="Registered cards">
+          <div class="head">REGISTERED CARDS <span class="n" id="cards-n"></span></div>
+          <div class="body"><div class="wrap" id="cards"></div>
+            <p class="note">A revoked card keeps its public key on file: revoking today must not erase
+              the evidence that the key was valid when it signed.</p></div>
+        </section>
+        <section aria-label="Fingerprint continuity">
+          <div class="head">FINGERPRINT CONTINUITY</div>
+          <div class="body"><div class="wrap"><table><tbody>
+            <tr><td>dashboard</td><td>shows the fingerprint served with the record</td><td class="num">ok</td></tr>
+            <tr><td>device</td><td>recomputes it over the bytes it signs; refuses on mismatch</td><td class="num">ok</td></tr>
+            <tr><td>ledger</td><td>stores it on INTENT_SENT, the verdict and SIGNED</td><td class="num">ok</td></tr>
+            <tr><td>firmware</td><td>8-inch panel port — specified, not written</td><td class="num">—</td></tr>
+          </tbody></table></div></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================= 2 · BOOK ========================= -->
+  <div id="v-book" role="tabpanel" aria-labelledby="tab-book" hidden>
+    <section aria-label="Scope of these figures" style="margin-bottom:9px">
+      <div class="head">SCOPE <span class="n" id="scope-n"></span></div>
+      <div class="body"><div id="scope"></div></div>
+    </section>
+    <div class="cols2">
+      <div class="col">
+        <section aria-label="Equity and drawdown">
+          <div class="head">EQUITY &amp; DRAWDOWN · <span id="curve-sid"></span>
+            <span class="n" id="curve-span"></span>
+            <button class="link" id="curve-table" aria-pressed="false">TABLE</button></div>
+          <div class="body">
+            <div class="legend"><span><i style="background:var(--s1)"></i>equity</span>
+              <span><i style="background:var(--s2)"></i>drawdown from peak</span></div>
+            <div id="curve"></div><div id="curve-tbl" hidden class="wrap"></div>
+            <p class="note" id="curve-note"></p>
+          </div>
+        </section>
+        <section aria-label="Realised P and L by symbol">
+          <div class="head">REALISED P&amp;L BY SYMBOL <span class="n" id="attr-n"></span>
+            <button class="link" id="attr-table" aria-pressed="false">TABLE</button></div>
+          <div class="body"><div id="attr"></div><div id="attr-tbl" hidden class="wrap"></div>
+            <p class="note">Partial-sell aware: a reducing fill realises (fill − avg) × closed.</p></div>
+        </section>
+        <section aria-label="Return distribution">
+          <div class="head">RETURN DISTRIBUTION · <span id="rh-sid"></span> <span class="n" id="rh-n"></span></div>
+          <div class="body">
+            <div class="legend"><span><i style="background:var(--s8)"></i>negative marks</span>
+              <span><i style="background:var(--s3)"></i>positive</span></div>
+            <div id="rethist"></div><p class="note" id="rh-note"></p></div>
+        </section>
+      </div>
+      <div class="col">
+        <section aria-label="Round-trip trades">
+          <div class="head">ROUND-TRIP TRADES <span class="n" id="tr-n"></span></div>
+          <div class="body"><div class="kpis" id="trade-kpis" style="grid-template-columns:repeat(3,1fr)"></div>
+            <div id="tradehist" style="margin-top:8px"></div><p class="note" id="tr-note"></p></div>
+        </section>
+        <section aria-label="Risk and return plane">
+          <div class="head">RISK / RETURN PLANE <span class="n" id="plane-n"></span></div>
+          <div class="body">
+            <div class="legend"><span><i style="background:var(--s3)"></i>positive Sortino</span>
+              <span><i style="background:var(--s8)"></i>negative</span></div>
+            <div id="plane"></div>
+            <p class="note">Up and to the left is better; area is proportional to marks in the
+              session. Only sessions that closed flat appear — see SCOPE above.</p></div>
+        </section>
+        <section aria-label="Gate denials">
+          <div class="head">GATE DENIALS <span class="n" id="rej-n"></span></div>
+          <div class="body"><div id="rej"></div></div>
+        </section>
+        <section aria-label="By strategy">
+          <div class="head">BY STRATEGY <span class="n" id="strat-n"></span></div>
+          <div class="body"><div class="wrap" id="strat"></div></div>
+        </section>
+        <section aria-label="Fills by weekday and hour">
+          <div class="head">WHEN THE BOOK TRADES <span class="n" id="heat-n"></span></div>
+          <div class="body"><div id="heat"></div>
+            <p class="note">Every fill in the journal, by weekday and local hour. An empty cell is an hour
+              with no fill, not an hour that was never reached.</p></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= 3 · INTEGRITY ======================= -->
+  <div id="v-integrity" role="tabpanel" aria-labelledby="tab-integrity" hidden>
+    <div class="cols2">
+      <div class="col">
+        <section aria-label="Ledger chains">
+          <div class="head">LEDGER CHAINS <span class="n">verified now</span></div>
+          <div class="body">
+            <div class="stream"><span class="dot"></span><span>kraken</span><span class="n">49 rows</span>
+              <span class="meta">hash-linked · 55/55 diagnostic checks pass</span></div>
+            <div class="stream"><span class="dot idle"></span><span>qt</span><span class="n">0 rows</span>
+              <span class="meta">wired; no signal has fired yet</span></div>
+            <div class="stream"><span class="dot bad"></span><span>ib</span><span class="n">—</span>
+              <span class="meta">not wired: pass ledger= in paper_ib.py</span></div>
+          </div>
+        </section>
+        <section aria-label="Chain integrity checks">
+          <div class="head">CHAIN INTEGRITY <span class="n">55/55 checks</span></div>
+          <div class="body"><div class="wrap"><table>
+            <thead><tr><th>CHECK</th><th class="num">RESULT</th></tr></thead><tbody>
+              <tr><td>sequence dense and zero-based</td><td class="num">pass</td></tr>
+              <tr><td>every prev_hash equals the prior row_hash</td><td class="num">pass</td></tr>
+              <tr><td>every row_hash recomputes</td><td class="num">pass</td></tr>
+              <tr><td>every payload_hash recomputes</td><td class="num">pass</td></tr>
+              <tr><td>signatures re-verify offline (this stream)</td><td class="num">2 / 2</td></tr>
+              <tr><td>append rate, fsync per row</td><td class="num">332 /s</td></tr>
+              <tr><td>taxonomy coverage</td><td class="num">24 / 25</td></tr>
+            </tbody></table></div>
+            <p class="note">INTENT_CREATED is the one unemitted event: the taxonomy declares it, nothing
+              writes it, so a chain starts at RISK_CHECK.</p></div>
+        </section>
+        <section aria-label="Tamper matrix">
+          <div class="head">TAMPER MATRIX <span class="n">6 / 6 caught</span></div>
+          <div class="body"><div class="wrap"><table>
+            <thead><tr><th>ATTACK</th><th>WHAT VERIFICATION SAYS</th></tr></thead><tbody>
+              <tr><td>edited payload</td><td>payload of row N does not match its payload_hash</td></tr>
+              <tr><td>edited envelope field</td><td>row N was modified after it was written</td></tr>
+              <tr><td>deleted row</td><td>sequence gap: expected N, found N+1</td></tr>
+              <tr><td>reordered rows</td><td>sequence gap</td></tr>
+              <tr><td>spliced duplicate</td><td>sequence gap</td></tr>
+              <tr><td>self-consistent forgery</td><td>broken link at seq N: prev_hash mismatch</td></tr>
+            </tbody></table></div>
+            <p class="note">Forging one row means forging every row after it — that is what the chain buys.</p></div>
+        </section>
+      </div>
+      <div class="col">
+        <section aria-label="Signal to fill funnel">
+          <div class="head">SIGNAL TO FILL <span class="n">diagnostic stream</span></div>
+          <div class="body"><div id="funnel"></div>
+            <p class="note">From the 49-row diagnostic run, which exercises every branch deliberately —
+              not a trading-rate sample.</p></div>
+        </section>
+        <section aria-label="Sessions ranked">
+          <div class="head">SESSIONS BY SORTINO / MAXDD <span class="n" id="rank-n"></span>
+            <button class="link" id="rank-table" aria-pressed="false">TABLE</button></div>
+          <div class="body"><div id="rank"></div><div id="rank-tbl" hidden class="wrap"></div>
+            <p class="note">Primary objective is sortino_over_dd; Sharpe is reference only. Ranked over
+              the fit sessions only: a session that never closed flat, or whose return is under 5bp,
+              cannot produce a ratio worth ranking, so it is excluded rather than shown greyed.</p></div>
+        </section>
+        <section aria-label="Event tape">
+          <div class="head">EVENT TAPE <span class="n">49</span></div>
+          <div class="body"><div class="tape" id="tape"></div></div>
+        </section>
+        <section aria-label="Venue mix">
+          <div class="head">VENUE MIX <span class="n" id="ven-n"></span></div>
+          <div class="body"><div id="ven"></div></div>
+        </section>
+        <section aria-label="What this record does not prove">
+          <div class="head">WHAT THIS RECORD DOES NOT PROVE</div>
+          <div class="body"><div class="wrap"><table><tbody>
+            <tr><td>anchor</td><td>none — a local chain with no external witness (phase 8)</td></tr>
+            <tr><td>timestamps</td><td>host clock, unattested; the card has no clock</td></tr>
+            <tr><td>retention</td><td>undecided; nothing stops a process writing into state/</td></tr>
+            <tr><td>immutability</td><td>edits are detectable, not impossible</td></tr>
+          </tbody></table></div></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================= 4 · ATLAS ========================= -->
+  <div id="v-graph" role="tabpanel" aria-labelledby="tab-graph" hidden>
+    <div class="col">
+      <section aria-label="Intel graph model">
+        <div class="head">INTEL GRAPH MODEL
+          <span class="n"><span id="g-edges">0</span> edges over <span id="g-nodes">0</span> nodes</span></div>
+        <div class="body">
+          <p class="gnote">Vertices are node <b>types</b>, not instances. The journal holds thousands of
+          edges over hundreds of nodes; drawn as an instance it is unreadable, so this is the
+          <b>schema the pipeline actually produced</b> &mdash; which kinds of thing exist, and how they
+          connect. Every count is read from <span class="mono" id="g-src">state/intel_graph.jsonl</span>.</p>
+          <div class="gwrap">
+            <svg id="g-svg" viewBox="0 0 780 440" role="img"
+                 aria-labelledby="g-svg-title g-svg-desc">
+              <title id="g-svg-title">Intel graph model</title>
+              <desc id="g-svg-desc">Node types as vertices and predicates as directed edges, with
+              edge thickness proportional to the number of journalled edges of that predicate.</desc>
+            </svg>
+          </div>
+          <div class="glegend">
+            <span><i class="gk-obs"></i>OBSERVATION</span>
+            <span><i class="gk-exec"></i>EXECUTION</span>
+            <span class="gth">THICKNESS = EDGE COUNT (log)</span>
+            <span class="gth">VERTEX AREA = DISTINCT NODES</span>
+          </div>
+          <div class="gpower" id="g-power" aria-label="Influence redistribution by node type"></div>
+          <p class="gnote">Influence is a second, dimensionless channel, separate from
+          <span class="mono">weight</span> and clamped to (0,&nbsp;1] &mdash; intelligence may de-risk
+          and can never lever up. <b>Venue is capped at 0.65</b>: a venue records where a trade
+          cleared, not why it happened. The bars are each type&rsquo;s <b>share</b> of total
+          influence, so raising one necessarily lowers the rest rather than inflating the total.</p>
+          <p class="gnote gwarn"><b>Thickness is edge count, never summed weight.</b>
+          <span class="mono">weight</span> is not one quantity: for <span class="mono">traded</span> it
+          is notional dollars, for <span class="mono">observed</span> a decayed observation score, and
+          <span class="mono">ranked_by</span> carries a signed score that sums negative. Pooling them
+          would draw a picture whose thickest line means dollars and whose thinnest means score.
+          Per-predicate sums are listed below with their own units and are not compared.</p>
+          <div class="tbl-wrap">
+            <table id="g-tbl">
+              <thead><tr><th>SUBJECT</th><th>PREDICATE</th><th>OBJECT</th>
+                <th class="r">EDGES</th><th class="r">&Sigma; WEIGHT</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="gnote" id="g-empty" hidden>No graph journal found &mdash; nothing to draw. Run
+          <span class="mono">scripts/graph_journal.py</span> to accrue one.</p>
+        </div>
+      </section>
+    </div>
+  </div>
+  <div id="v-oasis" role="tabpanel" aria-labelledby="tab-oasis" hidden>
+    <div class="col">
+      <section aria-label="OASIS debate record">
+        <div class="head">OASIS DEBATE RECORD <span class="n" id="oa-scope">—</span></div>
+        <div class="body">
+          <p class="gnote">Specialist readers propose a thesis per domain; an adversary tries to falsify
+          it. Every figure is read from <span class="mono">state/intel_agents.jsonl</span>. Runs made
+          without an API key carry no claims and are left out of the tally. No claim-to-trade-to-P&amp;L
+          join exists yet, so this shows what was <b>claimed and challenged</b>, not whether it was right.</p>
+          <div id="oa-sim"></div>
+          <div id="oa-tally"></div>
+          <div id="oa-runs"></div>
+          <p class="gnote" id="oa-empty" hidden></p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="v-ib" role="tabpanel" aria-labelledby="tab-ib" hidden>
+    <div class="col">
+      <section aria-label="IB derivatives access">
+        <div class="head">IB DERIVATIVES ACCESS <span class="n" id="ib-scope">—</span></div>
+        <div class="body">
+          <p class="gnote">The IB futures book needs its own TWS or IB Gateway login with a listening
+          port. This tab probes the ports at the moment the shim answers, so it is only drawn from a
+          running session's <span class="mono">/desk</span>. A listening port proves something is
+          there, not that it is the right account, has market-data permissions, or has the API
+          enabled.</p>
+          <div id="ib-ports"></div>
+          <div id="ib-steps"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="v-atlas" role="tabpanel" aria-labelledby="tab-atlas" hidden>
+    <div class="col">
+      <section aria-label="Evidence atlas controls">
+        <div class="head">EVIDENCE ATLAS · <span id="mt-defined">0</span> DEFINED METERS
+          <span class="n"><span id="mt-count">0</span> readings in snapshot</span></div>
+        <div class="body">
+          <div class="mt-bar">
+            <select id="mt-mode" aria-label="Snapshot"></select>
+            <label class="file">LOAD MEASURED SNAPSHOT
+              <input id="mt-upload" type="file" accept="application/json,.json" hidden></label>
+            <input id="mt-search" placeholder="find a meter…" aria-label="Find a meter">
+            <button id="mt-print">PRINT / SAVE PDF</button>
+            <div class="mt-legend">
+              <span><i id="lg-obs"></i>OBSERVED</span>
+              <span><i id="lg-stale"></i>STALE</span>
+              <span><i id="lg-hist"></i>HISTORICAL</span>
+              <span><i id="lg-none"></i>NO DATA · NO NEEDLE</span>
+            </div>
+          </div>
+          <p class="note" id="mt-notice"></p>
+          <p class="note" id="mt-pin"></p>
+        </div>
+      </section>
+      <div class="mt-grid" id="mt-grid"></div>
+      <section aria-label="What the atlas does not claim">
+        <div class="head">WHAT THE ATLAS DOES NOT CLAIM</div>
+        <div class="body"><p class="note">The catalogue states what the code <b>defines</b>, not what has
+          been observed: a meter with no measurement is drawn neutral and without a needle, and no value is
+          substituted for it. Bounded meters print their endpoints; unbounded quantities show numbers only;
+          identity and lifecycle meters are status tiles, not percentages. A snapshot is a file, not a
+          streaming connection — it is parsed in this page, nothing is uploaded, no broker is contacted, and
+          a reading without a source, a scope and a status is rejected along with the whole file. Click any
+          tile for its definition, unit, scale, code support and pinned source. The $150 hardware tier is a
+          proposed target and says nothing about the status of any meter here.</p></div>
+      </section>
+    </div>
+  </div>
+
+  <footer>
+    <span>chain <b>hash-linked per stream</b></span>
+    <span>anchor <b>none — phase 8</b></span>
+    <span>timestamps <b>host clock, unattested</b></span>
+    <span>retention <b>undecided</b></span>
+    <span class="grow"></span>
+    <span id="prov"></span>
+  </footer>
+</div>
+
+<div class="takeover" id="takeover" hidden>
+  <div class="card-prompt" role="dialog" aria-modal="true" aria-labelledby="tk-sym">
+    <div class="ribbon" id="tk-ribbon">DEMO — NOT A REAL PROMPT</div>
+    <div class="order"><span class="side buy" id="tk-side">BUY</span><span class="sym" id="tk-sym">—</span>
+      <span class="qty" id="tk-qty">—</span><span class="venue" id="tk-venue">—</span></div>
+    <dl class="kv">
+      <dt>HASH</dt><dd class="hash" id="tk-hash">—</dd>
+      <dt>ENTRY</dt><dd id="tk-entry">—</dd>
+      <dt>NOTIONAL</dt><dd id="tk-notional">—</dd>
+      <dt>RISK</dt><dd id="tk-risk">—</dd>
+      <dt>STRATEGY</dt><dd id="tk-strategy">—</dd>
+      <dt>ACCOUNT</dt><dd id="tk-account">—</dd>
+    </dl>
+    <p class="note" id="tk-thesis" hidden></p>
+    <div id="tk-intel" hidden></div>
+    <div class="ttl"><span>TTL</span><span class="meter"><i id="tk-meter" style="width:100%"></i></span>
+      <span id="tk-left">—</span></div>
+    <div class="acts" id="tk-acts"></div>
+    <p class="queued" id="tk-queued"></p>
+  </div>
+</div>
+
+<dialog class="mt" id="mt-detail" aria-labelledby="mt-dtitle">
+  <h3 id="mt-dtitle"></h3>
+  <dl id="mt-dbody"></dl>
+  <div class="close"><button id="mt-close">CLOSE</button></div>
+</dialog>
+
+<script>
+const DATA = {"sessions":[{"rows":70,"start":"2026-09-26T00:25","eq0":99995.05,"eq1":100128.4286,"ret":0.001333852025675153,"maxdd":0.0006198951329664903,"sortino":6.727165926343947,"sharpe":1.7452371392393655,"sod":10852.10315194973,"realized":144.9096,"sid":"d53afb8f"},{"rows":80,"start":"2026-09-18T13:37","eq0":99995.05,"eq1":100229.2689,"ret":0.0023423049440947086,"maxdd":0.0016329684037111466,"sortino":2.810451520233785,"sharpe":1.8144144294653117,"sod":1721.0691363327333,"realized":268.8689,"sid":"fb885ede"},{"rows":109,"start":"2026-09-22T13:54","eq0":99995.05,"eq1":100075.5734,"ret":0.0008052738610559995,"maxdd":0.002391716256758032,"sortino":0.9976571966492964,"sharpe":0.5989467585326784,"sod":417.1302485528193,"realized":95.3734,"sid":"fc48bf29"},{"rows":110,"start":"2026-09-23T13:30","eq0":99995.05,"eq1":99417.7045,"ret":-0.005773740800169569,"maxdd":0.00675669210807275,"sortino":-3.1811063694813453,"sharpe":-2.5317031295145185,"sod":-470.8082473790137,"realized":-532.7955,"sid":"94ea903d"},{"rows":120,"start":"2026-09-22T13:54","eq0":99995.05,"eq1":99728.3025,"ret":-0.002667607046548781,"maxdd":0.003834986733774048,"sortino":-2.306982286957922,"sharpe":-1.5459768022192937,"sod":-601.5619993260311,"realized":-162.4762,"sid":"fba831e3"},{"rows":74,"start":"2026-09-23T18:37","eq0":99995.05,"eq1":99677.1953,"ret":-0.003178704345865091,"maxdd":0.0031787043458650823,"sortino":-4.298157993250399,"sharpe":-3.898320539462291,"sod":-1352.1729376440821,"realized":-273.3047,"sid":"8579e913"},{"rows":37,"start":"2026-09-16T20:56","eq0":99995.05,"eq1":99933.5529,"ret":-0.0006150014425715389,"maxdd":0.0014885646839519228,"sortino":-2.8229447187664265,"sharpe":-1.4668514937813377,"sod":-1896.4205917286165,"realized":-36.7471,"sid":"b5870348"},{"rows":64,"start":"2026-09-29T15:17","eq0":99995.05,"eq1":99875.6598,"ret":-0.0011939611010746143,"maxdd":0.0011939611010745924,"sortino":-3.6763110024472794,"sharpe":-2.8008178911152015,"sod":-3079.0877518023954,"realized":-94.6402,"sid":"8d598c3f"},{"rows":38,"start":"2026-09-18T19:27","eq0":99995.05,"eq1":99819.635,"ret":-0.0017542368347234216,"maxdd":0.001874689572719074,"sortino":-5.917239007475291,"sharpe":-5.452936692733948,"sod":-3156.383378658714,"realized":-140.765,"sid":"ec72c96f"}],"ranked_count":12,"session_count":87,"plane":[{"sid":"d53afb8f","dd":0.0006198951329664903,"sortino":6.727165926343947,"rows":70,"ret":0.001333852025675153,"sod":10852.10315194973},{"sid":"fb885ede","dd":0.0016329684037111466,"sortino":2.810451520233785,"rows":80,"ret":0.0023423049440947086,"sod":1721.0691363327333},{"sid":"fc48bf29","dd":0.002391716256758032,"sortino":0.9976571966492964,"rows":109,"ret":0.0008052738610559995,"sod":417.1302485528193},{"sid":"94ea903d","dd":0.00675669210807275,"sortino":-3.1811063694813453,"rows":110,"ret":-0.005773740800169569,"sod":-470.8082473790137},{"sid":"fba831e3","dd":0.003834986733774048,"sortino":-2.306982286957922,"rows":120,"ret":-0.002667607046548781,"sod":-601.5619993260311},{"sid":"8579e913","dd":0.0031787043458650823,"sortino":-4.298157993250399,"rows":74,"ret":-0.003178704345865091,"sod":-1352.1729376440821},{"sid":"b5870348","dd":0.0014885646839519228,"sortino":-2.8229447187664265,"rows":37,"ret":-0.0006150014425715389,"sod":-1896.4205917286165},{"sid":"8d598c3f","dd":0.0011939611010745924,"sortino":-3.6763110024472794,"rows":64,"ret":-0.0011939611010746143,"sod":-3079.0877518023954},{"sid":"ec72c96f","dd":0.001874689572719074,"sortino":-5.917239007475291,"rows":38,"ret":-0.0017542368347234216,"sod":-3156.383378658714}],"scope":{"sessions_seen":87,"sessions_used":12,"excluded":[["never closed flat",50],["under 25 marks",17],["return under 5bp",8]],"rule":"Aggregates cover sessions that closed flat with enough marks to compute a ratio. A session killed with positions open reports realised P&L of 0.00 for ever and marks frozen at stale prices, so it is excluded rather than shown with a warning."},"curve":{"sid":"fba831e3","points":[["13:54",99995.05,4.9e-05],["13:54",99990.1,9.9e-05],["13:54",99985.15,0.000148],["13:54",99980.2,0.000198],["13:55",99925.73,0.000743],["13:56",99911.45,0.000886],["13:57",99873.32,0.001267],["13:58",99881.49,0.001185],["13:59",99865.43,0.001346],["14:00",99861.22,0.001388],["14:01",99930.91,0.000691],["14:02",99954.36,0.000456],["14:03",99969.75,0.000303],["14:04",99997.72,2.3e-05],["14:05",99983.42,0.000166],["14:07",100038.29,0.0],["14:08",100058.77,0.0],["14:09",100065.54,0.0],["14:10",100036.95,0.000286],["14:11",99975.27,0.000902],["14:12",100001.81,0.000637],["14:13",99991.25,0.000742],["14:14",99995.02,0.000705],["14:15",99944.9,0.001206],["14:16",99970.08,0.000954],["14:17",99940.49,0.00125],["14:18",99955.31,0.001102],["14:19",99997.53,0.00068],["14:20",99982.33,0.000832],["14:21",99979.15,0.000863],["14:22",99974.73,0.000908],["14:23",99911.72,0.001537],["14:24",99943.83,0.001216],["14:25",99931.29,0.001342],["14:27",99927.3,0.001381],["14:28",99926.66,0.001388],["14:29",99924.15,0.001413],["14:30",99923.42,0.00142],["14:31",99954.17,0.001113],["14:32",99977.94,0.000875],["14:33",99981.57,0.000839],["14:34",99939.44,0.00126],["14:35",99913.64,0.001518],["14:36",99888.27,0.001771],["14:37",99905.14,0.001603],["14:38",99930.93,0.001345],["14:39",99922.08,0.001434],["14:40",99903.41,0.00162],["14:41",99890.81,0.001746],["14:42",99902.61,0.001628],["14:43",99928.88,0.001366],["14:44",99910.73,0.001547],["14:46",99908.0,0.001574],["14:47",99877.13,0.001883],["14:48",99882.35,0.001831],["14:49",99851.4,0.00214],["14:50",99879.71,0.001857],["14:51",99883.63,0.001818],["14:52",99885.84,0.001796],["14:53",99869.74,0.001957],["14:54",99878.19,0.001872],["14:59",99870.46,0.001949],["15:04",99877.37,0.00188],["15:09",99888.42,0.00177],["15:14",99842.75,0.002226],["15:19",99862.66,0.002027],["15:24",99818.46,0.002469],["15:29",99747.33,0.00318],["15:34",99731.78,0.003335],["15:39",99733.16,0.003322],["15:45",99707.55,0.003578],["15:50",99681.79,0.003835],["15:55",99728.88,0.003364],["15:58",99729.34,0.00336],["16:03",99757.96,0.003074],["16:08",99778.91,0.002864],["16:13",99821.31,0.002441],["16:15",99832.28,0.002331],["16:15",99825.81,0.002396],["16:15",99813.78,0.002516],["16:15",99791.67,0.002737],["16:15",99762.57,0.003028],["16:15",99801.48,0.002639],["16:15",99801.63,0.002637],["16:15",99796.68,0.002687],["16:21",99795.49,0.002699],["16:26",99853.96,0.002114],["16:31",99914.64,0.001508],["16:36",99859.39,0.00206],["16:41",99882.35,0.001831],["16:46",99817.33,0.00248],["16:51",99862.75,0.002027],["16:56",99813.2,0.002522],["17:01",99802.79,0.002626],["17:06",99794.58,0.002708],["17:11",99784.67,0.002807],["17:16",99782.22,0.002831],["17:21",99793.23,0.002721],["17:27",99805.75,0.002596],["17:32",99833.71,0.002317],["17:37",99786.16,0.002792],["17:42",99807.63,0.002577],["17:47",99831.74,0.002336],["17:52",99828.63,0.002367],["17:57",99821.48,0.002439],["18:02",99784.71,0.002806],["18:07",99767.84,0.002975],["18:12",99770.67,0.002947],["18:17",99731.12,0.003342],["18:22",99746.48,0.003189],["18:27",99753.89,0.003114],["18:33",99758.83,0.003065],["18:38",99773.96,0.002914],["18:43",99789.19,0.002762],["18:45",99799.1,0.002663],["18:45",99792.95,0.002724],["18:45",99782.41,0.002829],["18:45",99763.73,0.003016],["18:45",99739.48,0.003258],["18:45",99728.3,0.00337]]},"curve_metrics":{"rows":120,"start":"2026-09-22T13:54","eq0":99995.05,"eq1":99728.3025,"ret":-0.002667607046548781,"maxdd":0.003834986733774048,"sortino":-2.306982286957922,"sharpe":-1.5459768022192937,"sod":-601.5619993260311,"realized":-162.4762},"ret_hist":{"lo":-7.126437320057433,"hi":6.9781843102291345,"w":0.9403081086857712,"bins":[3,3,5,4,10,9,16,23,13,10,14,1,4,2,2],"n":119,"mean":-0.22408223768667657,"p05":-5.44805871562486,"downside":65},"fill_count":297,"symbols":[{"sym":"VDY.TO","pnl":-4793.04,"fills":37},{"sym":"SRU.UN.TO","pnl":-1088.67,"fills":21},{"sym":"PAXG/USD","pnl":-1075.25,"fills":56},{"sym":"EQB.TO","pnl":-514.57,"fills":47},{"sym":"BTC/USD","pnl":-55.11,"fills":2},{"sym":"RSI.TO","pnl":-53.11,"fills":8},{"sym":"XMR/USD","pnl":-25.71,"fills":2},{"sym":"ETH/USD","pnl":-11.48,"fills":2},{"sym":"SOL/USD","pnl":26.55,"fills":11},{"sym":"XRP/USD","pnl":319.21,"fills":11},{"sym":"QQQ","pnl":2260.59,"fills":47},{"sym":"LINK/USD","pnl":3423.16,"fills":38}],"venues":[{"v":"questrade","fills":130,"notional":2966591.0},{"v":"kraken","fills":116,"notional":1241532.0},{"v":"paper","fills":48,"notional":1577545.0},{"v":"ib_web","fills":3,"notional":165480.0}],"heat":{"cells":[[0,17,4],[0,23,5],[1,0,10],[1,1,1],[1,2,1],[1,13,6],[1,14,12],[1,15,8],[1,16,9],[1,18,12],[1,23,1],[2,0,1],[2,13,8],[2,14,13],[2,15,7],[2,16,3],[2,17,5],[2,18,19],[2,19,19],[2,20,21],[2,21,7],[2,23,9],[3,14,17],[3,15,18],[3,16,8],[3,17,5],[3,20,7],[3,21,1],[4,0,4],[4,13,12],[4,15,5],[4,16,6],[4,19,19],[4,20,1],[4,23,2],[5,0,3],[5,13,1],[5,15,1],[6,14,4],[6,15,2]],"max":21},"trades":{"n":7,"wins":2,"losses":5,"win_rate":0.2857142857142857,"avg_win":11.065,"avg_loss":33.507999999999996,"profit_factor":0.13208785961561417,"expectancy":-20.77285714285714,"median_mins":86.3,"open_now":13,"scope":"7 closed round trips across 4 symbols; 13 positions still open and excluded"},"trade_hist":{"lo":-55.11,"hi":17.82,"w":6.630000000000001,"bins":[1,1,0,1,1,0,1,0,1,0,1]},"rejections":[["open positions 4",70],["single-name notional 100.0%",35],["after trim: notional $26.86",33],["card:expired",25],["single-name notional 99.9%",24],["after trim: notional $26.82",21],["open positions 5",15]],"rejection_total":261,"strategies":[{"name":"ts_momentum","n":199,"acc":140,"rate":0.7035175879396985,"top":"single-name notional 100.0%"},{"name":"bollinger","n":119,"acc":32,"rate":0.2689075630252101,"top":"open positions 4"},{"name":"flatten","n":87,"acc":87,"rate":1.0,"top":""},{"name":"atr_channel","n":39,"acc":27,"rate":0.6923076923076923,"top":"notional $33.55"},{"name":"rsi_meanrevert","n":10,"acc":10,"rate":1.0,"top":""},{"name":"confirm_rsi_meanrevert","n":8,"acc":8,"rate":1.0,"top":""},{"name":"macd","n":5,"acc":3,"rate":0.6,"top":"notional $52.38"},{"name":"slot_trim","n":4,"acc":4,"rate":1.0,"top":""}],"kill_switch":{"halted":false,"reason":""},"approvals":{"total":56,"verdicts":{"EXPIRED":29,"ACCEPT":24,"DECLINE":3},"signed":12,"unsigned_decided":15,"brokers":{"paper":56},"symbols":[["LINK/USD",33],["PAXG/USD",14],["VDY.TO",6],["QQQ",2],["EQB.TO",1]],"cards":[{"id":"card-sim-001","created":"2026-09-17T20:33","revoked":null},{"id":"quantport-io-001","created":"2026-09-23T20:30","revoked":null}],"decided":[{"v":"ACCEPT","s":0.04,"ttl":120.0,"use":0.0003,"sym":"QQQ","broker":"paper"},{"v":"ACCEPT","s":0.08,"ttl":120.0,"use":0.0007,"sym":"VDY.TO","broker":"paper"},{"v":"ACCEPT","s":0.13,"ttl":120.0,"use":0.0011,"sym":"VDY.TO","broker":"paper"},{"v":"ACCEPT","s":0.14,"ttl":120.0,"use":0.0012,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":0.14,"ttl":120.0,"use":0.0011,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":0.19,"ttl":120.0,"use":0.0015,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":0.27,"ttl":120.0,"use":0.0023,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":0.29,"ttl":120.0,"use":0.0024,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":0.34,"ttl":120.0,"use":0.0029,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":0.4,"ttl":120.0,"use":0.0034,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":0.43,"ttl":120.0,"use":0.0036,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":0.51,"ttl":120.0,"use":0.0043,"sym":"LINK/USD","broker":"paper"},{"v":"DECLINE","s":0.61,"ttl":90.0,"use":0.0068,"sym":"LINK/USD","broker":"paper"},{"v":"DECLINE","s":0.62,"ttl":90.0,"use":0.0069,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":0.68,"ttl":120.0,"use":0.0057,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":0.7,"ttl":120.0,"use":0.0059,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":0.73,"ttl":120.0,"use":0.0061,"sym":"PAXG/USD","broker":"paper"},{"v":"DECLINE","s":0.79,"ttl":120.0,"use":0.0066,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":1.0,"ttl":120.0,"use":0.0083,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":1.07,"ttl":120.0,"use":0.0089,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":1.43,"ttl":120.0,"use":0.0119,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":1.49,"ttl":120.0,"use":0.0124,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":3.7,"ttl":120.0,"use":0.0309,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":4.2,"ttl":120.0,"use":0.035,"sym":"PAXG/USD","broker":"paper"},{"v":"ACCEPT","s":7.81,"ttl":120.0,"use":0.0651,"sym":"LINK/USD","broker":"paper"},{"v":"ACCEPT","s":75.21,"ttl":120.0,"use":0.6268,"sym":"EQB.TO","broker":"paper"},{"v":"ACCEPT","s":95.14,"ttl":120.0,"use":0.7928,"sym":"LINK/USD","broker":"paper"}],"expired_rows":29,"median_s":0.62,"max_s":95.14,"median_use":0.0059,"notional":329881.0,"expired_note":"EXPIRED rows carry resolved_at from the sweep that noticed them, not a card decision, so they are excluded from response time.","last_prompt":null},"graph":{"nodes":[{"type":"event","n":337,"power":0.0},{"type":"poll","n":247,"power":0.0},{"type":"region","n":67,"power":0.0},{"type":"symbol","n":64,"power":0.0},{"type":"source","n":5,"power":0.0},{"type":"venue","n":3,"power":0.0},{"type":"domain","n":3,"power":0.0},{"type":"market","n":2,"power":0.0},{"type":"analysis","n":1,"power":0.0}],"links":[{"from":"event","pred":"about_domain","to":"domain","n":4781,"w":1488.57},{"from":"poll","pred":"observed","to":"event","n":4781,"w":862.89},{"from":"poll","pred":"observed","to":"region","n":4275,"w":1241.99},{"from":"source","pred":"observed","to":"poll","n":906,"w":3661.13},{"from":"market","pred":"stressed_by","to":"domain","n":362,"w":1283.82},{"from":"venue","pred":"traded","to":"symbol","n":248,"w":1543900.09},{"from":"poll","pred":"scaled","to":"symbol","n":65,"w":52.97},{"from":"analysis","pred":"ranked_by","to":"symbol","n":45,"w":-167.16},{"from":"poll","pred":"elevated_in","to":"domain","n":5,"w":4.81}],"edges_total":15468,"node_total":729,"source":"state\\intel_graph.jsonl","present":true},"oasis":{"present":false,"runs":0,"no_key_runs":0,"scored_runs":0,"outcomes":{},"recent":[],"first":null,"last":null,"sim":[]},"meters":[{"id":"001","group":"Portfolio","label":"NAV","source":"src/trading_live_claude/brokers/paper.py","formula":"Latest session-filtered paper_equity.csv equity; live NAV requires broker balance snapshot.","unit":"account currency","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/paper.py","bounds":null},{"id":"002","group":"Portfolio","label":"Cash","source":"src/trading_live_claude/brokers/paper.py","formula":"Latest session-filtered paper_equity.csv cash.","unit":"account currency","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/paper.py","bounds":null},{"id":"003","group":"Portfolio","label":"P&L","source":"src/trading_live_claude/brokers/paper.py","formula":"Latest realized_pnl + unrealized_pnl; this excludes some fees: do not equate it to total return.","unit":"account currency","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/paper.py","bounds":null},{"id":"004","group":"Portfolio","label":"Return","source":"src/trading_live_claude/backtest/metrics.py","formula":"100 \u00d7 (end NAV / opening NAV \u2212 1), only with verified opening NAV and no external flows.","unit":"%","kind":"number","support":"derived; opening baseline required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/backtest/metrics.py","bounds":null},{"id":"005","group":"Portfolio","label":"Gross","source":"src/trading_live_claude/execution/router.py","formula":"100 \u00d7 sum(abs(position market value in base currency)) / NAV. Futures require contract multiplier; options require declared exposure convention.","unit":"%","kind":"number","support":"derived; position snapshot required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/router.py","bounds":null},{"id":"006","group":"Portfolio","label":"Net","source":"src/trading_live_claude/brokers/paper.py","formula":"100 \u00d7 signed positions_value / equity for selected paper session; not gross exposure.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/paper.py","bounds":null},{"id":"007","group":"Portfolio","label":"Leverage","source":"src/trading_live_claude/execution/router.py","formula":"Gross exposure / NAV; needs currency-normalized positions and derivative multipliers.","unit":"x","kind":"number","support":"derived; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/router.py","bounds":null},{"id":"008","group":"Portfolio","label":"Turnover","source":"src/trading_live_claude/portfolio/pipeline.py","formula":"Sum absolute target-weight changes per rebalance; repository BookBacktest.avg_turnover is historical average, not live turnover.","unit":"x","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/portfolio/pipeline.py","bounds":null},{"id":"009","group":"Portfolio","label":"Drawdown","source":"src/trading_live_claude/brokers/paper.py","formula":"100 \u00d7 drawdown_pct in latest paper equity row. Positive loss magnitude; current drawdown, not historical maximum.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/paper.py","bounds":[0.0,100.0]},{"id":"010","group":"Portfolio","label":"Recovery","source":"src/trading_live_claude/brokers/paper.py","formula":"NAV / running peak NAV \u00d7 100; recovery level, not time-to-recovery.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/paper.py","bounds":[0.0,100.0]},{"id":"011","group":"Multi-asset","label":"Equities","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"012","group":"Multi-asset","label":"ETFs","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"013","group":"Multi-asset","label":"Bonds","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"014","group":"Multi-asset","label":"Credit","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"015","group":"Multi-asset","label":"Rates","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"016","group":"Multi-asset","label":"Energy","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"017","group":"Multi-asset","label":"Metals","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"018","group":"Multi-asset","label":"Agriculture","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"019","group":"Multi-asset","label":"Futures","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"020","group":"Multi-asset","label":"Digital","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"100 \u00d7 gross notional in selected asset bucket / total gross notional, after FX and multiplier normalization. Categories overlap: ETF/futures are wrappers; do not sum these ten tiles.","unit":"%","kind":"number","support":"derived; classified holdings required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"021","group":"Market data","label":"Quotes","source":"src/trading_live_claude/brokers/models.py","formula":"Quote.mid for selected symbol; include venue, currency and exchange timestamp.","unit":"quote currency","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/models.py","bounds":null},{"id":"022","group":"Market data","label":"Candles","source":"src/trading_live_claude/brokers/models.py","formula":"Count completed OHLCV bars in selected window.","unit":"bars","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/models.py","bounds":null},{"id":"023","group":"Market data","label":"Volume","source":"src/trading_live_claude/brokers/models.py","formula":"Quote.volume for selected venue/session; volume units are instrument-specific.","unit":"units","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/models.py","bounds":null},{"id":"024","group":"Market data","label":"Spread","source":"src/trading_live_claude/microstructure/orderbook.py","formula":"10000 \u00d7 (ask \u2212 bid) / mid, valid positive uncrossed quote required.","unit":"bps","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/microstructure/orderbook.py","bounds":null},{"id":"025","group":"Market data","label":"Depth","source":"src/trading_live_claude/microstructure/orderbook.py","formula":"Sum book size over declared number of bid/ask levels; never mix units.","unit":"units","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/microstructure/orderbook.py","bounds":null},{"id":"026","group":"Market data","label":"Imbalance","source":"src/trading_live_claude/microstructure/orderbook.py","formula":"100 \u00d7 (bid size \u2212 ask size)/(bid size + ask size) over declared depth.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/microstructure/orderbook.py","bounds":[-100.0,100.0]},{"id":"027","group":"Market data","label":"Trades","source":"src/trading_live_claude/microstructure/kraken_l2.py","formula":"Count observed tape prints over declared window; not Quote.volume.","unit":"prints","kind":"number","support":"feed aggregation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/microstructure/kraken_l2.py","bounds":null},{"id":"028","group":"Market data","label":"Volatility","source":"src/trading_live_claude/models/timeseries.py","formula":"Annualized sample return standard deviation; specify bar frequency, window and annualization.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/models/timeseries.py","bounds":null},{"id":"029","group":"Market data","label":"Freshness","source":"src/trading_live_claude/brokers/fresh.py","formula":"Now \u2212 source observation time; reject future timestamps and stale data.","unit":"s","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/fresh.py","bounds":null},{"id":"030","group":"Market data","label":"Coverage","source":"src/trading_live_claude/analysis/universe.py","formula":"100 \u00d7 valid fresh symbols / expected symbols in selected universe.","unit":"%","kind":"number","support":"derived; feed completeness required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/universe.py","bounds":[0.0,100.0]},{"id":"031","group":"Financial intelligence","label":"Macro","source":"src/trading_live_claude/intel/overlay.py","formula":"Display named macro series from IntelSnapshot.market with timestamp; no generic health percentage.","unit":"named series","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/intel/overlay.py","bounds":null},{"id":"032","group":"Financial intelligence","label":"Inflation","source":"src/trading_live_claude/intel/worldmonitor.py","formula":"Observed inflation series with geography, period and units; not inferred from headlines.","unit":"%","kind":"number","support":"additional series adapter required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/intel/worldmonitor.py","bounds":null},{"id":"033","group":"Financial intelligence","label":"Policy","source":"src/trading_live_claude/intel/worldmonitor.py","formula":"Observed policy-rate series and central bank; categorical decision shown separately.","unit":"%","kind":"number","support":"additional series adapter required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/intel/worldmonitor.py","bounds":null},{"id":"034","group":"Financial intelligence","label":"Growth","source":"src/trading_live_claude/intel/worldmonitor.py","formula":"Observed GDP/growth series with geography, period and revision date.","unit":"%","kind":"number","support":"additional series adapter required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/intel/worldmonitor.py","bounds":null},{"id":"035","group":"Financial intelligence","label":"Earnings","source":"src/trading_live_claude/data/fundamentals.py","formula":"Point-in-time earnings value; select EPS or growth explicitly.","unit":"selected metric","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/data/fundamentals.py","bounds":null},{"id":"036","group":"Financial intelligence","label":"Valuation","source":"src/trading_live_claude/signals/valuation.py","formula":"Price-to-book = price / book value per share; exclude default BVPS fallback from measured values.","unit":"x","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/signals/valuation.py","bounds":null},{"id":"037","group":"Financial intelligence","label":"Quality","source":"src/trading_live_claude/data/fundamentals.py","formula":"Selected fundamental metric, e.g. ROE; do not invent a quality composite.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/data/fundamentals.py","bounds":null},{"id":"038","group":"Financial intelligence","label":"Sentiment","source":"src/trading_live_claude/intel/overlay.py","formula":"IntelSnapshot.fear_greed, preserve null for absent source.","unit":"index","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/intel/overlay.py","bounds":[0.0,100.0]},{"id":"039","group":"Financial intelligence","label":"Events","source":"src/trading_live_claude/intel/overlay.py","formula":"IntelSnapshot.global_alert_count for the snapshot; not all historical events.","unit":"events","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/intel/overlay.py","bounds":null},{"id":"040","group":"Financial intelligence","label":"Thesis","source":"src/trading_live_claude/intel/interpret.py","formula":"Number of generated theses; text shown separately, not a confidence score.","unit":"theses","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/intel/interpret.py","bounds":null},{"id":"041","group":"Signal engines","label":"Momentum","source":"src/trading_live_claude/strategies/examples/momentum.py","formula":"Actual strategy output strength at last completed bar; retain parameter hash.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/strategies/examples/momentum.py","bounds":null},{"id":"042","group":"Signal engines","label":"Reversion","source":"src/trading_live_claude/strategies/examples/mean_reversion.py","formula":"Actual mean-reversion output or specified z-score; do not normalize arbitrarily.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/strategies/examples/mean_reversion.py","bounds":null},{"id":"043","group":"Signal engines","label":"Breakout","source":"src/trading_live_claude/strategies/examples/momentum_breakout.py","formula":"Actual breakout output on completed bar with configured lookback.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/strategies/examples/momentum_breakout.py","bounds":null},{"id":"044","group":"Signal engines","label":"EMA","source":"src/trading_live_claude/signals/indicators.py","formula":"Actual EMA at declared span; price units, not %.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/signals/indicators.py","bounds":null},{"id":"045","group":"Signal engines","label":"RSI","source":"src/trading_live_claude/signals/indicators.py","formula":"Actual RSI at declared window.","unit":"index","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/signals/indicators.py","bounds":[0.0,100.0]},{"id":"046","group":"Signal engines","label":"MACD","source":"src/trading_live_claude/signals/indicators.py","formula":"MACD minus signal line at declared periods; price units.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/signals/indicators.py","bounds":null},{"id":"047","group":"Signal engines","label":"Bollinger","source":"src/trading_live_claude/signals/indicators.py","formula":"Percent-B = (close \u2212 lower)/(upper \u2212 lower); may exceed 0\u2013100%; mark overflow.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/signals/indicators.py","bounds":null},{"id":"048","group":"Signal engines","label":"Pairs","source":"src/trading_live_claude/models/kalman.py","formula":"Pair spread z-score for explicit two-leg pair and hedge model.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/models/kalman.py","bounds":null},{"id":"049","group":"Signal engines","label":"Regime","source":"src/trading_live_claude/models/regime.py","formula":"RegimeClassifier result category; risk_scalar as separate numeric field.","unit":"native output","kind":"status","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/models/regime.py","bounds":null},{"id":"050","group":"Signal engines","label":"Conviction","source":"src/trading_live_claude/scoring/scorer.py","formula":"Actual selected scorer output + configuration; not demo conviction matrix or fixed offsets.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/scoring/scorer.py","bounds":null},{"id":"051","group":"Cross-sectional","label":"Rank","source":"src/trading_live_claude/models/cross_sectional.py","formula":"Rank actual CrossSectionalRanker prediction within an explicit universe; 1 is highest.","unit":"rank","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/models/cross_sectional.py","bounds":null},{"id":"052","group":"Cross-sectional","label":"Breadth","source":"src/trading_live_claude/models/cross_sectional.py","formula":"100 \u00d7 symbols above selected moving average / valid symbols.","unit":"%","kind":"number","support":"derived; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/models/cross_sectional.py","bounds":[0.0,100.0]},{"id":"053","group":"Cross-sectional","label":"Dispersion","source":"src/trading_live_claude/models/cross_sectional.py","formula":"Cross-sectional standard deviation of aligned returns over selected interval.","unit":"%","kind":"number","support":"derived; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/models/cross_sectional.py","bounds":null},{"id":"054","group":"Cross-sectional","label":"Factors","source":"src/trading_live_claude/models/cross_sectional.py","formula":"Selected raw ranker feature or fitted exposure with model version; not generic factor strength.","unit":"native output","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/models/cross_sectional.py","bounds":null},{"id":"055","group":"Cross-sectional","label":"Sectors","source":"src/trading_live_claude/analysis/asset_spec.py","formula":"Classified sector gross weight / total gross \u00d7 100; overlap rules documented.","unit":"%","kind":"number","support":"derived; position snapshot required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/asset_spec.py","bounds":[0.0,100.0]},{"id":"056","group":"Cross-sectional","label":"Correlation","source":"src/trading_live_claude/portfolio/allocator.py","formula":"Mean off-diagonal pairwise correlation over aligned sample; show window, N and missing policy.","unit":"correlation","kind":"number","support":"derived from allocator returns","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/portfolio/allocator.py","bounds":[-1.0,1.0]},{"id":"057","group":"Cross-sectional","label":"Clusters","source":"","formula":"Number of clusters from a declared method; no production clustering output located.","unit":"clusters","kind":"number","support":"not located","url":"","bounds":null},{"id":"058","group":"Cross-sectional","label":"Eigenmodes","source":"","formula":"Selected eigenvalue/eigenvalue sum; no production eigen-spectrum output located.","unit":"%","kind":"number","support":"not located","url":"","bounds":null},{"id":"059","group":"Cross-sectional","label":"Denoising","source":"","formula":"Explicit denoising residual or retained-rank statistic; no production implementation located.","unit":"native output","kind":"number","support":"not located","url":"","bounds":null},{"id":"060","group":"Cross-sectional","label":"Rotation","source":"src/trading_live_claude/models/cross_sectional.py","formula":"Sector rank change between two comparable snapshots.","unit":"rank change","kind":"number","support":"derived; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/models/cross_sectional.py","bounds":null},{"id":"061","group":"Risk controls","label":"Heat","source":"src/trading_live_claude/risk/heat.py","formula":"100 \u00d7 open risk dollars / equity; compare against configured heat cap, not a generic 0\u2013100 green gauge.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/risk/heat.py","bounds":[0.0,100.0]},{"id":"062","group":"Risk controls","label":"Trade risk","source":"src/trading_live_claude/risk/sizing.py","formula":"100 \u00d7 intent.risk_dollars / equity; include stop, quantity and contract multiplier.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/risk/sizing.py","bounds":null},{"id":"063","group":"Risk controls","label":"VaR","source":"src/trading_live_claude/risk/tail.py","formula":"Historical VaR = \u22125th percentile of one-period returns. Show confidence, horizon and sample size.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/risk/tail.py","bounds":null},{"id":"064","group":"Risk controls","label":"ES","source":"src/trading_live_claude/risk/tail.py","formula":"ES = negative mean returns at/below 5th percentile. Same sample/horizon as VaR.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/risk/tail.py","bounds":null},{"id":"065","group":"Risk controls","label":"Beta","source":"","formula":"Cov(portfolio returns, benchmark)/Var(benchmark); hedge beta is not portfolio beta.","unit":"x","kind":"number","support":"derived; benchmark series required","url":"","bounds":null},{"id":"066","group":"Risk controls","label":"Stress","source":"","formula":"Loss under a named scenario and current holdings; no generic stress percentage.","unit":"%","kind":"number","support":"scenario adapter required","url":"","bounds":null},{"id":"067","group":"Risk controls","label":"Liquidity","source":"src/trading_live_claude/microstructure/orderbook.py","formula":"Selected spread/depth/volume constraint; choose one metric and units.","unit":"bps","kind":"number","support":"derived; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/microstructure/orderbook.py","bounds":null},{"id":"068","group":"Risk controls","label":"Position cap","source":"src/trading_live_claude/risk/position_cap.py","formula":"Current symbol notional / permitted symbol notional \u00d7 100; distinguish reject versus resize.","unit":"%","kind":"number","support":"derived from configured limit","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/risk/position_cap.py","bounds":null},{"id":"069","group":"Risk controls","label":"Daily budget","source":"src/trading_live_claude/execution/daily_budget.py","formula":"Used daily trade count / configured count cap \u00d7 100; notional budget is separate.","unit":"%","kind":"number","support":"derived from configured limit","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/daily_budget.py","bounds":null},{"id":"070","group":"Risk controls","label":"Kill-switch","source":"src/trading_live_claude/risk/kill_switch.py","formula":"KillSwitch.state().halted; red HALTED, otherwise READY only if source is reachable.","unit":"","kind":"status","support":"source state","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/risk/kill_switch.py","bounds":null},{"id":"071","group":"Research","label":"Backtest","source":"src/trading_live_claude/backtest/metrics.py","formula":"Completed backtest trade count; identify symbol, strategy, window and config.","unit":"trades","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/backtest/metrics.py","bounds":null},{"id":"072","group":"Research","label":"Sharpe","source":"src/trading_live_claude/backtest/metrics.py","formula":"sqrt(bars/year) \u00d7 mean return / population std; repository assumes zero risk-free rate.","unit":"ratio","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/backtest/metrics.py","bounds":null},{"id":"073","group":"Research","label":"Sortino","source":"src/trading_live_claude/backtest/metrics.py","formula":"Repository uses std of negative returns, not lower partial moment over all observations; label convention.","unit":"ratio","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/backtest/metrics.py","bounds":null},{"id":"074","group":"Research","label":"Calmar","source":"src/trading_live_claude/backtest/metrics.py","formula":"CAGR / absolute maximum drawdown; undefined at zero drawdown.","unit":"ratio","kind":"number","support":"derived; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/backtest/metrics.py","bounds":null},{"id":"075","group":"Research","label":"Win rate","source":"src/trading_live_claude/backtest/metrics.py","formula":"100 \u00d7 profitable closed trades / all closed trades; no trades is undefined.","unit":"%","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/backtest/metrics.py","bounds":[0.0,100.0]},{"id":"076","group":"Research","label":"Payoff","source":"src/trading_live_claude/backtest/metrics.py","formula":"Mean positive P&L / abs(mean negative P&L); undefined without wins and losses.","unit":"ratio","kind":"number","support":"derived; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/backtest/metrics.py","bounds":null},{"id":"077","group":"Research","label":"Costs","source":"src/trading_live_claude/backtest/costs.py","formula":"Observed commissions + identified execution costs; model cost drag remains a backtest estimate.","unit":"account currency","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/backtest/costs.py","bounds":null},{"id":"078","group":"Research","label":"Slippage","source":"src/trading_live_claude/brokers/paper.py","formula":"Direction-adjusted (fill \u2212 arrival/reference price) / reference \u00d7 10000. Positive is adverse.","unit":"bps","kind":"number","support":"derived from paper fills","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/brokers/paper.py","bounds":null},{"id":"079","group":"Research","label":"Walk-forward","source":"src/trading_live_claude/analysis/universe.py","formula":"Walk-forward out-of-sample objective score; objective-specific, never a probability.","unit":"score","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/universe.py","bounds":null},{"id":"080","group":"Research","label":"Stability","source":"src/trading_live_claude/analysis/universe.py","formula":"WFE = OOS score / in-sample score; undefined/unstable near zero denominator.","unit":"ratio","kind":"number","support":"source calculation","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/analysis/universe.py","bounds":null},{"id":"081","group":"Execution","label":"Intent","source":"src/trading_live_claude/execution/approval.py","formula":"Count unique published intents within scope; distinguish unresolved from resolved.","unit":"count","kind":"number","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"082","group":"Execution","label":"Sizing","source":"src/trading_live_claude/execution/router.py","formula":"Actual post-gate resized quantity with instrument units.","unit":"native output","kind":"number","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/router.py","bounds":null},{"id":"083","group":"Execution","label":"Risk gate","source":"src/trading_live_claude/execution/router.py","formula":"GateDecision accepted flag plus all rejection reasons.","unit":"native output","kind":"status","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/router.py","bounds":null},{"id":"084","group":"Execution","label":"Review","source":"src/trading_live_claude/execution/approval.py","formula":"Count unresolved, unexpired prompts; not a percentage.","unit":"count","kind":"number","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"085","group":"Execution","label":"Accept","source":"src/trading_live_claude/execution/approval.py","formula":"ACCEPT count among retained or scoped decisions; display scope.","unit":"count","kind":"number","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"086","group":"Execution","label":"Decline","source":"src/trading_live_claude/execution/approval.py","formula":"DECLINE count among retained or scoped decisions.","unit":"count","kind":"number","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"087","group":"Execution","label":"Routing","source":"src/trading_live_claude/execution/router.py","formula":"Selected broker routing destination; categorical, never a percentage.","unit":"native output","kind":"status","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/router.py","bounds":null},{"id":"088","group":"Execution","label":"Fill","source":"src/trading_live_claude/execution/router.py","formula":"Count actual execution fills from paper_fills.jsonl; Router fills.jsonl can mean submission acknowledgment.","unit":"count","kind":"number","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/router.py","bounds":null},{"id":"089","group":"Execution","label":"Reject","source":"src/trading_live_claude/execution/router.py","formula":"Count risk-gate rejects only; exclude broker errors and card decline/expiry.","unit":"count","kind":"number","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/router.py","bounds":null},{"id":"090","group":"Execution","label":"Journal","source":"src/trading_live_claude/execution/router.py","formula":"Timestamp of last valid event in selected journal; not a health guarantee.","unit":"native output","kind":"status","support":"source state; scope required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/router.py","bounds":null},{"id":"091","group":"Signing + audit","label":"Card ID","source":"src/trading_live_claude/execution/approval.py","formula":"Registered card identity; redact in public exports.","unit":"","kind":"status","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"092","group":"Signing + audit","label":"Public key","source":"src/trading_live_claude/execution/approval.py","formula":"Registered public-key fingerprint; never show private key.","unit":"","kind":"status","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"093","group":"Signing + audit","label":"Signature","source":"src/trading_live_claude/execution/approval.py","formula":"Last verification result and timestamp; exact order signature does not currently bind ACCEPT/DECLINE.","unit":"","kind":"status","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"094","group":"Signing + audit","label":"Account","source":"src/trading_live_claude/execution/approval.py","formula":"Bound account alias; redact sensitive identifiers.","unit":"","kind":"status","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"095","group":"Signing + audit","label":"Broker","source":"src/trading_live_claude/execution/approval.py","formula":"Bound broker name in canonical bytes.","unit":"","kind":"status","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"096","group":"Signing + audit","label":"Nonce","source":"src/trading_live_claude/execution/approval.py","formula":"Nonce presence/uniqueness status; never score entropy from appearance.","unit":"","kind":"status","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"097","group":"Signing + audit","label":"Intent ID","source":"src/trading_live_claude/execution/approval.py","formula":"Unique intent identity and consumption state.","unit":"","kind":"status","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"098","group":"Signing + audit","label":"TTL","source":"src/trading_live_claude/execution/approval.py","formula":"max(0, expires_at \u2212 now) seconds for selected intent.","unit":"s","kind":"number","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":[0.0,90.0]},{"id":"099","group":"Signing + audit","label":"Replay check","source":"src/trading_live_claude/execution/approval.py","formula":"Observed replay refusal state; not a timeless security score.","unit":"","kind":"status","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"100","group":"Signing + audit","label":"Passbook","source":"src/trading_live_claude/execution/approval.py","formula":"Count retained passbook records; storage capacity and retention must be separate.","unit":"count","kind":"number","support":"source state; integration required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"101","group":"Device + host","label":"CPU","source":"","formula":"Measured device CPU busy percentage over declared sampling interval.","unit":"%","kind":"number","support":"device collector absent","url":"","bounds":[0.0,100.0]},{"id":"102","group":"Device + host","label":"Memory","source":"","formula":"Used / total device RAM \u00d7 100.","unit":"%","kind":"number","support":"device collector absent","url":"","bounds":[0.0,100.0]},{"id":"103","group":"Device + host","label":"Storage","source":"","formula":"Used / total selected filesystem bytes \u00d7 100.","unit":"%","kind":"number","support":"device collector absent","url":"","bounds":[0.0,100.0]},{"id":"104","group":"Device + host","label":"Thermals","source":"","formula":"Actual named device temperature sensor.","unit":"\u00b0C","kind":"number","support":"device collector absent","url":"","bounds":null},{"id":"105","group":"Device + host","label":"Power","source":"","formula":"Actual power sensor reading, not CPU TDP.","unit":"W","kind":"number","support":"device collector absent","url":"","bounds":null},{"id":"106","group":"Device + host","label":"Wi-Fi","source":"","formula":"Wi-Fi RSSI from physical device interface.","unit":"dBm","kind":"number","support":"device collector absent","url":"","bounds":null},{"id":"107","group":"Device + host","label":"Latency","source":"","formula":"Measured API round-trip median over declared sample window.","unit":"ms","kind":"number","support":"device collector absent","url":"","bounds":null},{"id":"108","group":"Device + host","label":"Display","source":"","formula":"Display connected/error status from local driver.","unit":"","kind":"status","support":"device collector absent","url":"","bounds":null},{"id":"109","group":"Device + host","label":"Controls","source":"","formula":"Input self-test/event freshness for physical controls.","unit":"","kind":"status","support":"device collector absent","url":"","bounds":null},{"id":"110","group":"Device + host","label":"Uptime","source":"","formula":"Device monotonic uptime, not scraper/server uptime.","unit":"s","kind":"number","support":"device collector absent","url":"","bounds":null},{"id":"111","group":"Operations","label":"API health","source":"src/trading_live_claude/execution/approval_asgi.py","formula":"Health endpoint reachability, status and observation time.","unit":"","kind":"status","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval_asgi.py","bounds":null},{"id":"112","group":"Operations","label":"Queue","source":"src/trading_live_claude/execution/approval.py","formula":"Count pending unexpired approval prompts.","unit":"count","kind":"number","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval.py","bounds":null},{"id":"113","group":"Operations","label":"Database","source":"src/trading_live_claude/execution/approval_asgi.py","formula":"Database integrity check result with timestamp, not file existence.","unit":"","kind":"status","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval_asgi.py","bounds":null},{"id":"114","group":"Operations","label":"Backup","source":"src/trading_live_claude/execution/approval_asgi.py","formula":"Age and success of last verified restore test; existence is not recoverability.","unit":"","kind":"status","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval_asgi.py","bounds":null},{"id":"115","group":"Operations","label":"Alerts","source":"src/trading_live_claude/monitor/alerter.py","formula":"Count emitted alerts over declared window and delivery result.","unit":"count","kind":"number","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/monitor/alerter.py","bounds":null},{"id":"116","group":"Operations","label":"Logs","source":"src/trading_live_claude/execution/approval_asgi.py","formula":"Malformed/failed journal events in declared window.","unit":"count","kind":"number","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval_asgi.py","bounds":null},{"id":"117","group":"Operations","label":"Config","source":"src/trading_live_claude/config/settings.py","formula":"Active configuration fingerprint compared with research configuration.","unit":"","kind":"status","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/config/settings.py","bounds":null},{"id":"118","group":"Operations","label":"Pairing","source":"src/trading_live_claude/execution/approval_asgi.py","formula":"Registered/revoked pairing state for selected card.","unit":"","kind":"status","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval_asgi.py","bounds":null},{"id":"119","group":"Operations","label":"Updates","source":"src/trading_live_claude/execution/approval_asgi.py","formula":"Installed version versus explicitly approved release.","unit":"","kind":"status","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/src/trading_live_claude/execution/approval_asgi.py","bounds":null},{"id":"120","group":"Operations","label":"Deployment","source":"deploy/README.md","formula":"Actual host/service state with source observation time.","unit":"","kind":"status","support":"instrumentation required","url":"https://github.com/akshan-bansal/FRM-Claude/blob/92cab0da2bf5938cefdbb8e925dbe7e8119a04b5/deploy/README.md","bounds":null}],"meter_snapshots":{"historical":{"label":"HISTORICAL \u00b7 EQB.TO calibration row","notice":"HISTORICAL RESEARCH \u00b7 EQB.TO \u00b7 bollinger \u00b7 n_std=1.5 \u00b7 window=20 \u00b7 equity \u00b7 9 folds. Six values read from the first data row of reports/calibration_sweep.csv \u2014 the first row, not a selected winner, and not current trading results. The report carries no observation timestamp, so these readings are dated only by the file.","readings":{"004":{"value":1.3980771726043704,"unit":"%","as_of":null,"status":"HISTORICAL","source":"reports/calibration_sweep.csv: first data row / oos_return","scope":"EQB.TO \u00b7 bollinger \u00b7 n_std=1.5 \u00b7 window=20 \u00b7 equity \u00b7 9 folds","reason":"Committed report; the source carries no observation timestamp. Historical out-of-sample research, not current portfolio state.","kind":"number"},"009":{"value":5.483730626513439,"unit":"%","as_of":null,"status":"HISTORICAL","source":"reports/calibration_sweep.csv: first data row / oos_maxdd","scope":"EQB.TO \u00b7 bollinger \u00b7 n_std=1.5 \u00b7 window=20 \u00b7 equity \u00b7 9 folds","reason":"Committed report; the source carries no observation timestamp. Historical out-of-sample research, not current portfolio state.","kind":"number"},"071":{"value":11.0,"unit":"trades","as_of":null,"status":"HISTORICAL","source":"reports/calibration_sweep.csv: first data row / oos_trades","scope":"EQB.TO \u00b7 bollinger \u00b7 n_std=1.5 \u00b7 window=20 \u00b7 equity \u00b7 9 folds","reason":"Committed report; the source carries no observation timestamp. Historical out-of-sample research, not current portfolio state.","kind":"number"},"075":{"value":63.63636363636363,"unit":"%","as_of":null,"status":"HISTORICAL","source":"reports/calibration_sweep.csv: first data row / oos_win_rate","scope":"EQB.TO \u00b7 bollinger \u00b7 n_std=1.5 \u00b7 window=20 \u00b7 equity \u00b7 9 folds","reason":"Committed report; the source carries no observation timestamp. Historical out-of-sample research, not current portfolio state.","kind":"number"},"079":{"value":17.574421779127658,"unit":"score","as_of":null,"status":"HISTORICAL","source":"reports/calibration_sweep.csv: first data row / oos_score","scope":"EQB.TO \u00b7 bollinger \u00b7 n_std=1.5 \u00b7 window=20 \u00b7 equity \u00b7 9 folds","reason":"Committed report; the source carries no observation timestamp. Historical out-of-sample research, not current portfolio state.","kind":"number"},"080":{"value":6.405819946517656,"unit":"ratio","as_of":null,"status":"HISTORICAL","source":"reports/calibration_sweep.csv: first data row / wfe","scope":"EQB.TO \u00b7 bollinger \u00b7 n_std=1.5 \u00b7 window=20 \u00b7 equity \u00b7 9 folds","reason":"Committed report; the source carries no observation timestamp. Historical out-of-sample research, not current portfolio state.","kind":"number"}}}},"meters_pin":{"sha":"92cab0d","date":"2026-09-17","branch":"feat/multi-scoring-attention-map"}};
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d = 2) => Number(n).toLocaleString("en-CA", { minimumFractionDigits: d, maximumFractionDigits: d });
+const pct = (n, d = 3) => (n * 100).toFixed(d) + "%";
+const esc = (x) => String(x ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/* Unfit data never reaches this page: the builder filters it out and reports what it dropped in
+   DATA.scope, so nothing here needs a caution chip. The panel's job is to state the scope. */
+const m = DATA.curve_metrics, T = DATA.trades;
+
+/* ---------------- tooltip ---------------- */
+let tip;
+function showTip(text, x, y) {
+  tip = tip || Object.assign(document.body.appendChild(document.createElement("div")), { className: "tip" });
+  tip.textContent = text;
+  tip.style.left = Math.min(x + 12, innerWidth - 200) + "px";
+  tip.style.top = Math.max(8, y - 46) + "px";
+  tip.hidden = false;
+}
+const hideTip = () => { if (tip) tip.hidden = true; };
+document.addEventListener("pointerover", (e) => {
+  const t = e.target.closest("[data-tip]");
+  if (t) showTip(t.dataset.tip, e.clientX, e.clientY);
+});
+document.addEventListener("pointerout", (e) => { if (e.target.closest("[data-tip]")) hideTip(); });
+
+/* ---------------- KPI strip ---------------- */
+$("kpis").innerHTML = [
+  { l: "SORTINO / MAXDD", v: fmt(m.sod, 1), sub: "primary objective", lead: true, sign: m.sod },
+  { l: "SORTINO", v: fmt(m.sortino, 2), sub: "365d, downside only", sign: m.sortino },
+  { l: "SHARPE", v: fmt(m.sharpe, 2), sub: "reference only", ref: true },
+  { l: "MAX DRAWDOWN", v: pct(m.maxdd, 3), sub: "kill-switch at 3.0%" },
+  { l: "PROFIT FACTOR", v: fmt(T.profit_factor, 2), sub: `${T.n} closed trades`, sign: T.profit_factor - 1 },
+  { l: "FILLS JOURNALLED", v: String(DATA.fill_count), sub: `${DATA.session_count} sessions` },
+].map((k) => `<div class="kpi${k.lead ? " lead" : ""}${k.ref ? " ref" : ""}"><div class="l">${k.l}</div>
+    <div class="v ${k.sign === undefined ? "" : k.sign >= 0 ? "pos" : "neg"}">${k.v}</div>
+    <div class="sub">${k.sub}</div></div>`).join("");
+$("prov").textContent = `paper_equity.csv · paper_fills.jsonl · orders.jsonl · rejected.jsonl — ${DATA.fill_count} fills, ${DATA.session_count} sessions`;
+
+/* ---------------- scope: what these figures cover, and what was excluded ---------------- */
+(function scope() {
+  const sc = DATA.scope;
+  $("scope-n").textContent = `${sc.sessions_used} of ${sc.sessions_seen} sessions`;
+  $("scope").innerHTML = `<div class="wrap"><table>
+    <thead><tr><th>COVERED</th><th class="num">SESSIONS</th><th>EXCLUDED, AND WHY</th><th class="num">N</th></tr></thead>
+    <tbody>
+      <tr><td>closed flat, ${sc.sessions_used} ranked</td><td class="num">${sc.sessions_used}</td>
+        <td>${sc.excluded[0] ? sc.excluded[0][0] : "—"}</td>
+        <td class="num">${sc.excluded[0] ? sc.excluded[0][1] : 0}</td></tr>
+      ${sc.excluded.slice(1).map((e) => `<tr><td></td><td class="num"></td><td>${e[0]}</td>
+        <td class="num">${e[1]}</td></tr>`).join("")}
+    </tbody></table></div>
+    <p class="note">${sc.rule}</p>
+    <p class="note">${DATA.trades.scope}. Realised P&L is computed from closed sales, partial-sell
+      aware; an open position contributes nothing to any figure here.</p>`;
+})();
+
+/* ---------------- equity + drawdown ---------------- */
+(function curve() {
+  const pts = DATA.curve.points, W = 640, H = 138, DH = 46, L = 50, R = 12, Tp = 8, B = 14;
+  const eq = pts.map((p) => p[1]), dd = pts.map((p) => p[2] || 0);
+  const lo = Math.min(...eq), hi = Math.max(...eq), pad = (hi - lo) * 0.12 || 1;
+  const x = (i) => L + (i / (pts.length - 1)) * (W - L - R);
+  const y = (v) => Tp + (1 - (v - (lo - pad)) / ((hi + pad) - (lo - pad))) * (H - Tp - B);
+  const ddMax = Math.max(0.0005, ...dd), dy = (v) => H + 14 + (v / ddMax) * (DH - 12);
+  const ticks = [lo - pad, (lo + hi) / 2, hi + pad];
+  $("curve-sid").textContent = DATA.curve.sid;
+  $("curve-span").textContent = `${pts.length} marks · ${m.start.replace("T", " ")}`;
+  $("curve-note").textContent = `Equity ${fmt(m.eq0)} → ${fmt(m.eq1)} (${pct(m.ret, 3)}). Drawdown from the running peak — the series the kill-switch reads.`;
+  $("curve").innerHTML = `<svg viewBox="0 0 ${W} ${H + DH + 18}" role="img" aria-label="Equity above drawdown">
+    ${ticks.map((t) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}"/>
+      <text class="tick" x="${L - 5}" y="${(y(t) + 3).toFixed(1)}" text-anchor="end">${fmt(t, 0)}</text>`).join("")}
+    <path d="${eq.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("")}"
+          fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="${x(eq.length - 1)}" cy="${y(eq.at(-1))}" r="3.5" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+    <text class="dlabel" x="${W - R}" y="${(y(eq.at(-1)) - 7).toFixed(1)}" text-anchor="end">${fmt(eq.at(-1), 0)}</text>
+    <path d="M${x(0)},${dy(0)}${dd.map((v, i) => `L${x(i).toFixed(1)},${dy(v).toFixed(1)}`).join("")}L${x(dd.length - 1)},${dy(0)}Z"
+          fill="var(--s2)" fill-opacity="0.32" stroke="var(--s2)" stroke-width="1.4"/>
+    <text class="tick" x="${L - 5}" y="${(dy(ddMax) + 3).toFixed(1)}" text-anchor="end">${pct(ddMax, 2)}</text>
+    <text class="tick" x="${L}" y="${H + DH + 16}">${pts[0][0]}</text>
+    <text class="tick" x="${W - R}" y="${H + DH + 16}" text-anchor="end">${pts.at(-1)[0]}</text>
+    <line id="cross" class="grid" y1="${Tp}" y2="${H + DH + 2}" x1="-9" x2="-9" stroke="var(--accent)"/>
+    <rect id="hit" x="${L}" y="${Tp}" width="${W - L - R}" height="${H + DH - Tp}" fill="transparent"/></svg>`;
+  const svg = $("curve").firstElementChild, cross = svg.querySelector("#cross");
+  svg.querySelector("#hit").addEventListener("pointermove", (e) => {
+    const box = svg.getBoundingClientRect();
+    const i = Math.max(0, Math.min(pts.length - 1, Math.round(((e.clientX - box.left) / box.width * W - L) / (W - L - R) * (pts.length - 1))));
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i));
+    showTip(`${pts[i][0]}   equity ${fmt(pts[i][1])}   dd ${pct(pts[i][2] || 0, 3)}`, e.clientX, e.clientY);
+  });
+  svg.querySelector("#hit").addEventListener("pointerleave", () => {
+    hideTip(); cross.setAttribute("x1", -9); cross.setAttribute("x2", -9);
+  });
+  $("curve-tbl").innerHTML = `<table><thead><tr><th>TIME</th><th class="num">EQUITY</th><th class="num">DD</th></tr></thead><tbody>${
+    pts.map((p) => `<tr><td>${p[0]}</td><td class="num">${fmt(p[1])}</td><td class="num">${pct(p[2] || 0, 3)}</td></tr>`).join("")}</tbody></table>`;
+})();
+
+/* ---------------- P&L attribution ---------------- */
+(function attr() {
+  const rows = DATA.symbols, W = 640, rowH = 19, L = 74, R = 60, H = rows.length * rowH + 10;
+  const max = Math.max(...rows.map((r) => Math.abs(r.pnl))) || 1;
+  const mid = L + (W - L - R) / 2, half = (W - L - R) / 2;
+  $("attr-n").textContent = `${rows.length} symbols`;
+  $("attr").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Realised P and L by symbol">
+    <line class="grid" x1="${mid}" x2="${mid}" y1="2" y2="${H - 6}"/>${rows.map((r, i) => {
+      const w = (Math.abs(r.pnl) / max) * half, y = 3 + i * rowH;
+      return `<rect x="${(r.pnl >= 0 ? mid : mid - w).toFixed(1)}" y="${y}" width="${Math.max(1.5, w).toFixed(1)}"
+        height="11" rx="3" fill="${r.pnl >= 0 ? "var(--s3)" : "var(--s8)"}"
+        data-tip="${r.sym}  realised ${fmt(r.pnl)}  ${r.fills} fills"/>
+        <text class="tick" x="0" y="${y + 9}">${r.sym}</text>
+        <text class="dlabel" x="${W - 2}" y="${y + 9}" text-anchor="end">${fmt(r.pnl, 0)}</text>`;
+    }).join("")}</svg>`;
+  $("attr-tbl").innerHTML = `<table><thead><tr><th>SYMBOL</th><th class="num">REALISED</th><th class="num">FILLS</th></tr></thead><tbody>${
+    rows.map((r) => `<tr><td>${r.sym}</td><td class="num">${fmt(r.pnl)}</td><td class="num">${r.fills}</td></tr>`).join("")}</tbody></table>`;
+})();
+
+/* ---------------- gate denials ---------------- */
+(function rej() {
+  const rows = DATA.rejections, W = 400, rowH = 20, H = rows.length * rowH + 6;
+  const max = Math.max(...rows.map((r) => r[1])) || 1;
+  $("rej-n").textContent = `${DATA.rejection_total} refusals`;
+  $("rej").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Gate denials by reason">${rows.map((r, i) => {
+    const w = (r[1] / max) * (W - 40), y = 2 + i * rowH;
+    return `<rect x="0" y="${y}" width="${Math.max(2, w).toFixed(1)}" height="8" rx="3" fill="var(--s4)"
+      data-tip="${r[0]}  ${r[1]} refusals"/>
+      <text class="dlabel" x="${(w + 4).toFixed(1)}" y="${y + 7}">${r[1]}</text>
+      <text class="tick" x="0" y="${y + 18}">${r[0].slice(0, 50)}</text>`;
+  }).join("")}</svg>`;
+})();
+
+/* ---------------- risk/return plane ---------------- */
+(function plane() {
+  const rows = DATA.plane;          // the builder has already dropped anything unfit to plot
+  const W = 440, H = 230, L = 42, R = 14, Tp = 12, B = 30;
+  const ddMax = Math.max(...rows.map((r) => r.dd)) * 1.15 || 0.01;
+  const sAbs = Math.max(...rows.map((r) => Math.abs(r.sortino))) * 1.15 || 1;
+  const x = (v) => L + (v / ddMax) * (W - L - R);
+  const y = (v) => Tp + (1 - (v + sAbs) / (2 * sAbs)) * (H - Tp - B);
+  $("plane-n").textContent = `${rows.length} sessions`;
+  $("plane").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Max drawdown against Sortino by session">
+    <line class="grid" x1="${L}" x2="${W - R}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>
+    <line class="grid" x1="${L}" x2="${L}" y1="${Tp}" y2="${H - B}"/>
+    ${[0.25, 0.5, 0.75, 1].map((f) => `<text class="tick" x="${x(ddMax * f).toFixed(1)}" y="${H - B + 12}" text-anchor="middle">${pct(ddMax * f, 2)}</text>`).join("")}
+    ${[-sAbs / 2, 0, sAbs / 2].map((v) => `<text class="tick" x="${L - 5}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${fmt(v, 1)}</text>`).join("")}
+    <text class="axis" x="${(L + (W - R)) / 2}" y="${H - 4}" text-anchor="middle">MAX DRAWDOWN →</text>
+    <text class="axis" x="${L - 34}" y="${Tp + 4}" >SORTINO ↑</text>
+    ${rows.map((r) => {
+      const rad = 3 + Math.sqrt(r.rows) * 0.5;
+      const fill = r.sortino >= 0 ? "var(--s3)" : "var(--s8)";
+      return `<circle cx="${x(r.dd).toFixed(1)}" cy="${y(r.sortino).toFixed(1)}" r="${rad.toFixed(1)}"
+        fill="${fill}" fill-opacity="0.85" stroke="var(--surface)" stroke-width="2"
+        data-tip="${r.sid}  sortino ${fmt(r.sortino, 2)}  dd ${pct(r.dd, 3)}  sod ${fmt(r.sod, 0)}  ret ${pct(r.ret, 3)}  ${r.rows} marks"/>`;
+    }).join("")}</svg>`;
+})();
+
+/* ---------------- return distribution ---------------- */
+(function rethist() {
+  const h = DATA.ret_hist, W = 440, H = 150, L = 34, R = 10, Tp = 10, B = 26;
+  const max = Math.max(...h.bins) || 1, bw = (W - L - R) / h.bins.length;
+  $("rh-sid").textContent = DATA.curve.sid;
+  $("rh-n").textContent = `${h.n} marks`;
+  $("rh-note").textContent = `Mean ${fmt(h.mean, 2)}bp per mark, 5th percentile ${fmt(h.p05, 2)}bp, `
+    + `${h.downside} of ${h.n} marks negative (${pct(h.downside / h.n, 1)}). Sortino penalises only this left tail.`;
+  $("rethist").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Distribution of per-mark returns in basis points">
+    <line class="grid" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>
+    ${h.bins.map((n, i) => {
+      const lo = h.lo + i * h.w, hiEdge = lo + h.w;
+      const bh = (n / max) * (H - Tp - B), x0 = L + i * bw;
+      const fill = hiEdge <= 0 ? "var(--s8)" : lo >= 0 ? "var(--s3)" : "var(--s4)";
+      return `<rect x="${(x0 + 1).toFixed(1)}" y="${(H - B - bh).toFixed(1)}" width="${(bw - 2).toFixed(1)}"
+        height="${Math.max(0, bh).toFixed(1)}" rx="3" fill="${fill}"
+        data-tip="${fmt(lo, 1)} to ${fmt(hiEdge, 1)} bp   ${n} marks"/>`;
+    }).join("")}
+    <text class="tick" x="${L}" y="${H - B + 13}">${fmt(h.lo, 0)}bp</text>
+    <text class="tick" x="${(W - R).toFixed(1)}" y="${H - B + 13}" text-anchor="end">${fmt(h.hi, 0)}bp</text>
+    <text class="tick" x="${(L + (W - L - R) * (0 - h.lo) / (h.hi - h.lo)).toFixed(1)}" y="${Tp + 2}" text-anchor="middle">0</text>
+    <line class="grid" x1="${(L + (W - L - R) * (0 - h.lo) / (h.hi - h.lo)).toFixed(1)}" x2="${(L + (W - L - R) * (0 - h.lo) / (h.hi - h.lo)).toFixed(1)}"
+          y1="${Tp + 4}" y2="${H - B}" stroke="var(--ink-2)"/></svg>`;
+})();
+
+/* ---------------- trade stats ---------------- */
+(function trades() {
+  $("tr-n").textContent = `${T.n} closed · ${T.open_now} excluded`;
+  $("trade-kpis").innerHTML = [
+    { l: "WIN RATE", v: pct(T.win_rate, 0), sub: `${T.wins}W / ${T.losses}L` },
+    { l: "EXPECTANCY", v: fmt(T.expectancy, 2), sub: "per closed trade", sign: T.expectancy },
+    { l: "MEDIAN HOLD", v: `${fmt(T.median_mins, 0)}m`, sub: "open to flat" },
+  ].map((k) => `<div class="kpi"><div class="l">${k.l}</div>
+      <div class="v ${k.sign === undefined ? "" : k.sign >= 0 ? "pos" : "neg"}">${k.v}</div>
+      <div class="sub">${k.sub}</div></div>`).join("");
+  const h = DATA.trade_hist, W = 440, H = 96, L = 30, R = 10, Tp = 8, B = 20;
+  const max = Math.max(...h.bins) || 1, bw = (W - L - R) / h.bins.length;
+  $("tradehist").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Distribution of closed-trade P and L">
+    <line class="grid" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>
+    ${h.bins.map((n, i) => {
+      const lo = h.lo + i * h.w, bh = (n / max) * (H - Tp - B);
+      return `<rect x="${(L + i * bw + 1).toFixed(1)}" y="${(H - B - bh).toFixed(1)}" width="${(bw - 2).toFixed(1)}"
+        height="${Math.max(0, bh).toFixed(1)}" rx="2" fill="${lo + h.w <= 0 ? "var(--s8)" : "var(--s3)"}"
+        data-tip="${fmt(lo, 0)} to ${fmt(lo + h.w, 0)}   ${n} trades"/>`;
+    }).join("")}
+    <text class="tick" x="${L}" y="${H - B + 13}">${fmt(h.lo, 0)}</text>
+    <text class="tick" x="${W - R}" y="${H - B + 13}" text-anchor="end">${fmt(h.hi, 0)}</text></svg>`;
+  $("tr-note").innerHTML = `Avg win ${fmt(T.avg_win)} against avg loss ${fmt(T.avg_loss)}; `
+    + `profit factor ${fmt(T.profit_factor, 2)}. Scope: ${T.scope}.`;
+})();
+
+/* ---------------- activity heatmap ---------------- */
+(function heat() {
+  const days = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+  const W = 440, cell = 15, L = 34, Tp = 14, H = Tp + 7 * cell + 16;
+  const grid = new Map(DATA.heat.cells.map(([d, h, n]) => [`${d}-${h}`, n]));
+  const steps = ["var(--q1)", "var(--q2)", "var(--q3)", "var(--q4)", "var(--q5)", "var(--q6)"];
+  const cw = (W - L - 8) / 24;
+  $("heat-n").textContent = `${DATA.heat.cells.length} active cells · peak ${DATA.heat.max}`;
+  $("heat").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Fills by weekday and hour">
+    ${[0, 6, 12, 18, 23].map((hh) => `<text class="tick" x="${(L + hh * cw + cw / 2).toFixed(1)}" y="${Tp - 4}" text-anchor="middle">${hh}</text>`).join("")}
+    ${days.map((d, di) => `<text class="tick" x="0" y="${(Tp + di * cell + 11).toFixed(1)}">${d}</text>
+      ${Array.from({ length: 24 }, (_, hh) => {
+        const n = grid.get(`${di}-${hh}`) || 0;
+        const step = n === 0 ? "transparent" : steps[Math.min(steps.length - 1, Math.floor((n / DATA.heat.max) * steps.length))];
+        return `<rect x="${(L + hh * cw).toFixed(1)}" y="${(Tp + di * cell).toFixed(1)}" width="${(cw - 1.5).toFixed(1)}"
+          height="${cell - 1.5}" rx="2" fill="${step}" stroke="var(--line)" stroke-width="${n ? 0 : 0.5}"
+          data-tip="${d} ${String(hh).padStart(2, "0")}:00   ${n} fills"/>`;
+      }).join("")}`).join("")}
+    <text class="axis" x="${L}" y="${H - 2}">HOUR, LOCAL →</text></svg>`;
+})();
+
+/* ---------------- strategy table ---------------- */
+(function strat() {
+  $("strat-n").textContent = `${DATA.strategies.length} strategies`;
+  $("strat").innerHTML = `<table><thead><tr><th>STRATEGY</th><th class="num">INTENTS</th>
+    <th class="num">ACCEPTED</th><th class="num">RATE</th><th>TOP REFUSAL</th></tr></thead><tbody>${
+    DATA.strategies.map((s) => `<tr><td>${s.name}</td><td class="num">${s.n}</td><td class="num">${s.acc}</td>
+      <td class="num">${pct(s.rate, 0)}</td><td>${s.top || "—"}</td></tr>`).join("")}</tbody></table>`;
+})();
+
+/* ---------------- venue mix ---------------- */
+(function ven() {
+  const rows = DATA.venues, W = 400, rowH = 22, H = rows.length * rowH + 6;
+  const max = Math.max(...rows.map((r) => r.notional)) || 1;
+  $("ven-n").textContent = `${rows.reduce((a, r) => a + r.fills, 0)} fills`;
+  $("ven").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Notional traded by venue">${rows.map((r, i) => {
+    const w = (r.notional / max) * (W - 150), y = 3 + i * rowH;
+    return `<text class="tick" x="0" y="${y + 9}">${r.v}</text>
+      <rect x="62" y="${y}" width="${Math.max(2, w).toFixed(1)}" height="10" rx="3" fill="var(--s1)"
+        data-tip="${r.v}  ${r.fills} fills  notional ${fmt(r.notional, 0)}"/>
+      <text class="dlabel" x="${(66 + w).toFixed(1)}" y="${y + 9}">${(r.notional / 1e6).toFixed(2)}M · ${r.fills}f</text>`;
+  }).join("")}</svg>`;
+})();
+
+/* ---------------- session ranking ---------------- */
+(function rank() {
+  const rows = DATA.sessions;       // fit sessions only; the rest never entered the data
+  const W = 440, rowH = 21, L = 62, R = 50, H = rows.length * rowH + 10;
+  const max = Math.max(...rows.map((r) => Math.abs(r.sod))) || 1;
+  const mid = L + (W - L - R) / 2, half = (W - L - R) / 2;
+  $("rank-n").textContent = `${rows.length} of ${DATA.ranked_count} with ≥25 marks`;
+  $("rank").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sessions ranked by Sortino over max drawdown">
+    <line class="grid" x1="${mid}" x2="${mid}" y1="3" y2="${H - 7}"/>${rows.map((r, i) => {
+      const w = (Math.abs(r.sod) / max) * half, y = 5 + i * rowH;
+      return `<rect x="${(r.sod >= 0 ? mid : mid - w).toFixed(1)}" y="${y}" width="${Math.max(1.5, w).toFixed(1)}"
+        height="12" rx="3" fill="${r.sod >= 0 ? "var(--s3)" : "var(--s8)"}" fill-opacity="1"
+        data-tip="${r.sid}  sod ${fmt(r.sod, 1)}  sortino ${fmt(r.sortino, 2)}  dd ${pct(r.maxdd, 3)}  ret ${pct(r.ret, 3)}"/>
+        <text class="tick" x="0" y="${y + 10}">${r.sid}</text>
+        <text class="dlabel" x="${W - 2}" y="${y + 10}" text-anchor="end">${fmt(r.sod, 0)}</text>`;
+    }).join("")}</svg>`;
+  $("rank-tbl").innerHTML = `<table><thead><tr><th>SESSION</th><th class="num">SOD</th><th class="num">SORTINO</th>
+    <th class="num">SHARPE</th><th class="num">MAXDD</th><th class="num">RET</th><th class="num">REALISED</th></tr></thead><tbody>${
+    rows.map((r) => `<tr><td>${r.sid}</td><td class="num">${fmt(r.sod, 1)}</td>
+      <td class="num">${fmt(r.sortino, 2)}</td><td class="num">${fmt(r.sharpe, 2)}</td>
+      <td class="num">${pct(r.maxdd, 3)}</td><td class="num">${pct(r.ret, 3)}</td>
+      <td class="num">${fmt(r.realized, 2)}</td></tr>`).join("")}</tbody></table>`;
+})();
+
+/* ---------------- funnel ---------------- */
+(function funnel() {
+  const stages = [["STRATEGY_SIGNAL", 1], ["SIGNAL_SUPPRESSED", 1], ["RISK_CHECK", 9],
+                  ["RISK_TRIMMED", 1], ["RISK_REJECTED", 1], ["INTENT_SENT", 3], ["APPROVED", 2],
+                  ["SIGNED", 2], ["BROKER_SUBMITTED", 8], ["FILLED / PARTIAL", 7]];
+  const W = 440, rowH = 18, H = stages.length * rowH + 4, max = Math.max(...stages.map((s) => s[1]));
+  $("funnel").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Event counts from signal to fill">${
+    stages.map(([label, n], i) => {
+      const w = (n / max) * (W - 170), y = 2 + i * rowH;
+      return `<text class="tick" x="0" y="${y + 9}">${label}</text>
+        <rect x="158" y="${y}" width="${Math.max(2, w).toFixed(1)}" height="9" rx="3" fill="var(--s1)"
+          data-tip="${label}  ${n} events"/>
+        <text class="dlabel" x="${(162 + w).toFixed(1)}" y="${y + 8}">${n}</text>`;
+    }).join("")}</svg>`;
+})();
+
+/* ---------------- tape ---------------- */
+$("tape").innerHTML = [
+  ["23:12", "FILLED", "fill", "XIC.TO 10 @31.05"], ["23:12", "BROKER_SUBMITTED", "", "XIC.TO"],
+  ["23:12", "SIGNED", "sig", "card-diag-01"], ["23:12", "APPROVED", "sig", "ENB.TO 7F3A…"],
+  ["23:12", "INTENT_SENT", "", "ENB.TO ttl 4s"], ["23:12", "RISK_TRIMMED", "trim", "ZEB.TO 600→300"],
+  ["23:12", "RISK_REJECTED", "rej", "QQQ min ticket"], ["23:12", "BROKER_REJECTED", "rej", "VALE halted"],
+  ["23:12", "INTENT_QUEUED", "", "SLF.TO TSX shut"], ["23:12", "SIGNAL_SUPPRESSED", "", "CGL.TO overlay halt"],
+  ["23:12", "STRATEGY_SIGNAL", "", "XIC.TO conv 1.00"], ["23:12", "POSITION_FLATTENED", "fill", "3 closed"],
+].map(([t, e, cls, s]) => `<div class="ev"><span class="t">${t}</span><span class="e ${cls}">${e}</span><span class="s">${s}</span></div>`).join("");
+
+/* ---------------- approvals: queue, verdicts, latency, cards ---------------- */
+const A = DATA.approvals;
+(function verdicts() {
+  const order = [["ACCEPT", "var(--s3)"], ["DECLINE", "var(--s8)"], ["EXPIRED", "var(--muted)"]];
+  const total = Object.values(A.verdicts).reduce((a, b) => a + b, 0);
+  const W = 420, H = 30, rows = order.map(([k, c]) => [k, A.verdicts[k] || 0, c]);
+  let x = 0;
+  $("verd-n").textContent = total + " decided prompts";
+  $("verdict").innerHTML = `<svg viewBox="0 0 ${W} ${H + 26}" role="img" aria-label="Verdict mix">
+    ${rows.map(([k, n, c]) => {
+      const w = (n / total) * W, r = `<rect x="${x.toFixed(1)}" y="0" width="${Math.max(0, w - 2).toFixed(1)}"
+        height="${H}" rx="3" fill="${c}" data-tip="${k}  ${n} of ${total}  ${((n / total) * 100).toFixed(0)}%"/>
+        <text class="dlabel" x="${(x + 4).toFixed(1)}" y="${H + 13}">${k} ${n}</text>
+        <text class="tick" x="${(x + 4).toFixed(1)}" y="${H + 24}">${((n / total) * 100).toFixed(0)}%</text>`;
+      x += w; return r;
+    }).join("")}</svg>`;
+  $("verd-note").textContent = `${A.verdicts.EXPIRED || 0} prompts expired unanswered — each one is a `
+    + `trade the desk intended and nobody approved. Accepted notional ${fmt(A.notional, 0)} across `
+    + `${A.verdicts.ACCEPT || 0} approvals, all on the paper venue.`;
+})();
+
+(function latency() {
+  const rows = A.decided, W = 420, H = 118, L = 28, R = 12, Tp = 10, B = 24;
+  const ttl = rows.length ? rows[0].ttl : 120;
+  const maxS = Math.max(ttl, ...rows.map((r) => r.s));
+  const x = (v) => L + (v / maxS) * (W - L - R);
+  $("lat-n").textContent = `${rows.length} decided · TTL ${ttl}s`;
+  $("lat-note").innerHTML = `Median ${A.median_s}s, slowest ${A.max_s}s, against a ${ttl}s TTL — `
+    + `<b>${(A.median_use * 100).toFixed(1)}% of the window used</b>. `
+    + `${A.expired_note} Scope: these are card-simulator round trips on auto-accept — the figure `
+    + `measures the publish-sign-respond path, and no human decision time is included in it.`;
+  const lanes = rows.map((r, i) => ({ ...r, y: Tp + (i % 8) * ((H - Tp - B) / 8) }));
+  $("latency").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Card response time against the granted TTL">
+    <rect x="${L}" y="${Tp - 4}" width="${(W - L - R).toFixed(1)}" height="${H - Tp - B + 8}" rx="3"
+          fill="var(--line)" fill-opacity="0.35" data-tip="TTL granted: ${ttl}s"/>
+    ${[0, 1, 5, 30, 120].filter((v) => v <= maxS).map((v) => `<line class="grid" x1="${x(v).toFixed(1)}"
+      x2="${x(v).toFixed(1)}" y1="${Tp - 4}" y2="${H - B + 4}"/>
+      <text class="tick" x="${x(v).toFixed(1)}" y="${H - B + 15}" text-anchor="middle">${v}s</text>`).join("")}
+    ${lanes.map((r) => `<circle cx="${x(r.s).toFixed(1)}" cy="${r.y.toFixed(1)}" r="4"
+      fill="${r.v === "ACCEPT" ? "var(--s3)" : "var(--s8)"}" stroke="var(--surface)" stroke-width="1.5"
+      data-tip="${r.sym}  ${r.v}  ${r.s}s of ${r.ttl}s (${(r.use * 100).toFixed(1)}%)"/>`).join("")}
+    <text class="axis" x="${L}" y="${H - 2}">RESPONSE TIME, LOG-FREE LINEAR SCALE</text></svg>`;
+})();
+
+(function reverify() {
+  $("reverify").innerHTML = [
+    { l: "RE-VERIFIABLE", v: String(A.signed), sub: "signature on file", sign: A.signed },
+    { l: "VERDICT ONLY", v: String(A.unsigned_decided), sub: "pre-2026-09-24", sign: -1 },
+  ].map((k) => `<div class="kpi"><div class="l">${k.l}</div>
+    <div class="v ${k.sign >= 0 ? "pos" : "neg"}">${k.v}</div><div class="sub">${k.sub}</div></div>`).join("");
+})();
+
+(function cards() {
+  $("cards-n").textContent = A.cards.length + " registered";
+  $("cards").innerHTML = `<table><thead><tr><th>CARD</th><th>REGISTERED</th><th>STATUS</th></tr></thead>
+    <tbody>${A.cards.map((c) => `<tr><td>${c.id}</td><td>${c.created}</td>
+      <td>${c.revoked ? "revoked " + c.revoked : "active"}</td></tr>`).join("")}</tbody></table>`;
+})();
+
+(function asym() {
+  const rows = A.symbols, W = 420, rowH = 20, H = rows.length * rowH + 6;
+  const max = Math.max(...rows.map((r) => r[1])) || 1;
+  $("asym-n").textContent = `${rows.length} symbols`;
+  $("asym").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Prompts by symbol">${
+    rows.map(([sym, n], i) => {
+      const w = (n / max) * (W - 130), y = 3 + i * rowH;
+      return `<text class="tick" x="0" y="${y + 9}">${sym}</text>
+        <rect x="90" y="${y}" width="${Math.max(2, w).toFixed(1)}" height="10" rx="3" fill="var(--s1)"
+          data-tip="${sym}  ${n} prompts"/>
+        <text class="dlabel" x="${(94 + w).toFixed(1)}" y="${y + 9}">${n}</text>`;
+    }).join("")}</svg>`;
+})();
+
+
+/* ---------------- live link to the card shim ----------------
+   Everything on this page comes out of this repository's own execution: the baked figures are read
+   from state/ at build time, and these are read from the shim the running session booted — the same
+   ApprovalRouter store the card talks to. Nothing is fetched from anywhere else, and nothing is
+   invented when a source is silent: without a link the queue says so rather than showing a specimen.
+
+   The page is live only when the shim served it (window.__SHIM__), which makes these fetches
+   same-origin — no CORS hole, and the token never travels in a URL. Read-only by construction: this
+   panel displays prompts, it never answers them. A verdict is worth something because the card
+   signed it, so the buttons here stay a draft and the real ACCEPT is a signature on the device. */
+const SHIM = window.__SHIM__ || null;
+const SHIM_KEY = "tc.shim.token";
+const LIVE = { on: false, at: 0, err: "", stats: null, prompts: [], shown: "",
+               dismissed: new Set() };
+let toast;
+
+async function shimGet(path) {
+  let token = null;
+  try { token = sessionStorage.getItem(SHIM_KEY); } catch { /* private mode */ }
+  const r = await fetch(path, { headers: token ? { Authorization: "Bearer " + token } : {},
+                                cache: "no-store" });
+  if (!r.ok) throw Object.assign(new Error("HTTP " + r.status), { status: r.status });
+  return r.json();
+}
+
+const money = (n, d = 2) => (n === null || n === undefined || !Number.isFinite(n))
+  ? "—" : "$" + Number(n).toLocaleString("en-CA", { minimumFractionDigits: d, maximumFractionDigits: d });
+const secsLeft = (iso) => Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 1000));
+
+function linkChip() {
+  const el = $("link");
+  if (!SHIM) {
+    el.innerHTML = `link <b>static</b>`;
+    el.title = "Built from state/ — serve this page from a running session's shim (/desk) for live prompts.";
+    return;
+  }
+  if (LIVE.on) {
+    const age = Math.round((Date.now() - LIVE.at) / 1000);
+    el.innerHTML = `link <b style="color:var(--accent)">live</b> · ${LIVE.prompts.length} pending · ${age}s`;
+    el.title = "Reading the running session's approval store over /v1.";
+  } else {
+    el.innerHTML = `link <b style="color:var(--crit)">down</b>`;
+    el.title = LIVE.err || "no answer from the shim";
+  }
+}
+
+function renderPending() {
+  if (!SHIM) {
+    $("pending-n").textContent = "no link";
+    $("pending").innerHTML = `<p class="note">This queue is served by the card shim of a running
+      session. Open the panel from that session — <b>http://&lt;host&gt;:&lt;port&gt;/desk</b> — and
+      prompts appear here as the card receives them. Nothing is shown in the meantime, because there
+      is nothing to show.</p>`;
+    return;
+  }
+  if (!LIVE.on) {
+    $("pending-n").textContent = "link down";
+    $("pending").innerHTML = `<p class="note">The shim stopped answering${LIVE.err ? " — " + esc(LIVE.err) : ""}.
+      The queue is not drawn from stale data.</p>`;
+    return;
+  }
+  const rows = LIVE.prompts;
+  $("pending-n").textContent = rows.length ? rows.length + " awaiting the card" : "none";
+  if (!rows.length) {
+    $("pending").innerHTML = `<p class="note">No prompt is waiting. The session is running and the
+      router has not put an intent in front of the card.</p>`;
+    return;
+  }
+  $("pending").innerHTML = rows.map((r) => `<div class="prompt-row" style="display:grid;
+      grid-template-columns:auto 1fr auto auto;gap:9px;align-items:baseline;padding:7px 0;
+      border-top:1px solid var(--line);font-family:var(--mono)">
+    <span class="side ${r.action === "BUY" ? "buy" : "sell"}">${esc(r.action)}</span>
+    <span><b style="font-size:14px">${esc(r.symbol)}</b> <span style="color:var(--muted)">${
+      esc(String(r.shares))} · ${esc(r.strategy)} · ${esc(r.broker)}</span></span>
+    <span class="hash" style="font-size:13px">${esc(r.fingerprint)}</span>
+    <span class="pill">${secsLeft(r.expires_at)}s</span></div>`).join("");
+}
+
+function renderLiveStrip() {
+  const s = LIVE.stats;
+  $("live-strip").hidden = !(SHIM && LIVE.on && s);
+  if (!(SHIM && LIVE.on && s)) return;
+  const miss = new Set(s.placeholders || []);
+  const cell = (label, value, sub, cls) => `<div class="kpi ${cls || ""}"><div class="l">${label}</div>
+    <div class="v ${cls === "lead" ? "" : ""}">${value}</div><div class="sub">${sub}</div></div>`;
+  const unknown = (name) => miss.has(name) ? "unknown" : "—";
+  /* The shim counts over its whole approval store, which outlives one session: when it reports
+     no session id, saying "this session" would be a claim the numbers do not support. */
+  $("live-src").textContent = s.session_id
+    ? "session " + String(s.session_id).slice(0, 8)
+    : "whole approval store — the shim reports no session id";
+  $("live-kpis").innerHTML = [
+    cell("SESSION EQUITY", Number.isFinite(s.session_equity) ? money(s.session_equity, 0) : unknown("session_equity"),
+         "peak " + (Number.isFinite(s.peak_equity) ? money(s.peak_equity, 0) : "—"), "lead"),
+    cell("MAX DRAWDOWN", Number.isFinite(s.max_drawdown_pct) ? s.max_drawdown_pct.toFixed(2) + "%" : unknown("max_drawdown_pct"),
+         s.session_id ? "this session" : "journal to date"),
+    cell("PENDING", s.intents_pending ?? 0, "awaiting the card"),
+    cell("ACCEPTED / DECLINED", `${s.intents_approved ?? 0} / ${s.intents_declined ?? 0}`,
+         `${s.intents_expired ?? 0} expired · ${s.session_id ? "this session" : "store to date"}`),
+    cell("CARD RESPONSE", Number.isFinite(s.avg_ttl_response)
+         ? s.avg_ttl_response.toFixed(1) + "s" : "—",
+         Number.isFinite(s.avg_ttl_response) ? "median, decided prompts" : "nothing decided yet"),
+    /* the shim counts every row in state/rejected.jsonl, which spans more than this session —
+       the label says so rather than implying these denials all happened since launch */
+    cell("GATE DENIALS · JOURNAL", s.gate_rejections ?? 0,
+         esc((s.last_gate_reason || "no reason recorded").slice(0, 38))),
+  ].join("");
+  $("live-note").textContent = miss.size
+    ? "Null by design, not missing by accident: " + [...miss].join(", ")
+      + ". The shim reports what it cannot source rather than substituting a value."
+    : "Read from the running session's store and journal. A figure the shim cannot source is left blank.";
+}
+
+/* The writeup behind the prompt's intel_ref: the same reason clauses, overlay readings and sizing
+   chain the Telegram entry alert prints. Read from /v1/intel/{ref}; if the file is missing the
+   section stays hidden rather than showing a placeholder. Display only, unsigned. */
+const OVL_LABELS = { global_alerts: "Global alerts", conflict_active: "Active conflicts",
+  disasters_active: "Active disasters", energy_stress: "Energy stress", strategic_risk: "Strategic risk",
+  fear_greed: "Fear & greed" };
+async function paintIntel(p) {
+  const box = $("tk-intel");
+  box.hidden = true;
+  box.innerHTML = "";
+  if (!p.intel_ref) return;
+  let w;
+  try { w = await shimGet("/v1/intel/" + encodeURIComponent(p.intel_ref)); } catch (e) { return; }
+  if (LIVE.shown !== p.intent_id) return;                  // a newer prompt took the screen
+  const list = (title, items, cls) => items && items.length
+    ? `<section><h4>${title}</h4><ul>${items.map((x) => `<li class="${cls || ""}">${esc(x)}</li>`).join("")}</ul></section>` : "";
+  const ovl = Object.entries(w.overlay_snapshot || {}).map(([k, v]) => `${OVL_LABELS[k] || k}: ${fmt(v, Number.isInteger(v) ? 0 : 2)}`);
+  const html = list("WHY THIS TRADE", w.reason_clauses) + list("SIZING CHAIN", w.sizing_chain)
+    + list("INTEL OVERLAY", ovl) + list("WARNINGS", w.warnings, "warn");
+  if (!html) return;
+  box.innerHTML = html;
+  box.hidden = false;
+}
+
+function showLivePrompt(p) {
+  $("tk-ribbon").textContent = "LIVE PROMPT · SIGN ON THE CARD";
+  $("tk-ribbon").className = "ribbon live";
+  $("tk-side").textContent = p.action;
+  $("tk-side").className = "side " + (p.action === "BUY" ? "buy" : "sell");
+  $("tk-sym").textContent = p.symbol;
+  $("tk-qty").textContent = p.shares;
+  $("tk-venue").textContent = p.broker;
+  $("tk-hash").textContent = p.fingerprint;
+  $("tk-entry").textContent = Number(p.entry).toLocaleString("en-CA");
+  $("tk-notional").textContent = money(p.notional_usd);
+  $("tk-risk").textContent = money(p.risk_dollars) + " · stop " + Number(p.stop).toLocaleString("en-CA");
+  $("tk-strategy").textContent = p.strategy;
+  $("tk-account").textContent = p.account + " · " + p.mode;
+  $("tk-thesis").hidden = !p.thesis;
+  $("tk-thesis").textContent = p.thesis || "";
+  $("tk-acts").innerHTML = `<p class="queued" style="grid-column:1/-1">This panel shows the prompt;
+    it does not answer it. Compare the fingerprint above with the card's screen and press ACCEPT or
+    DECLINE there — a verdict counts because the card signed it.</p>`;
+  $("takeover").hidden = false;
+  LIVE.shown = p.intent_id;
+  paintIntel(p);
+}
+
+function paintTakeoverTtl() {
+  if (!LIVE.shown) return;
+  const p = LIVE.prompts.find((x) => x.intent_id === LIVE.shown);
+  if (!p) { $("takeover").hidden = true; LIVE.shown = ""; return; }
+  const left = secsLeft(p.expires_at);
+  const ttl = Math.max(1, Math.round((Date.parse(p.expires_at) - Date.parse(p.issued_at)) / 1000));
+  $("tk-left").textContent = left > 0 ? left + "s" : "EXPIRED";
+  $("tk-meter").style.width = (left / ttl) * 100 + "%";
+  $("tk-meter").style.background = left <= 15 ? "var(--crit)" : "var(--warn)";
+  $("tk-queued").textContent = LIVE.prompts.length > 1
+    ? (LIVE.prompts.length - 1) + " more waiting behind this one" : "";
+}
+
+async function pollShim() {
+  if (!SHIM) return;
+  try {
+    const [pending, stats] = await Promise.all([
+      shimGet("/v1/intents/pending"),
+      shimGet("/v1/stats").catch(() => null),      // stats are optional; the queue is the point
+    ]);
+    LIVE.prompts = (pending.prompts || pending.items || []).slice();
+    LIVE.prompts.sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at));
+    LIVE.stats = stats;
+    LIVE.on = true;
+    LIVE.err = "";
+    LIVE.at = Date.now();
+    const next = LIVE.prompts[0];
+    if (next && next.intent_id !== LIVE.shown && !LIVE.dismissed.has(next.intent_id)) showLivePrompt(next);
+    if (!next && LIVE.shown) { $("takeover").hidden = true; LIVE.shown = ""; }
+  } catch (e) {
+    LIVE.on = false;
+    LIVE.err = e.status === 401 ? "the shim rejected the token" : e.message;
+    if (e.status === 401) { try { sessionStorage.removeItem(SHIM_KEY); } catch { /* ignore */ } }
+  }
+  renderPending();
+  renderLiveStrip();
+  linkChip();
+}
+
+/* the header chips state what was read, not what was assumed: the kill switch is the presence of
+   state/HALTED at build time, the card is whichever card is registered in the journal, and the mode
+   chip says whether this page is showing a live link or the last build. */
+const KS = DATA.kill_switch || { halted: false };
+$("kill-chip").innerHTML = KS.halted
+  ? `kill-switch <b style="color:var(--crit)">HALTED</b>`
+  : `kill-switch <b style="color:var(--good)">clear</b>`;
+if (KS.halted && KS.reason) $("kill-chip").title = KS.reason;
+const CARDS = (DATA.approvals.cards || []).filter((c) => !c.revoked);
+$("card-chip").innerHTML = CARDS.length
+  ? `card <b>${esc(CARDS[0].id)}</b>${CARDS.length > 1 ? ` +${CARDS.length - 1}` : ""}`
+  : `card <b style="color:var(--muted)">none registered</b>`;
+$("mode-chip").textContent = SHIM
+  ? "LIVE LINK · READ-ONLY · THE CARD SIGNS"
+  : "BUILT FROM THE JOURNAL · NO LIVE LINK";
+
+linkChip();
+renderPending();
+if (SHIM) {
+  pollShim();
+  setInterval(pollShim, Math.max(1, SHIM.poll_seconds || 2) * 1000);
+  setInterval(() => { paintTakeoverTtl(); linkChip(); }, 1000);
+}
+
+/* A past prompt, replayed. Not a live queue and never dressed as one: the ribbon says REPLAY, the
+   verdict that was actually recorded stands where the buttons would be, and it only exists because
+   the record does. Without a link and without a record, the panel shows nothing at all. */
+function showReplayPrompt(r) {
+  $("tk-intel").hidden = true;
+  $("tk-ribbon").textContent = "REPLAY · A PROMPT FROM THE RECORD, ALREADY DECIDED";
+  $("tk-ribbon").className = "ribbon";
+  $("tk-side").textContent = r.action;
+  $("tk-side").className = "side " + (String(r.action).toUpperCase() === "BUY" ? "buy" : "sell");
+  $("tk-sym").textContent = r.symbol;
+  $("tk-qty").textContent = r.shares;
+  $("tk-venue").textContent = r.broker;
+  $("tk-hash").textContent = r.fingerprint;
+  $("tk-entry").textContent = Number(r.entry).toLocaleString("en-CA");
+  $("tk-notional").textContent = money(r.notional_usd);
+  $("tk-risk").textContent = money(r.risk_dollars) + " · stop " + Number(r.stop).toLocaleString("en-CA");
+  $("tk-strategy").textContent = r.strategy;
+  $("tk-account").textContent = r.account + " · " + r.mode;
+  $("tk-thesis").hidden = !r.thesis;
+  $("tk-thesis").textContent = r.thesis || "";
+  $("tk-left").textContent = r.ttl_granted ? r.ttl_granted + "s granted" : "—";
+  $("tk-meter").style.width = "100%";
+  $("tk-meter").style.background = "var(--line)";
+  $("tk-acts").innerHTML = `<p class="queued" style="grid-column:1/-1">Recorded verdict:
+    <b style="color:${r.verdict === "ACCEPT" ? "var(--good)" : r.verdict === "DECLINE" ? "var(--crit)" : "var(--muted)"}">
+    ${esc(r.verdict)}</b>${r.took_s !== null && r.took_s !== undefined ? " after " + r.took_s + "s" : ""} ·
+    ${r.signed ? "signature retained, re-verifiable offline" : "verdict only, no signature on file"} ·
+    ${esc(String(r.issued_at).slice(0, 19))}</p>`;
+  $("tk-queued").textContent = "";
+  $("takeover").hidden = false;
+  LIVE.shown = "";
+}
+
+function toastMsg(text) {
+  toast?.remove();
+  toast = Object.assign(document.body.appendChild(document.createElement("div")), { className: "toast" });
+  toast.setAttribute("role", "status");
+  toast.textContent = text;
+  setTimeout(() => toast?.remove(), 6000);
+}
+
+function dismissTakeover() {
+  if (LIVE.shown) LIVE.dismissed.add(LIVE.shown);
+  LIVE.shown = "";
+  $("takeover").hidden = true;
+}
+$("takeover").addEventListener("click", (e) => { if (e.target === $("takeover")) dismissTakeover(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") dismissTakeover(); });
+
+$("show-prompt").addEventListener("click", () => {
+  if (SHIM && LIVE.on) {
+    const p = LIVE.prompts[0];
+    if (!p) { toastMsg("No prompt is waiting — the router has not put an intent in front of the card."); return; }
+    LIVE.dismissed.delete(p.intent_id);
+    showLivePrompt(p);
+    return;
+  }
+  const r = DATA.approvals.last_prompt;
+  if (!r) { toastMsg("No prompt is recorded in this journal, so there is none to replay."); return; }
+  showReplayPrompt(r);
+});
+
+/* ---------------- atlas: the 120-meter evidence catalogue ----------------
+   Folded in from the standalone Meter Atlas page, unchanged in substance. The catalogue is what the
+   code defines; a reading only exists when a snapshot supplies one, with its own source, scope and
+   timestamp. A meter without a measurement is neutral and needleless — absence is drawn as absence,
+   never as a zero, a placeholder or a default. */
+const MT = DATA.meters || [];
+const MT_SNAPS = DATA.meter_snapshots || {};
+/* tokens read once: a presentation attribute cannot be relied on to resolve var() */
+const tok = (name, fb) => (getComputedStyle(document.documentElement).getPropertyValue(name) || fb).trim();
+const MT_COLOR = { OBSERVED: tok("--accent", "#3fb8c4"), STALE: tok("--serious", "#ec835a"),
+                   HISTORICAL: tok("--warn", "#fab219"), NONE: tok("--muted", "#7d99a3") };
+let mtRuntime = { mode: "NO RUNTIME DATA", readings: {} };
+let MT_LIVE_NOTE = "";
+let mtSel = "runtime";
+
+for (const [id, key] of [["lg-obs", "OBSERVED"], ["lg-stale", "STALE"],
+                         ["lg-hist", "HISTORICAL"], ["lg-none", "NONE"]]) {
+  $(id).style.background = MT_COLOR[key];
+}
+$("mt-mode").innerHTML = ['<option value="runtime">RUNTIME · no snapshot supplied</option>']
+  .concat(Object.entries(MT_SNAPS).map(([k, s]) => `<option value="${esc(k)}">${esc(s.label || k)}</option>`))
+  .join("");
+
+function mtSnapshot() { return mtSel === "runtime" ? mtRuntime : (MT_SNAPS[mtSel] || { readings: {} }); }
+
+function mtReading(r) {
+  const x = mtSnapshot().readings[r.id];
+  if (!x) return null;
+  const z = { ...x };
+  if (z.as_of && z.status === "OBSERVED" && Number.isFinite(z.stale_after_seconds)
+      && (Date.now() - Date.parse(z.as_of)) / 1000 > z.stale_after_seconds) z.status = "STALE";
+  return z;
+}
+
+function mtGauge(r, x) {
+  const color = x ? (MT_COLOR[x.status] || MT_COLOR.HISTORICAL) : MT_COLOR.NONE;
+  if (r.kind === "status") {
+    return `<svg viewBox="0 0 100 65" aria-hidden="true"><rect x="32" y="15" width="36" height="30" rx="5"
+      fill="none" stroke="${color}" stroke-width="3"/><text x="50" y="38" text-anchor="middle"
+      font-size="17" fill="${color}">${x ? "•" : "—"}</text></svg>`;
+  }
+  let needle = "", scale = "";
+  if (r.bounds) {
+    scale = `<text x="7" y="62" font-size="8" fill="${MT_COLOR.NONE}">${esc(r.bounds[0])}</text>`
+      + `<text x="93" y="62" text-anchor="end" font-size="8" fill="${MT_COLOR.NONE}">${esc(r.bounds[1])}</text>`;
+    if (x && typeof x.value === "number") {
+      const t = Math.max(0, Math.min(1, (x.value - r.bounds[0]) / (r.bounds[1] - r.bounds[0])));
+      const a = Math.PI * (1 - t);
+      needle = `<line x1="50" y1="50" x2="${(50 + 35 * Math.cos(a)).toFixed(2)}"`
+        + ` y2="${(50 - 35 * Math.sin(a)).toFixed(2)}" stroke="${color}" stroke-width="3"/>`;
+    }
+  }
+  return `<svg viewBox="0 0 100 65" aria-hidden="true"><path d="M10 50 A40 40 0 0 1 90 50" fill="none"
+    stroke="${color}" stroke-width="4" stroke-dasharray="2 3" opacity="0.7"/>${needle}
+    <circle cx="50" cy="50" r="2.6" fill="${color}"/>${scale}</svg>`;
+}
+
+function mtNotice() {
+  const snap = mtSnapshot();
+  if (mtSel !== "runtime") return snap.notice || "";
+  if (!Object.keys(mtRuntime.readings).length) {
+    if (MT_LIVE_NOTE) return "NO RUNTIME READINGS — " + MT_LIVE_NOTE;
+    return "NO RUNTIME SNAPSHOT — no account, market feed or device telemetry was supplied. The blank "
+      + "meters are the point: nothing is stood in for a measurement that was never taken.";
+  }
+  return "LOCAL SNAPSHOT — " + (mtRuntime.mode || "snapshot")
+    + (mtRuntime.captured_at ? ", captured " + String(mtRuntime.captured_at).slice(0, 19) : "")
+    + ". Per-reading timestamps, source scope and stale states are the file's own. This is a snapshot, "
+    + "not a streaming connection.";
+}
+
+function mtRender() {
+  if (!MT.length) {
+    $("mt-grid").innerHTML = '<p class="mt-empty">No meter catalogue was baked into this build.</p>';
+    return;
+  }
+  $("mt-defined").textContent = MT.length;
+  $("mt-count").textContent = Object.keys(mtSnapshot().readings).length;
+  $("mt-notice").textContent = mtNotice();
+  const q = $("mt-search").value.trim().toLowerCase();
+  const groups = [...new Set(MT.map((r) => r.group))];
+  const html = groups.map((g, i) => {
+    const rows = MT.filter((r) => r.group === g && (!q || JSON.stringify(r).toLowerCase().includes(q)));
+    if (!rows.length) return "";
+    const tiles = rows.map((r) => {
+      const x = mtReading(r);
+      const v = x ? (typeof x.value === "number" ? Number(x.value.toFixed(3)).toLocaleString("en-CA")
+                                                 : String(x.value)) : "—";
+      return `<button class="mt-tile" data-mt="${esc(r.id)}" title="${esc(r.label)}">${mtGauge(r, x)}
+        <div class="mt-id">${esc(r.id)}</div><div class="mt-label">${esc(r.label)}</div>
+        <div class="mt-val ${x ? "has" : ""}">${esc(v)}</div>
+        <div class="mt-st">${esc(x ? (x.unit ?? r.unit) : r.unit)}</div>
+        <div class="mt-st">${esc(x ? x.status : "NO DATA")}</div></button>`;
+    }).join("");
+    return `<section aria-label="${esc(g)}"><div class="head">${String(i + 1).padStart(2, "0")} ·
+      ${esc(g.toUpperCase())}<span class="n">${rows.length}</span></div>
+      <div class="mt-tiles">${tiles}</div></section>`;
+  }).join("");
+  $("mt-grid").innerHTML = html || `<p class="mt-empty">No meter matches ${esc(q)}.</p>`;
+}
+
+function mtShow(id) {
+  const r = MT.find((m) => m.id === id);
+  if (!r) return;
+  const x = mtReading(r);
+  $("mt-dtitle").textContent = r.id + " · " + r.label;
+  const rows = {
+    GROUP: r.group,
+    DEFINITION: r.formula,
+    UNIT: (x && x.unit) || r.unit || "status",
+    SCALE: r.bounds ? `${r.bounds[0]} to ${r.bounds[1]}` : "no bounded gauge — unbounded quantity",
+    SUPPORT: r.support,
+    READING: x ? JSON.stringify(x, null, 2) : "no measurement in the selected snapshot",
+    SOURCE: r.source || "not located in production source",
+  };
+  $("mt-dbody").innerHTML = Object.entries(rows)
+    .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")
+    + (r.url ? `<dt>PINNED</dt><dd><a href="${esc(r.url)}" target="_blank" rel="noopener">`
+        + "open the source at the reviewed commit</a></dd>" : "");
+  $("mt-detail").showModal();
+}
+
+$("mt-grid").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-mt]");
+  if (t) mtShow(t.dataset.mt);
+});
+$("mt-close").addEventListener("click", () => $("mt-detail").close());
+$("mt-print").addEventListener("click", () => window.print());
+$("mt-mode").addEventListener("change", (e) => { mtSel = e.target.value; mtRender(); });
+$("mt-search").addEventListener("input", mtRender);
+/* One gate for every snapshot, whichever door it came in by: a file the viewer picked, or the
+   running session's own /v1/meters/snapshot. A live source earns no exemption — a reading without
+   a source, a scope and a credible observation time is refused, and the snapshot is refused whole
+   rather than partly shown. */
+function mtValidate(d) {
+  {
+    if (d.schema_version !== 1 || !d.readings || typeof d.readings !== "object") {
+      throw Error("expected schema_version 1 and a readings object");
+    }
+    for (const [id, x] of Object.entries(d.readings)) {
+      if (!MT.some((r) => r.id === id)) throw Error("unknown meter " + id);
+      if (!x.source || !x.scope || !["OBSERVED", "STALE", "HISTORICAL"].includes(x.status)) {
+        throw Error("source, scope and status are required for " + id);
+      }
+      if (typeof x.value === "number") {
+        if (!Number.isFinite(x.value)) throw Error("non-finite value for " + id);
+      } else if (typeof x.value !== "string") {
+        throw Error("value must be a number or text for " + id);
+      }
+      if (x.status !== "HISTORICAL"
+          && (!x.as_of || !Number.isFinite(Date.parse(x.as_of)) || Date.parse(x.as_of) > Date.now())) {
+        throw Error("a valid, non-future observation timestamp is required for " + id);
+      }
+      if (x.status === "OBSERVED"
+          && !(Number.isFinite(x.stale_after_seconds) && x.stale_after_seconds > 0)) {
+        throw Error("positive stale_after_seconds is required for " + id);
+      }
+    }
+    return d;
+  }
+}
+
+function mtAdopt(d, label) {
+  mtRuntime = mtValidate(d);
+  mtSel = "runtime";
+  $("mt-mode").options[0].textContent = "RUNTIME · " + label;
+  $("mt-mode").value = "runtime";
+  mtRender();
+}
+
+$("mt-upload").addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    mtAdopt(JSON.parse(await file.text()), "local snapshot");
+  } catch (err) {
+    alert("Snapshot rejected whole: " + err.message);
+  } finally {
+    e.target.value = "";
+  }
+});
+
+/* Live atlas readings, from the session the shim is attached to. Polled more slowly than the
+   approval queue: these come off journal rows that move on a mark, not on a keypress. A snapshot
+   the validator refuses leaves the previous state alone and says so in the notice line. */
+async function mtPollLive() {
+  if (!SHIM) return;
+  try {
+    const d = await shimGet("/v1/meters/snapshot");
+    if (!d.readings || !Object.keys(d.readings).length) {
+      MT_LIVE_NOTE = d.notes && d.notes.length ? d.notes[0] : "";
+      if (mtSel === "runtime") mtRender();
+      return;
+    }
+    MT_LIVE_NOTE = "";
+    mtAdopt(d, "live from the session");
+  } catch (err) {
+    MT_LIVE_NOTE = "live readings unavailable — " + (err.message || "no answer from the shim");
+    if (mtSel === "runtime") mtRender();
+  }
+}
+const MT_PIN = DATA.meters_pin || {};
+$("mt-pin").textContent = MT.length && MT_PIN.sha
+  ? `CATALOGUE READ AT ${MT_PIN.sha}${MT_PIN.date ? " (" + MT_PIN.date + ")" : ""}`
+    + `${MT_PIN.branch ? " on " + MT_PIN.branch : ""} — a review of what the source defines. Repository`
+    + " code is not telemetry: every reading on this tab comes from a snapshot, or from nothing."
+  : "";
+mtRender();
+setInterval(mtRender, 60000);   /* a reading goes stale on the clock, not on a click */
+if (SHIM) {
+  mtPollLive();
+  setInterval(mtPollLive, Math.max(10, (SHIM.poll_seconds || 2) * 5) * 1000);
+}   /* a reading goes stale on the clock, not on a click */
+
+/* ---------------- tabs ---------------- */
+const TABS = [["tab-approvals", "v-approvals"], ["tab-book", "v-book"],
+              ["tab-integrity", "v-integrity"], ["tab-atlas", "v-atlas"],
+              ["tab-graph", "v-graph"], ["tab-oasis", "v-oasis"], ["tab-ib", "v-ib"]];
+function selectTab(id) {
+  if (id === "tab-ib") renderIbAccess();
+  for (const [btn, view] of TABS) {
+    const on = btn === id;
+    $(btn).setAttribute("aria-selected", String(on));
+    $(view).hidden = !on;
+  }
+  try { location.hash = id.replace("tab-", ""); } catch { /* hash is a convenience */ }
+}
+
+/* ---- GRAPH tab: draw the model from DATA.graph ------------------------------------ */
+// Hand-placed layered layout, left to right: producers -> poll -> observed things -> domain.
+// A type the journal grows that is not in this map still draws, in a fallback column, so a new
+// node type can never be silently dropped from the picture.
+const G_POS = {
+  source:{x:70,y:70}, market:{x:70,y:180}, venue:{x:70,y:290}, analysis:{x:70,y:385},
+  poll:{x:285,y:120}, event:{x:495,y:60}, region:{x:495,y:190}, symbol:{x:495,y:340},
+  domain:{x:700,y:150}
+};
+const IB_STEPS = [
+  "Start TWS (or IB Gateway) and log in to the paper account. This login is separate from Questrade and from the Client Portal Gateway.",
+  "In TWS: Configure > API > Settings. Tick Enable ActiveX and Socket Clients, and untick Read-Only API.",
+  "Set the socket port (paper TWS 7497, live TWS 7496, paper Gateway 4002) and add 127.0.0.1 as a trusted IP.",
+  "Market data: real-time sharing applies at the next paper login and can take up to 24h. Tokyo (OSE) also needs its own permission.",
+  "Launch paper_ib.py with --transport socket, and IB_PAPER_PORT set to the port that shows listening below.",
+];
+async function renderIbAccess() {
+  const scope = $("ib-scope"), box = $("ib-ports");
+  $("ib-steps").innerHTML = `<p class="gnote"><b>TO OPEN THE ACCESS</b></p><ol class="gnote">${
+    IB_STEPS.map((t) => `<li>${esc(t)}</li>`).join("")}</ol>`;
+  if (!SHIM) { scope.textContent = "not measured"; box.innerHTML = `<p class="gnote">No probe: this page
+    was opened from a file, not from a running session's shim.</p>`; return; }
+  let r;
+  try { r = await shimGet("/v1/ib/access"); } catch (e) { scope.textContent = "not measured";
+    box.innerHTML = `<p class="gnote">The shim did not answer the probe${e && e.message ? " &mdash; " + esc(e.message) : ""}.
+    A shim started before this endpoint existed needs a restart.</p>`; return; }
+  const up = r.ports.filter((p) => p.listening).length;
+  scope.textContent = `${up} of ${r.ports.length} listening · probed ${new Date(r.checked_at).toLocaleTimeString()}`;
+  box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>ENDPOINT</th><th>HOST:PORT</th>
+    <th class="r">STATE</th></tr></thead><tbody>${r.ports.map((p) => `<tr><td>${esc(p.label)}${
+    r.configured_socket_port === p.port ? " (configured)" : ""}</td><td>${esc(p.host)}:${p.port}</td>
+    <td class="r">${p.listening ? "LISTENING" : "closed"}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function renderOasisSim(runs) {
+  $("oa-sim").innerHTML = runs.length ? `<p class="gnote"><b>SIMULATION RUNS</b> &mdash; the OASIS VM
+    run, read from <span class="mono">state/oasis_runs.jsonl</span>. Stances are what the simulated agents
+    reported, not a forecast.</p>` + runs.map((r) => `<div class="tbl-wrap"><p class="gnote">
+    <b>${esc(r.run_id)}</b> &middot; seed as_of ${esc(r.as_of)} &middot; ${r.result.completed_steps} steps
+    &middot; ${r.result.agents} agents &middot; $${fmt(r.result.spend_usd)} of $${fmt(r.budget.max_usd)}
+    &middot; stopped by ${esc(r.result.stopped_by)}${Object.keys(r.withheld).length
+      ? " &middot; seed withheld " + esc(Object.keys(r.withheld).join(", ")) : ""}</p>
+    <table><thead><tr><th>SYMBOL</th><th class="r">MEAN STANCE</th><th class="r">DISPERSION</th>
+    <th class="r">AGENTS</th></tr></thead><tbody>${r.result.stances.map((s) => `<tr><td>${esc(s.symbol)}</td>
+    <td class="r">${fmt(s.mean)}</td><td class="r">${fmt(s.dispersion)}</td><td class="r">${s.agents}</td></tr>`).join("")}
+    </tbody></table></div>`).join("") : `<p class="gnote">No simulation run ingested yet. Issue a seed with
+    <span class="mono">scripts/oasis_sim.py seed</span>; the VM runner returns a result to ingest.</p>`;
+}
+function renderOasis() {
+  const o = DATA.oasis || {};
+  renderOasisSim(o.sim || []);
+  const empty = (msg) => { $("oa-empty").textContent = msg; $("oa-empty").hidden = false; };
+  if (!o.present) { $("oa-scope").textContent = "no journal"; return empty(
+    "No debate journal found. debate() writes state/intel_agents.jsonl only when it runs with an "
+    + "Anthropic key; nothing has run here yet, so there is nothing to draw."); }
+  $("oa-scope").textContent = `${o.scored_runs} keyed runs · ${o.no_key_runs} keyless left out`;
+  if (!o.scored_runs) return empty("Every journalled run was keyless, so none carries a claim to show.");
+  const order = ["fired", "falsified", "below_threshold", "no_critique", "no_claim", "no_evidence"];
+  $("oa-tally").innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>OUTCOME (domain readings)</th>
+    <th class="r">COUNT</th></tr></thead><tbody>${order.filter((k) => o.outcomes[k]).map((k) =>
+    `<tr><td>${esc(k)}</td><td class="r">${o.outcomes[k]}</td></tr>`).join("")}</tbody></table></div>`;
+  const c = (v) => Number.isFinite(v) ? Number(v).toFixed(2) : "—";
+  $("oa-runs").innerHTML = o.recent.map((r) => `<div class="tbl-wrap"><p class="gnote"><b>${esc(r.ts)}</b>
+    · as_of ${esc(r.as_of || "—")} · ${r.evidence_items} evidence items · ${r.fired_count} fired</p>
+    <table><thead><tr><th>DOMAIN</th><th>OUTCOME</th><th>THESIS</th><th class="r">CLAIMED</th>
+    <th class="r">FINAL</th><th>ADVERSARY</th></tr></thead><tbody>${r.items.map((i) => `<tr>
+    <td>${esc(i.domain)}</td><td>${esc(i.outcome)}</td>
+    <td title="${esc(i.inference || "")}">${esc(i.thesis || "—")}${i.direction ? " (" + esc(i.direction) + ")" : ""}</td>
+    <td class="r">${c(i.claimed)}</td><td class="r">${c(i.final)}</td>
+    <td title="${esc(i.reason || "")}">${esc(i.verdict || "—")}</td></tr>`).join("")}</tbody></table></div>`).join("");
+}
+
+function renderGraph() {
+  const g = DATA.graph || {};
+  const svg = $("g-svg");
+  if (!svg) return;
+  if (!g.present || !(g.links || []).length) { $("g-empty").hidden = false; return; }
+  $("g-edges").textContent = (g.edges_total || 0).toLocaleString();
+  $("g-nodes").textContent = (g.node_total || 0).toLocaleString();
+  $("g-src").textContent = g.source || "state/intel_graph.jsonl";
+
+  const maxN = Math.max.apply(null, g.nodes.map(n => n.n));
+  const maxE = Math.max.apply(null, g.links.map(l => l.n));
+  const pos = {};
+  let spare = 0;
+  for (const nd of g.nodes) {
+    pos[nd.type] = G_POS[nd.type] || {x: 285 + (spare++ % 2) * 210, y: 400};
+  }
+  const NS = "http://www.w3.org/2000/svg";
+  const mk = (t, a) => { const e = document.createElementNS(NS, t);
+    for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+  // edges first so vertices sit on top
+  for (const l of g.links) {
+    const a = pos[l.from], b = pos[l.to];
+    if (!a || !b) continue;
+    const w = 1 + 5 * (Math.log(l.n + 1) / Math.log(maxE + 1));
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - 26;
+    const path = mk("path", {
+      d: "M " + a.x + " " + a.y + " Q " + mx + " " + my + " " + b.x + " " + b.y,
+      class: "gedge" + (l.pred === "traded" ? " exec" : ""),
+      "stroke-width": w.toFixed(2)
+    });
+    // Label at ~38% along the curve rather than the midpoint: several predicates leave the same
+    // vertex, and at the midpoint their labels stacked on top of each other (poll observed event /
+    // region / elevated_in all collided). Sampling early separates them by their differing targets.
+    const t = 0.38, u = 1 - t;
+    const lx = u * u * a.x + 2 * u * t * mx + t * t * b.x;
+    const ly = u * u * a.y + 2 * u * t * my + t * t * b.y;
+    path.appendChild(mk("title", {})).textContent =
+      l.from + " -" + l.pred + "-> " + l.to + "  ·  " + l.n.toLocaleString() +
+      " edges  ·  sum weight " + l.w.toLocaleString() + " (unit is per-predicate)";
+    svg.appendChild(path);
+    const lab = mk("text", {x: lx.toFixed(1), y: (ly - 5).toFixed(1), class: "gpred"});
+    lab.textContent = l.pred;
+    svg.appendChild(lab);
+  }
+  // vertices: area proportional to distinct node count
+  for (const nd of g.nodes) {
+    const c = pos[nd.type];
+    const r = 9 + 17 * Math.sqrt(nd.n) / Math.sqrt(maxN);
+    const circ = mk("circle", {cx: c.x, cy: c.y, r: r.toFixed(1), class: "gnode"});
+    circ.appendChild(mk("title", {})).textContent =
+      nd.type + ": " + nd.n.toLocaleString() + " distinct nodes";
+    svg.appendChild(circ);
+    const t1 = mk("text", {x: c.x, y: c.y - r - 7, class: "glabel"});
+    t1.textContent = nd.type;
+    svg.appendChild(t1);
+    const t2 = mk("text", {x: c.x, y: c.y + 3.5, class: "gcount"});
+    t2.textContent = nd.n.toLocaleString();
+    svg.appendChild(t2);
+  }
+  const pw = $("g-power");
+  const withPower = g.nodes.filter(n => (n.power || 0) > 0);
+  const maxP = withPower.length ? Math.max.apply(null, withPower.map(n => n.power)) : 0;
+  for (const n of withPower) {
+    const row = document.createElement("div");
+    // venue is the damped one; colour it as execution so the cap is visible, not just stated
+    row.className = "row" + (n.type === "venue" ? " exec" : "");
+    row.innerHTML = "<span>" + n.type + "</span><span class='bar'><i style='width:" +
+      (maxP ? (n.power / maxP * 100).toFixed(1) : 0) + "%'></i></span>" +
+      "<span class='val'>" + (n.power * 100).toFixed(2) + "%</span>";
+    pw.appendChild(row);
+  }
+  const tb = $("g-tbl").querySelector("tbody");
+  for (const l of g.links) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td>" + l.from + "</td><td>" + l.pred + "</td><td>" + l.to +
+      "</td><td class='r'>" + l.n.toLocaleString() +
+      "</td><td class='r'>" + l.w.toLocaleString() + "</td>";
+    tb.appendChild(tr);
+  }
+}
+renderGraph();
+renderOasis();
+for (const [btn] of TABS) $(btn).addEventListener("click", () => selectTab(btn));
+document.addEventListener("keydown", (e) => {
+  if (e.target.closest("button, input, select, textarea, dialog")) return;
+  const i = TABS.findIndex(([b]) => $(b).getAttribute("aria-selected") === "true");
+  if (e.key === "ArrowRight") selectTab(TABS[(i + 1) % TABS.length][0]);
+  if (e.key === "ArrowLeft") selectTab(TABS[(i + TABS.length - 1) % TABS.length][0]);
+});
+const fromHash = (location.hash || "").replace("#", "");
+if (TABS.some(([b]) => b === "tab-" + fromHash)) selectTab("tab-" + fromHash);
+
+/* ---------------- table toggles ---------------- */
+for (const [btn, box] of [["curve-table", "curve-tbl"], ["rank-table", "rank-tbl"], ["attr-table", "attr-tbl"]]) {
+  $(btn).addEventListener("click", () => {
+    const on = $(btn).getAttribute("aria-pressed") === "true";
+    $(btn).setAttribute("aria-pressed", String(!on));
+    $(box).hidden = on;
+  });
+}
+
+/* ---------------- clock + approval takeover ---------------- */
+const setClock = () => { $("clock").textContent = new Date().toLocaleTimeString("en-CA", { hour12: false }); };
+setClock(); setInterval(setClock, 1000);
+</script>

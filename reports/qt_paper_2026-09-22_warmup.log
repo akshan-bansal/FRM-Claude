@@ -1,0 +1,1045 @@
+params: class defaults for every symbol (--params default).
+PAPER mode simulated broker, starting equity $100,000, account PAPER-001. Real 
+account is untouched; fills are journaled.
+ 14 symbols checked: 14 ok, 0 warn, 0 fail
+intel overlay ON (refresh every 900s; de-risk + halt gate).
+interpret entry-filter ON (theses trim conviction; advisory, never blocks or 
+boosts).
+allocator bias ON over 13 names (equal-weight baseline = 1.0; live overlay 
+applied through apply_overlay):
+        ENB.TO  x2.60  (boost)
+        VDY.TO  x2.35  (boost)
+        XIU.TO  x1.88  (boost)
+        XIC.TO  x1.66  (boost)
+     SRU.UN.TO  x1.34  (boost)
+        ZEB.TO  x1.08  (boost)
+     CRT.UN.TO  x0.66  (trim)
+           DBC  x0.50  (trim)
+           QQQ  x0.38  (trim)
+        SLF.TO  x0.24  (trim)
+        EQB.TO  x0.17  (trim)
+          VALE  x0.08  (trim)
+        CGL.TO  x0.06  (trim)
+overbought exit ON (Variant #3): close > upper BB(20,2) or RSI(14) >= 70 on the
+last completed bar closes a long up >= 1 ATR and >= 2x round-trip cost; 
+re-entry lockout. Exempt: ts_momentum.
+candle exit ON (Variant #2): bearish reversal on the last completed bar closes 
+a long up >= 1 ATR and >= 2x round-trip cost; re-entry lockout. Exempt: 
+ts_momentum.
+profit lock ON (Variant #1): arms at +1 ATR, giveback 3 -> 1 ATR by +4 ATR, 
+net-breakeven floor, arms after 2x round-trip cost, re-entry lockout. Exempt: 
+ts_momentum.
+warm-up: polling every 60s for 60 min, then every 300s.
+graceful stop: touch state\STOP (all sessions) or 
+state\STOP_fba831e3352a447da48268c40fa2617f (this one). Exits within one poll 
+and flattens.
+{"degraded": false, "scalars": {"equity": 0.5491, "future": 0.4043, "commodity": 0.4953, "fx": 0.5491, "crypto": 0.552, "fixed_income": 0.7688, "precious_metals": 0.7961}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T13:54:25.907920Z"}
+{"order_id": 1, "symbol": "EQB.TO", "qty": 24.0, "fill_price": 126.2080725, "action": "Buy", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T13:54:26.012127Z"}
+{"order_id": 2, "symbol": "QQQ", "qty": 19.0, "fill_price": 745.45254, "action": "Buy", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T13:54:26.222943Z"}
+{"order_id": 3, "symbol": "SRU.UN.TO", "qty": 1278.0, "fill_price": 26.863425000000003, "action": "Buy", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T13:54:26.897786Z"}
+{"symbol": "VDY.TO", "from_shares": 1295, "to_shares": 627, "original_notional": 99967.525, "trimmed_notional": 48401.26499999999, "reason": "symbol_cap=100.0%>75.0%", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T13:54:27.366224Z"}
+{"order_id": 4, "symbol": "VDY.TO", "qty": 627.0, "fill_price": 77.23359749999999, "action": "Buy", "session_id": "fba831e3352a447da48268c40fa2617f", "event": "paper.order.filled", "level": "info", "timestamp": "2026-09-22T13:54:27.428706Z"}
+{"symbol": "RSI.TO", "from_shares": 1864, "to_shares": 7, "original_notional": 12498.12, "trimmed_notional": 46.935, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T13:54:27.597607Z"}
+{"symbol": "RSI.TO", "reasons": ["after trim: notional $46.94 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T13:54:27.598682Z"}
+[ALERT] ENTRY  EQB.TO  ts_momentum  (NEW)
+Signal: entry at 126.1450. State: NEW.
+
+Why this trade (walk-forward evidence):
+  · Tier: robust (equity) — cleared WF gate: WFE>=0.5, OOS>0, trades>=class-min
+  · Evidence is for: ts_momentum with lookback=126, threshold=0.0
+  · OOS score: 8.17  ·  WFE: 1.36  (OOS beat in-sample)
+  · OOS return: +45.88%  ·  OOS max drawdown: -16.05%
+  · OOS trades: 11  ·  win rate: 57.1% (6/11)
+  · Running: ts_momentum with lookback=126, threshold=0.0
+
+Sizing chain:
+  · Position size: 24 shares (notional ~$3,027)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+[ALERT] ENTRY  QQQ  ts_momentum  (NEW)
+Signal: entry at 745.0700. State: NEW.
+
+Why this trade (walk-forward evidence):
+  · Tier: robust (equity) — cleared WF gate: WFE>=0.5, OOS>0, trades>=class-min
+  · Evidence is for: ts_momentum with lookback=189, threshold=0.02
+  · OOS score: 7.70  ·  WFE: 2.72  (OOS beat in-sample)
+  · OOS return: +50.30%  ·  OOS max drawdown: -14.20%
+  · OOS trades: 16
+  · Running: ts_momentum with lookback=126, threshold=0.0
+  · MISMATCH: the running config differs from the one the evidence is for
+
+Sizing chain:
+  · Position size: 19 shares (notional ~$14,156)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+[ALERT] ENTRY  SRU.UN.TO  confirm_rsi_meanrevert  (NEW)
+Signal: entry at 26.8500. State: NEW.
+
+Why this trade (walk-forward evidence):
+  · Tier: robust (equity) — cleared WF gate: WFE>=0.5, OOS>0, trades>=class-min
+  · Evidence is for: rsi_meanrevert with window=7, oversold=25
+  · OOS score: 13.33  ·  WFE: 1.03  (OOS beat in-sample)
+  · OOS return: +31.10%  ·  OOS max drawdown: -4.90%
+  · OOS trades: 15  ·  win rate: 88.9% (13/15)
+  · Running: confirm_rsi_meanrevert with defaults
+  · MISMATCH: the running config differs from the one the evidence is for
+
+Sizing chain:
+  · Position size: 1278 shares (notional ~$34,314)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+[ALERT] ENTRY  VDY.TO  ts_momentum  (NEW)
+Signal: entry at 77.1950. State: NEW.
+
+Why this trade (walk-forward evidence):
+  · Tier: robust (equity) — cleared WF gate: WFE>=0.5, OOS>0, trades>=class-min
+  · Evidence is for: ts_momentum with lookback=63, threshold=0.02
+  · OOS score: 18.20  ·  WFE: 0.66  (OOS fell below in-sample but still cleared the gate)
+  · OOS return: +1.56%  ·  OOS max drawdown: -5.04%
+  · OOS trades: 10  ·  win rate: 70.0% (7/10)
+  · Running: ts_momentum with lookback=126, threshold=0.0
+  · MISMATCH: the running config differs from the one the evidence is for
+
+Sizing chain:
+  · Position size: 1295 shares (notional ~$99,968)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+[ALERT] ENTRY  RSI.TO  bollinger  (NEW)
+Signal: entry at 6.7050. State: NEW.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1864 shares (notional ~$12,498)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T13:55:32.154409Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T13:55:32.155355Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 2 polls)
+Signal: entry at 6.7050. State: persisting 2 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T13:56:35.410099Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T13:56:35.412135Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 3 polls)
+Signal: entry at 6.7050. State: persisting 3 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12484.710000000001, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T13:57:38.325439Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T13:57:38.327964Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 4 polls)
+Signal: entry at 6.7050. State: persisting 4 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,485)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12484.710000000001, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T13:58:41.519002Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T13:58:41.520930Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 5 polls)
+Signal: entry at 6.7050. State: persisting 5 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,485)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12484.710000000001, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T13:59:44.047082Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T13:59:44.048056Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 6 polls)
+Signal: entry at 6.7050. State: persisting 6 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,485)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12484.710000000001, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:00:46.678876Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:00:46.679841Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 7 polls)
+Signal: entry at 6.7050. State: persisting 7 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,485)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:01:49.587510Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:01:49.589400Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 8 polls)
+Signal: entry at 6.7050. State: persisting 8 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:02:51.919964Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:02:51.920891Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 9 polls)
+Signal: entry at 6.7050. State: persisting 9 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:03:55.098017Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:03:55.098936Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 10 polls)
+Signal: entry at 6.7150. State: persisting 10 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12503.33, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:04:57.582044Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:04:57.583117Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 11 polls)
+Signal: entry at 6.7150. State: persisting 11 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,503)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:06:00.050310Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:06:00.051218Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 12 polls)
+Signal: entry at 6.7150. State: persisting 12 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12503.33, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:07:02.563458Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:07:02.565291Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 13 polls)
+Signal: entry at 6.7150. State: persisting 13 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,503)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12510.045, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:08:05.452015Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:08:05.453899Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 14 polls)
+Signal: entry at 6.7150. State: persisting 14 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,510)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12510.045, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:09:08.202396Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:09:08.204995Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 15 polls)
+Signal: entry at 6.7150. State: persisting 15 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,510)
+  · OSINT overlay (equity): x0.549 — live intel de-risking this class
+  · Combined mitigation scalar: x0.549
+
+{"degraded": false, "scalars": {"equity": 0.5287, "future": 0.3639, "commodity": 0.4457, "fx": 0.5287, "crypto": 0.5522, "fixed_income": 0.7532, "precious_metals": 0.7799}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T14:10:14.355816Z"}
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12503.33, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:10:14.357991Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:10:14.359251Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 16 polls)
+Signal: entry at 6.7150. State: persisting 16 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,503)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:11:17.037552Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:11:17.040124Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 17 polls)
+Signal: entry at 6.7150. State: persisting 17 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12503.33, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:12:20.615724Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:12:20.619117Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 18 polls)
+Signal: entry at 6.7150. State: persisting 18 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,503)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:13:23.449625Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:13:23.452282Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 19 polls)
+Signal: entry at 6.7150. State: persisting 19 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:14:26.744387Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:14:26.746779Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 20 polls)
+Signal: entry at 6.7150. State: persisting 20 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:15:29.857151Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:15:29.859197Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 21 polls)
+Signal: entry at 6.7150. State: persisting 21 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:16:33.031315Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:16:33.033677Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 22 polls)
+Signal: entry at 6.7150. State: persisting 22 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T14:17:33.567677Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T14:17:33.791018Z"}
+{"symbol": "RSI.TO", "from_shares": 1860, "to_shares": 4, "original_notional": 12489.9, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:17:36.031735Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:17:36.033841Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 23 polls)
+Signal: entry at 6.7150. State: persisting 23 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1860 shares (notional ~$12,490)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:18:39.272498Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:18:39.274383Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 24 polls)
+Signal: entry at 6.7150. State: persisting 24 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12503.33, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:19:43.106856Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:19:43.109315Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 25 polls)
+Signal: entry at 6.7150. State: persisting 25 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,503)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:20:46.052688Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:20:46.054955Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 26 polls)
+Signal: entry at 6.7150. State: persisting 26 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:21:49.706125Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:21:49.708016Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 27 polls)
+Signal: entry at 6.7150. State: persisting 27 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1858, "to_shares": 4, "original_notional": 12495.05, "trimmed_notional": 26.9, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:22:52.141851Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.90 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:22:52.143744Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 28 polls)
+Signal: entry at 6.7250. State: persisting 28 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1858 shares (notional ~$12,495)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1860, "to_shares": 4, "original_notional": 12489.9, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:23:55.293633Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:23:55.295994Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 29 polls)
+Signal: entry at 6.7150. State: persisting 29 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1860 shares (notional ~$12,490)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12496.615, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:24:58.287908Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:24:58.288831Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 30 polls)
+Signal: entry at 6.7150. State: persisting 30 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,497)
+  · OSINT overlay (equity): x0.529 — live intel de-risking this class
+  · Combined mitigation scalar: x0.529
+
+{"degraded": false, "scalars": {"equity": 0.3813, "future": 0.25, "commodity": 0.2714, "fx": 0.3813, "crypto": 0.4011, "fixed_income": 0.665, "precious_metals": 0.7}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T14:26:04.289601Z"}
+{"symbol": "RSI.TO", "from_shares": 1860, "to_shares": 4, "original_notional": 12489.9, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:26:04.292855Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:26:04.294614Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 31 polls)
+Signal: entry at 6.7150. State: persisting 31 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1860 shares (notional ~$12,490)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1860, "to_shares": 4, "original_notional": 12489.9, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:27:07.642290Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:27:07.643281Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 32 polls)
+Signal: entry at 6.7150. State: persisting 32 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1860 shares (notional ~$12,490)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1860, "to_shares": 4, "original_notional": 12489.9, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:28:10.745253Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:28:10.747385Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 33 polls)
+Signal: entry at 6.7150. State: persisting 33 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1860 shares (notional ~$12,490)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:29:13.454218Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:29:13.456134Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 34 polls)
+Signal: entry at 6.7050. State: persisting 34 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:30:16.629099Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:30:16.631074Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 35 polls)
+Signal: entry at 6.7050. State: persisting 35 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:31:19.283886Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:31:19.285787Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 36 polls)
+Signal: entry at 6.7050. State: persisting 36 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1864, "to_shares": 4, "original_notional": 12498.12, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:32:21.867326Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:32:21.870274Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 37 polls)
+Signal: entry at 6.7050. State: persisting 37 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1864 shares (notional ~$12,498)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1864, "to_shares": 4, "original_notional": 12498.12, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:33:24.502267Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:33:24.504129Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 38 polls)
+Signal: entry at 6.7050. State: persisting 38 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1864 shares (notional ~$12,498)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:34:27.276115Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:34:27.278592Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 39 polls)
+Signal: entry at 6.7050. State: persisting 39 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1866, "to_shares": 4, "original_notional": 12492.87, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:35:29.906196Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:35:29.908098Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 40 polls)
+Signal: entry at 6.6950. State: persisting 40 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1866 shares (notional ~$12,493)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1865, "to_shares": 4, "original_notional": 12486.175000000001, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:36:32.689368Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:36:32.692817Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 41 polls)
+Signal: entry at 6.6950. State: persisting 41 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1865 shares (notional ~$12,486)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1865, "to_shares": 4, "original_notional": 12486.175000000001, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:37:36.050503Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:37:36.051525Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 42 polls)
+Signal: entry at 6.6950. State: persisting 42 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1865 shares (notional ~$12,486)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1866, "to_shares": 4, "original_notional": 12492.87, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:38:38.996438Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:38:38.999393Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 43 polls)
+Signal: entry at 6.6950. State: persisting 43 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1866 shares (notional ~$12,493)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1866, "to_shares": 4, "original_notional": 12492.87, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:39:41.482184Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:39:41.484400Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 44 polls)
+Signal: entry at 6.6950. State: persisting 44 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1866 shares (notional ~$12,493)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"symbol": "RSI.TO", "from_shares": 1865, "to_shares": 4, "original_notional": 12486.175000000001, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:40:45.573657Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:40:45.576713Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 45 polls)
+Signal: entry at 6.6950. State: persisting 45 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1865 shares (notional ~$12,486)
+  · OSINT overlay (equity): x0.381 — live intel de-risking this class
+  · Combined mitigation scalar: x0.381
+
+{"degraded": false, "scalars": {"equity": 0.4863, "future": 0.3373, "commodity": 0.4357, "fx": 0.4863, "crypto": 0.4799, "fixed_income": 0.7349, "precious_metals": 0.7667}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T14:41:51.541889Z"}
+{"symbol": "RSI.TO", "from_shares": 1865, "to_shares": 4, "original_notional": 12486.175000000001, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:41:51.544654Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:41:51.546772Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 46 polls)
+Signal: entry at 6.6950. State: persisting 46 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1865 shares (notional ~$12,486)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1865, "to_shares": 4, "original_notional": 12486.175000000001, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:42:54.232008Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:42:54.233870Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 47 polls)
+Signal: entry at 6.6950. State: persisting 47 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1865 shares (notional ~$12,486)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1866, "to_shares": 4, "original_notional": 12492.87, "trimmed_notional": 26.78, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:43:57.238804Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.78 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:43:57.240630Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 48 polls)
+Signal: entry at 6.6950. State: persisting 48 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1866 shares (notional ~$12,493)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:44:59.954383Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:44:59.955336Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 49 polls)
+Signal: entry at 6.7050. State: persisting 49 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1863, "to_shares": 4, "original_notional": 12491.415, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:46:03.170282Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:46:03.172261Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 50 polls)
+Signal: entry at 6.7050. State: persisting 50 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1863 shares (notional ~$12,491)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T14:47:03.769540Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T14:47:04.015442Z"}
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12484.710000000001, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:47:06.019355Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:47:06.020293Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 51 polls)
+Signal: entry at 6.7050. State: persisting 51 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,485)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12484.710000000001, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:48:08.692311Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:48:08.693278Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 52 polls)
+Signal: entry at 6.7050. State: persisting 52 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,485)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12484.710000000001, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:49:11.320252Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:49:11.322092Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 53 polls)
+Signal: entry at 6.7050. State: persisting 53 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,485)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1862, "to_shares": 4, "original_notional": 12484.710000000001, "trimmed_notional": 26.82, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:50:14.127093Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.82 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:50:14.128999Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 54 polls)
+Signal: entry at 6.7050. State: persisting 54 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1862 shares (notional ~$12,485)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1859, "to_shares": 4, "original_notional": 12483.185, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:51:16.960626Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:51:16.962542Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 55 polls)
+Signal: entry at 6.7150. State: persisting 55 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1859 shares (notional ~$12,483)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1859, "to_shares": 4, "original_notional": 12483.185, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:52:19.821290Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:52:19.823932Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 56 polls)
+Signal: entry at 6.7150. State: persisting 56 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1859 shares (notional ~$12,483)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1859, "to_shares": 4, "original_notional": 12483.185, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:53:22.302994Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:53:22.303903Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 57 polls)
+Signal: entry at 6.7150. State: persisting 57 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1859 shares (notional ~$12,483)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"symbol": "RSI.TO", "from_shares": 1859, "to_shares": 4, "original_notional": 12483.185, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:54:25.155126Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:54:25.157278Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 58 polls)
+Signal: entry at 6.7150. State: persisting 58 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1859 shares (notional ~$12,483)
+  · OSINT overlay (equity): x0.486 — live intel de-risking this class
+  · Combined mitigation scalar: x0.486
+
+{"interval_seconds": 300, "warmup_minutes": 60.0, "event": "monitor.warmup.ended", "level": "info", "timestamp": "2026-09-22T14:54:25.659693Z"}
+{"degraded": false, "scalars": {"equity": 0.488, "future": 0.3401, "commodity": 0.439, "fx": 0.488, "crypto": 0.4806, "fixed_income": 0.7361, "precious_metals": 0.7679}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T14:59:31.208146Z"}
+{"symbol": "RSI.TO", "from_shares": 1856, "to_shares": 4, "original_notional": 12481.599999999999, "trimmed_notional": 26.9, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T14:59:31.211601Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.90 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T14:59:31.213426Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 59 polls)
+Signal: entry at 6.7250. State: persisting 59 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1856 shares (notional ~$12,482)
+  · OSINT overlay (equity): x0.488 — live intel de-risking this class
+  · Combined mitigation scalar: x0.488
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T15:04:31.932236Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T15:04:31.932726Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T15:04:32.228082Z"}
+{"symbol": "RSI.TO", "from_shares": 1857, "to_shares": 4, "original_notional": 12488.324999999999, "trimmed_notional": 26.9, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:04:34.166235Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.90 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:04:34.167483Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 60 polls)
+Signal: entry at 6.7250. State: persisting 60 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1857 shares (notional ~$12,488)
+  · OSINT overlay (equity): x0.488 — live intel de-risking this class
+  · Combined mitigation scalar: x0.488
+
+{"symbol": "RSI.TO", "from_shares": 1857, "to_shares": 4, "original_notional": 12488.324999999999, "trimmed_notional": 26.9, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:09:36.741405Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.90 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:09:36.742355Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 61 polls)
+Signal: entry at 6.7250. State: persisting 61 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1857 shares (notional ~$12,488)
+  · OSINT overlay (equity): x0.488 — live intel de-risking this class
+  · Combined mitigation scalar: x0.488
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T15:14:37.447912Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T15:14:37.448392Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T15:14:37.670507Z"}
+{"degraded": false, "scalars": {"equity": 0.4337, "future": 0.2989, "commodity": 0.4139, "fx": 0.4337, "crypto": 0.4021, "fixed_income": 0.7107, "precious_metals": 0.7481}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T15:14:43.444465Z"}
+{"symbol": "RSI.TO", "from_shares": 1856, "to_shares": 4, "original_notional": 12481.599999999999, "trimmed_notional": 26.9, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:14:43.447001Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.90 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:14:43.448890Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 62 polls)
+Signal: entry at 6.7250. State: persisting 62 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1856 shares (notional ~$12,482)
+  · OSINT overlay (equity): x0.434 — live intel de-risking this class
+  · Combined mitigation scalar: x0.434
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T15:19:44.223646Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T15:19:44.224148Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T15:19:44.512909Z"}
+{"symbol": "RSI.TO", "from_shares": 1856, "to_shares": 4, "original_notional": 12481.599999999999, "trimmed_notional": 26.9, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:19:46.597298Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.90 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:19:46.598314Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 63 polls)
+Signal: entry at 6.7250. State: persisting 63 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1856 shares (notional ~$12,482)
+  · OSINT overlay (equity): x0.434 — live intel de-risking this class
+  · Combined mitigation scalar: x0.434
+
+{"symbol": "RSI.TO", "from_shares": 1858, "to_shares": 4, "original_notional": 12476.47, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:24:49.331614Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:24:49.333801Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 64 polls)
+Signal: entry at 6.7150. State: persisting 64 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1858 shares (notional ~$12,476)
+  · OSINT overlay (equity): x0.434 — live intel de-risking this class
+  · Combined mitigation scalar: x0.434
+
+{"degraded": false, "scalars": {"equity": 0.5113, "future": 0.3911, "commodity": 0.5072, "fx": 0.5113, "crypto": 0.4748, "fixed_income": 0.7565, "precious_metals": 0.7896}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T15:29:55.599172Z"}
+{"symbol": "RSI.TO", "from_shares": 1857, "to_shares": 4, "original_notional": 12469.755, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:29:55.601993Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:29:55.603857Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 65 polls)
+Signal: entry at 6.7150. State: persisting 65 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1857 shares (notional ~$12,470)
+  · OSINT overlay (equity): x0.511 — live intel de-risking this class
+  · Combined mitigation scalar: x0.511
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T15:34:56.287856Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T15:34:56.288009Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T15:34:56.511485Z"}
+{"symbol": "RSI.TO", "from_shares": 1861, "to_shares": 4, "original_notional": 12468.7, "trimmed_notional": 26.8, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:34:58.578920Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.80 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:34:58.581156Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 66 polls)
+Signal: entry at 6.7000. State: persisting 66 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1861 shares (notional ~$12,469)
+  · OSINT overlay (equity): x0.511 — live intel de-risking this class
+  · Combined mitigation scalar: x0.511
+
+{"symbol": "RSI.TO", "from_shares": 1857, "to_shares": 4, "original_notional": 12469.755, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:40:01.464372Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:40:01.465279Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 67 polls)
+Signal: entry at 6.7150. State: persisting 67 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1857 shares (notional ~$12,470)
+  · OSINT overlay (equity): x0.511 — live intel de-risking this class
+  · Combined mitigation scalar: x0.511
+
+{"degraded": false, "scalars": {"equity": 0.4919, "future": 0.3773, "commodity": 0.5017, "fx": 0.4919, "crypto": 0.4453, "fixed_income": 0.7483, "precious_metals": 0.7837}, "event": "overlay.refreshed", "level": "info", "timestamp": "2026-09-22T15:45:08.659882Z"}
+{"symbol": "RSI.TO", "from_shares": 1856, "to_shares": 4, "original_notional": 12463.039999999999, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:45:08.663574Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:45:08.665856Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 68 polls)
+Signal: entry at 6.7150. State: persisting 68 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1856 shares (notional ~$12,463)
+  · OSINT overlay (equity): x0.492 — live intel de-risking this class
+  · Combined mitigation scalar: x0.492
+
+{"event": "questrade.access_token.rejected.retry", "level": "warning", "timestamp": "2026-09-22T15:50:09.428384Z"}
+{"event": "questrade.token.refresh.start", "level": "info", "timestamp": "2026-09-22T15:50:09.428687Z"}
+{"api_server": "https://api01.iq.questrade.com/", "event": "questrade.token.refresh.ok", "level": "info", "timestamp": "2026-09-22T15:50:09.654687Z"}
+{"symbol": "RSI.TO", "from_shares": 1856, "to_shares": 4, "original_notional": 12463.039999999999, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:50:11.789616Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:50:11.790929Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 69 polls)
+Signal: entry at 6.7150. State: persisting 69 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1856 shares (notional ~$12,463)
+  · OSINT overlay (equity): x0.492 — live intel de-risking this class
+  · Combined mitigation scalar: x0.492
+
+{"symbol": "RSI.TO", "from_shares": 1857, "to_shares": 4, "original_notional": 12469.755, "trimmed_notional": 26.86, "reason": "leverage=1.12x>1.00x", "event": "router.size_trimmed", "level": "info", "timestamp": "2026-09-22T15:55:14.467961Z"}
+{"symbol": "RSI.TO", "reasons": ["open positions 4 >= cap 3", "after trim: notional $26.86 below min $100.0"], "event": "router.rejected", "level": "warning", "timestamp": "2026-09-22T15:55:14.469952Z"}
+[ALERT] ENTRY  RSI.TO  bollinger  (persisting 70 polls)
+Signal: entry at 6.7150. State: persisting 70 polls.
+
+Why this trade:
+  Symbol is NOT in WALK_FORWARD_VALIDATED. This entry is a live-strategy signal without walk-forward evidence — treat with corresponding caution.
+
+Sizing chain:
+  · Position size: 1857 shares (notional ~$12,470)
+  · OSINT overlay (equity): x0.492 — live intel de-risking this class
+  · Combined mitigation scalar: x0.492
+

@@ -21,6 +21,10 @@ Two out-of-loop signals get piped to the trading-path Alerter (Telegram + email 
 * **wash events** — every temporal-gate run emits a one-line summary of edges pruned and
   fraction of the journal collapsed. Deliberately quiet: fires at the wash cadence (default
   once every 72h, not per poll).
+* **heartbeat** (2026-09-18) — on the first poll after launch, then every ``--heartbeat-hours``
+  (default 24h): the theses currently firing (or "quiet tape") and the readings against their
+  gates. Thesis alerts are silent most of the time since the 2026-09-16 recalibration; the
+  heartbeat is what tells that silence apart from a dead pipeline.
 
 Snapshots are cached with a ``cached_at`` stamp on the vendor side; running at too high a cadence
 just journals the SAME payload against a stale age. Default ``--sleep 900`` (15 min) matches the
@@ -34,26 +38,50 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
+if sys.platform == "win32":
+    # The Windows console is cp1252, which cannot encode the arrows and bullets in this script's
+    # help text and thesis output: `--help` raised UnicodeEncodeError and printed nothing usable
+    # (found 2026-09-21). errors="replace" is deliberate — surviving with a '?' beats a crash
+    # mid-poll, and the callers that previously worked around this with PYTHONIOENCODING no longer
+    # have to.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[union-attr]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[union-attr]
+    except Exception:                                                  # pragma: no cover
+        pass
+
 from trading_live_claude.config import get_settings
 from trading_live_claude.intel.graph import (
     DEFAULT_GRAPH_JOURNAL,
     edge_persistence,
+    last_wash_time,
     load_edges,
+    record_wash_time,
+    wash_due,
     wash_journal_file,
 )
-from trading_live_claude.intel.interpret import THEME_EXEMPLARS, interpret
+from trading_live_claude.intel.interpret import (
+    CONFLICT_EVENTS_ELEVATED,
+    STRATEGIC_RISK_STRESSED,
+    THEME_EXEMPLARS,
+    interpret,
+)
 from trading_live_claude.intel.notification import (
+    format_heartbeat,
     format_persistence,
     format_thesis,
     format_wash,
 )
 from trading_live_claude.intel.overlay import IntelSnapshot
 from trading_live_claude.intel.routing import OverlayProvider
+from trading_live_claude.intel.thesis_intensity import intensity as thesis_intensity
+from trading_live_claude.intel.thesis_intensity import load_history
 from trading_live_claude.intel.worldmonitor import WorldMonitorClient
 from trading_live_claude.monitor import Alerter
 from trading_live_claude.monitor.alerter import AlertConfig
@@ -163,6 +191,9 @@ def main() -> None:
                     action=argparse.BooleanOptionalAction,
                     help="Send persistence-hit + wash-event notifications to the alerter "
                          "(Telegram + email + stdout). Default ON.")
+    ap.add_argument("--heartbeat-hours", type=float, default=24.0,
+                    help="Send a liveness read (theses firing + readings vs gates) on the first poll "
+                         "after launch and then every N hours. 0 disables. Default 24.")
     ap.add_argument("--held-scope", dest="held_scope", default=False,
                     action=argparse.BooleanOptionalAction,
                     help="Load the current held baskets (WALK_FORWARD_VALIDATED + CRYPTO_SLEEVE) "
@@ -232,9 +263,11 @@ def main() -> None:
     provider = _build_overlay_provider(refresh_seconds=args.sleep)
     alerter = _build_alerter() if args.alerts else None
     already_alerted: set[str] = set()
-    # Time-based wash cadence — track the last wash's wall-clock, not iteration count.
-    last_wash_ts: float | None = None
+    # Time-based wash cadence, persisted across restarts (2026-09-18: it used to reset on every
+    # launch, so each relaunch pruned ~5% again). Falls back to the .bak mtime for older journals.
+    last_wash_ts: float | None = last_wash_time()
     wash_min_seconds = args.wash_min_hours * 3600.0
+    last_heartbeat_ts: float | None = None
 
     before = _profile_graph()
     print(f"[thicken] start: {before['edges_total']} edges, {before['nodes_total']} nodes",
@@ -244,7 +277,15 @@ def main() -> None:
           f"- overlay decisions computed AND journaled per refresh", flush=True)
     print(f"[thicken] alerts: {'ON' if alerter else 'OFF'} "
           f"(persistence threshold {args.persistence_threshold}, "
-          f"wash cadence >= {args.wash_min_hours}h)", flush=True)
+          f"wash cadence >= {args.wash_min_hours}h, "
+          f"heartbeat {'every ' + format(args.heartbeat_hours, 'g') + 'h' if args.heartbeat_hours > 0 else 'OFF'})",
+          flush=True)
+    if args.max_prune_fraction <= 0:
+        print("[thicken] pruning DISABLED (--max-prune-fraction <= 0): no wash will run", flush=True)
+    elif last_wash_ts is not None:
+        age_h = (time.time() - last_wash_ts) / 3600.0
+        print(f"[thicken] last wash {age_h:.1f}h ago; next due in "
+              f"{max(0.0, args.wash_min_hours - age_h):.1f}h", flush=True)
 
     for i in range(1, args.iterations + 1):
         t0 = time.time()
@@ -275,6 +316,7 @@ def main() -> None:
                     snap_used = provider.last_snapshot
                     if snap_used is not None:
                         theses = interpret(snap_used)
+                        history = load_history()     # real rows, last ~75h, for the time factor
                         live_keys: set[str] = set()
                         for t in theses:
                             if t.name == "No notable configuration":
@@ -297,10 +339,14 @@ def main() -> None:
                                               f"held-book exposure", flush=True)
                                         already_alerted.add(key)     # still dedup so no re-print
                                         continue
-                                    title, body = format_thesis(t, theme_exemplars=THEME_EXEMPLARS)
+                                graded = thesis_intensity(t.name, snap_used, history)
+                                if held_syms:
+                                    title, body = format_thesis(t, theme_exemplars=THEME_EXEMPLARS,
+                                                                intensity=graded)
                                     body = "HELD IN BOOK: " + ", ".join(touched) + "\n\n" + body
                                 else:
-                                    title, body = format_thesis(t, theme_exemplars=THEME_EXEMPLARS)
+                                    title, body = format_thesis(t, theme_exemplars=THEME_EXEMPLARS,
+                                                                intensity=graded)
                                 alerter.send(title, body)
                                 already_alerted.add(key)
                         # Clear thesis dedup keys for theses that stopped firing so re-crossings alert.
@@ -309,15 +355,41 @@ def main() -> None:
                         already_alerted -= stale
                 except Exception as e:
                     print(f"[thicken] thesis firing failed: {e}", flush=True)
+                # Heartbeat — first poll after launch, then every --heartbeat-hours.
+                hb_due = args.heartbeat_hours > 0 and (
+                    last_heartbeat_ts is None
+                    or time.time() - last_heartbeat_ts >= args.heartbeat_hours * 3600.0)
+                if hb_due:
+                    try:
+                        snap_hb = provider.last_snapshot
+                        if snap_hb is not None:
+                            named = [t for t in interpret(snap_hb)
+                                     if t.name != "No notable configuration"]
+                            hb_history = load_history()
+                            graded_hb = {t.name: thesis_intensity(t.name, snap_hb, hb_history)
+                                         for t in named}
+                            title, body = format_heartbeat(
+                                snapshot=snap_hb, theses=named, poll=i,
+                                polls_total=args.iterations,
+                                edges=int(snap_profile["edges_total"]),
+                                strategic_risk_gate=STRATEGIC_RISK_STRESSED,
+                                conflict_gate=CONFLICT_EVENTS_ELEVATED,
+                                interval_hours=args.heartbeat_hours,
+                                intensities={k: v for k, v in graded_hb.items() if v is not None},
+                            )
+                            alerter.send(title, body)
+                            last_heartbeat_ts = time.time()
+                    except Exception as e:
+                        print(f"[thicken] heartbeat failed: {e}", flush=True)
 
         # Temporal gate — time-based cadence (default 72h min between runs).
         now = time.time()
-        due_for_wash = last_wash_ts is None or (now - last_wash_ts) >= wash_min_seconds
-        if due_for_wash:
+        if wash_due(max_prune_fraction=args.max_prune_fraction, last_wash_ts=last_wash_ts,
+                    now=now, min_seconds=wash_min_seconds):
             try:
-                cap = args.max_prune_fraction if args.max_prune_fraction > 0 else None
-                summary = wash_journal_file(max_prune_fraction=cap)
+                summary = wash_journal_file(max_prune_fraction=args.max_prune_fraction)
                 last_wash_ts = now
+                record_wash_time(ts=now)
                 pruned = summary["pruned"]
                 pct = (pruned / summary["before"] * 100.0) if summary["before"] else 0.0
                 cap_note = " [CAP BINDING]" if summary.get("cap_binding") else ""

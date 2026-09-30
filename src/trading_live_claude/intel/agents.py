@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -289,31 +291,71 @@ def _domain_slice(evidence: list[dict[str, Any]], domain: Domain) -> list[dict[s
     return out
 
 
+DEFAULT_AGENT_JOURNAL = Path("state") / "intel_agents.jsonl"
+
+
+def _journal_debate(row: dict[str, Any], path: Path | None) -> None:
+    """Append one debate record. Never raises — journaling must not break the intel path."""
+    try:
+        target = path or (Path(get_settings().state_dir) / "intel_agents.jsonl")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as e:                       # pragma: no cover — disk/permission edge
+        log.warning("agents.journal_failed", error=str(e))
+
+
 def debate(
     evidence: list[dict[str, Any]],
     *,
     as_of: str = "",
     domains: tuple[Domain, ...] = _DOMAINS,
     client: httpx.Client | None = None,
+    journal: bool = True,
+    journal_path: Path | None = None,
 ) -> list[FiredThesis]:
     """Run one specialist per domain, then the adversary against each claim.
 
     Only ``UPHELD`` and ``WEAK`` (demoted) claims survive. A claim with no critique — the
     adversary failed — is dropped conservatively rather than kept unchallenged.
+
+    Journaling (added 2026-09-25). Every run appends one row to ``state/intel_agents.jsonl``,
+    including runs that fire nothing. Before this, the ``Claim`` / ``Critique`` structure —
+    verdict, self-reported confidence, adversary reason, cited evidence — was converted to plain
+    theses by the caller and discarded, so there was no agent history to evaluate: no way to ask
+    whether upheld claims preceded better outcomes than falsified ones.
+
+    **The row records the ATTEMPT, not just the survivors.** A missing API key makes every
+    specialist return ``None``, which is indistinguishable at the output from "the world was
+    quiet" — the same silent-no-op failure the overlay's ``degraded`` flag had. ``outcome`` per
+    domain says which it was. Pass ``journal=False`` in tests so the ground-truth journal in
+    ``state/`` is never written by a test run.
     """
     fired: list[FiredThesis] = []
+    outcomes: dict[str, dict[str, Any]] = {}
     adversary = Adversary(client=client)
     for domain in domains:
         slice_ = _domain_slice(evidence, domain)
         if not slice_:
+            outcomes[domain] = {"outcome": "no_evidence"}
             continue
         claim = SpecialistReader(domain, client=client).read(slice_, as_of=as_of)
-        if claim is None or claim.direction == "neutral" or claim.confidence < 0.2:
+        if claim is None:
+            # Specialist produced nothing: no reading, an API failure, or no key at all.
+            outcomes[domain] = {"outcome": "no_claim", "evidence_items": len(slice_)}
+            continue
+        if claim.direction == "neutral" or claim.confidence < 0.2:
+            outcomes[domain] = {"outcome": "below_threshold", "claim": asdict(claim)}
             continue
         critique = adversary.critique(claim, slice_)
-        if critique is None or critique.verdict == "FALSIFIED":
+        if critique is None:
+            outcomes[domain] = {"outcome": "no_critique", "claim": asdict(claim)}
             continue
-        fired.append(FiredThesis(
+        if critique.verdict == "FALSIFIED":
+            outcomes[domain] = {"outcome": "falsified", "claim": asdict(claim),
+                                "critique": asdict(critique)}
+            continue
+        thesis = FiredThesis(
             domain=claim.domain,
             thesis=claim.thesis,
             direction=claim.direction,
@@ -322,5 +364,21 @@ def debate(
             evidence=list(claim.evidence),
             adversary_verdict=critique.verdict,
             adversary_reason=critique.reason,
-        ))
+        )
+        outcomes[domain] = {"outcome": "fired", "claim": asdict(claim),
+                            "critique": asdict(critique), "fired": asdict(thesis)}
+        fired.append(thesis)
+
+    if journal:
+        _journal_debate({
+            "ts": datetime.now(UTC).isoformat(),
+            "as_of": as_of,
+            # Join keys for a later claim -> trade -> outcome analysis. `as_of` ties the row to the
+            # snapshot the overlay decided on; domain + thesis ties it to what the card displayed.
+            "domains_attempted": list(domains),
+            "evidence_items": len(evidence),
+            "api_key_present": bool(get_settings().anthropic_api_key),
+            "fired_count": len(fired),
+            "outcomes": outcomes,
+        }, journal_path)
     return fired
