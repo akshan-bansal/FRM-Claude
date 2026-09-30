@@ -5,6 +5,29 @@ superseded, or closed by an explicit user decision; the full pre-prune text is i
 (last committed version: `4d471f3`) and in the session scratchpad backup
 `NEXT_SESSION.backup-2026-09-16.md`.
 
+## Session 2026-09-30 — QuantPort.io basket gate (code-complete, unit-tested; not run live)
+
+Dash renamed QuantPort.io. New **BASKET** tab (first) beside **IB ACCESS**, both ahead of Approvals.
+Per venue (kraken / qt / ib) the human types symbols, runs the engines (`analysis/basket_report.py`:
+walk-forward record, in-sample screen kept separate, strategy mapping, overlay scalar, interpret
+theses, return stats, correlation and allocator weights), and proposes the basket to the card. A
+**Router gate** (`execution/basket.py`, `Router.basket_gate`) then rejects ENTRIES outside the
+card-signed basket and on venues with none; exits are never gated. Rows in `state/baskets.jsonl`
+are re-verified against the card registry on load, so a hand edit approves nothing.
+
+- **Exempt until restart:** running sessions have no gate. `--require-basket` (default: on whenever
+  `--require-card` is on) on `paper_kraken.py`, `paper_ib.py`, `cli signal`. After a restart a venue
+  takes NO entries until its basket is signed: `python scripts/basket.py sign --venue kraken --from-seed`
+  (seed = `config/basket_seed.json`, the asset config settled in the 2026-09-29/30 desktop session).
+- **Firmware TODO (not done):** only the SIMULATED card signs baskets (`scripts/basket.py`). The
+  firmware parser reads the nine-field trade canonical and refuses `BASKET|1|venue|SYM,SYM|analysis_hash|issued_at|nonce`,
+  the safe failure. A physical card needs: a basket prompt kind on the wire (`GET /v1/basket` already
+  lists proposals; a signed-row POST does not exist yet), a screen showing venue, symbol count and
+  fingerprint, and a `SPEC_VERSION` bump. `firmware/tradecard/main/main.c` was already modified in the tree.
+- **Not wired:** QT and IB return statistics (only Kraken pairs in the crypto sleeve fetch closes, via
+  Kraken's public OHLC); the panel could not be driven against a live shim from the browser pane, so the
+  live render path was checked with stubbed data only.
+
 ## Session 2026-09-24 / 25 — defect pass + capital-integrity page
 
 Full suite after the work: **1388 passed, 1 skipped, 0 failed** (4m06s; the skip is the POSIX-only
