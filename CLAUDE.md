@@ -106,7 +106,7 @@ This repo supports a fully-autonomous Claude-driven trading loop. **Read these r
 
 An optional third gate sits between the Router's risk checks and broker dispatch: a
 physical approval card the user taps ACCEPT / DECLINE on. It's disabled by default and
-opt-in per-run via `--require-card` on `paper_ib.py` / `paper_kraken.py`.
+opt-in per-run via `--require-card` on `paper_ib.py` / `paper_kraken.py` / `cli signal` (QT).
 
 - **Never weakens existing gates.** `ApprovalRouter` runs `Router._gate` FIRST, and only
   publishes a prompt to the card if the router would have accepted the intent anyway.
@@ -114,7 +114,7 @@ opt-in per-run via `--require-card` on `paper_ib.py` / `paper_kraken.py`.
 - **Autonomous mode cannot be wrapped.** `AUTONOMOUS_ENABLED=true` + card approval are
   mutually exclusive; the wrapper raises at construction. Pick one loop.
 - **WYSIWYS canonical bytes.** The card signs a `|`-joined string that includes the
-  broker (`ib` / `kraken` / `questrade`), action, symbol, shares, entry, notional,
+  broker venue (`ib` / `ib_web` / `kraken` / `questrade` / `paper` / `global`), action, symbol, shares, entry, notional,
   account, intent id, and nonce. A MITM cannot silently swap the broker or resize the
   intent — the signature won't verify.
 - **Thesis from the VS engine.** `intel/vs_engine.py` composes a `<=140` char thesis
@@ -138,12 +138,30 @@ Layout:
   end-to-end (register / poll / sign / respond). Real firmware in `firmware/tradecard/`
   is a separate ESP-IDF project; the Python wheel does not ship it.
 
-To exercise without silicon:
+To exercise without silicon (verified end to end 2026-09-18, Kraken is 24/7):
 ```
-python scripts/approval_shim.py --port 8787
-python scripts/approval_card_sim.py --auto accept
-python -m trading_live_claude.cli signal --paper --require-card ...
+# 1. The paper script boots the shim itself on --card-shim-port and prints the card's bearer token.
+python scripts/paper_kraken.py --interval 20 --iterations 2 --require-card --card-shim-port 8787 --card-ttl 120
+# 2. In a second shell, pair the simulated card with that token.
+python scripts/approval_card_sim.py --shim http://127.0.0.1:8787 --auto accept --poll 1 --auth-token <token>
 ```
+`--require-card` exists on `scripts/paper_kraken.py`, `scripts/paper_ib.py` and `cli signal --paper`
+(the QT path, added 2026-09-28 with `--card-shim-host/--card-shim-port/--card-ttl`).
+`scripts/approval_shim.py` runs the shim standalone, for a loop that doesn't boot its own.
+Note: with the card on, the flatten-on-exit sells also need an ACCEPT.
+
+**The desk panel rides on the same shim.** Whatever boots the shim also serves the built panel:
+
+- `GET /desk` — public unlock shell, carries no journal data and never the token.
+- `GET /v1/desk/page` — the built page, behind the same auth as every other `/v1` route.
+
+Serving it there is what makes it live: the page's fetches are same-origin, so no CORS hole is
+opened and no token travels in a URL (the viewer pastes it into the shell once, per tab). The panel
+polls `/v1/intents/pending` and `/v1/stats` and is **read-only by construction** — it displays the
+prompt and its fingerprint for comparison against the card's screen; the ACCEPT that decides it is a
+signature made on the device. Without a link it shows no queue at all rather than a specimen one.
+Rebuild the page with `python scripts/build_desk_dash.py` (writes `pwa/desk.html` and the copy in
+`OS-InvestmentIntelligenceDashboard/`).
 
 Gap-closure objectives live in `NEXT_SESSION.md` section 11.
 
@@ -156,9 +174,13 @@ Gap-closure objectives live in `NEXT_SESSION.md` section 11.
 - `risk-management` — sizing, VaR, heat, kill switch
 - `live-signal-monitor` — polling loop, alerts only, never orders
 - `questrade-execution` — signal → risk gate → live order (own skill)
+- `claude-trader` — LLM-driven trading decisions (`/trade-check`); algorithms are helpers
 
 `.claude/commands/`:
 - `/autonomous status|start|stop|tail` — manage the autonomous daemon
+- `/trade-check`, `/trade-now` — LLM-driven trading (Mode A)
+- `/backtest`, `/tune`, `/signal-check`, `/paper-trade`, `/positions`, `/risk-report`, `/kill`,
+  `/live-trade-confirm`
 
 `.claude/agents/`:
 - `autonomous-monitor` — periodic health audit of the daemon

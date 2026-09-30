@@ -137,8 +137,9 @@ uv run trading signal --strategy rsi_meanrevert --symbols AAPL,MSFT --interval 6
 # 6. Paper trade (default mode)
 uv run trading paper --strategy ema_crossover --symbols AAPL,XIC.TO
 
-# 7. Live trade (requires explicit confirmation)
-EXECUTION_MODE=live uv run trading live --strategy ema_crossover --symbols AAPL --confirm "I UNDERSTAND THE RISK"
+# 7. Live trade — a runtime decision for the human only, so no copy-paste command is given here.
+#    Run the pre-flight checklist first (/live-trade-confirm, or the risk-gate agent); `trading live`
+#    also requires its --confirm phrase. See CLAUDE.md "When the user asks to go live".
 
 # 8. Autonomous mode (Claude-managed daemon, NO typed confirm per order)
 #    First, set in .env:    AUTONOMOUS_ENABLED=true   AUTONOMOUS_ACCOUNT=practice
@@ -192,24 +193,34 @@ If `AUTONOMOUS_AUTO_START_ON_SESSION=true`, the SessionStart hook auto-spawns th
 | Data | `data/market.py`, `data/cache.py` | Historical candles + live quotes (Questrade), parquet cache |
 | Risk | `risk/sizing.py`, `risk/var.py`, `risk/kill_switch.py` | ATR sizing, fixed-fractional, portfolio heat, Historical VaR, kill-switch |
 | Signals | `signals/indicators.py`, `signals/generator.py` | EMA/SMA/RSI/MACD/ATR/Bollinger, no-lookahead enforcement |
-| Strategies | `strategies/examples/*` | 6 working strategies (see below) |
+| Strategies | `strategies/` (`STRATEGIES` registry) | 44 registered strategies across 14 families (see below) |
 | Backtest | `backtest/engine.py`, `backtest/metrics.py` | Vectorized engine, Sharpe / max DD / win-rate / equity curve |
-| Execution | `execution/router.py`, `execution/paper.py`, `execution/live.py` | Paper sim + live router with risk gates |
+| Execution | `execution/router.py`, `execution/journal.py`, `execution/daily_budget.py`, `brokers/paper.py` | Risk-gated router (the only order path), order/fill journals, autonomous daily caps, paper simulator |
 | Monitor | `monitor/live_loop.py`, `monitor/alerter.py` | Real-time loop, Telegram/email alerts |
 | CLI | `cli.py` | `trading` command (Typer) |
 
-### Strategies (`strategies/examples/`)
+### Strategies (`strategies/`, registered in `STRATEGIES`)
 
-- `ema_crossover.py` — Fast/slow EMA cross
-- `rsi_meanrevert.py` — RSI(14) < 30 long, > 70 short
-- `macd.py` — MACD signal-line cross
-- `bollinger.py` — Mean-revert at 2σ bands
-- `momentum_breakout.py` — N-day Donchian breakout
-- `pairs.py` — Cointegrated pair z-score reversion
+44 strategies, grouped by family (registry keys; `uv run trading backtest --strategy <key> …`):
+
+- **Trend / momentum:** `ts_momentum`, `dual_ma`, `high_52w_breakout`, `ema_crossover`, `macd`,
+  `momentum_breakout` (Donchian)
+- **Mean reversion:** `bollinger`, `rsi_meanrevert`, `rsi2_connors`, `zscore_ou`, `bb_rsi_combo`
+- **Candlestick-confirmed mean reversion:** `confirm_bollinger`, `confirm_rsi_meanrevert`
+- **Volatility / channel:** `atr_channel`, `bbwidth_squeeze`, `vol_target`
+- **Composite:** `composite` (OR of bollinger, rsi_meanrevert, ema_crossover, momentum_breakout)
+- **Candlestick patterns:** 17 `candle_<pattern>` strategies
+- **Valuation:** `val_bollinger`, `val_rsi`, `val_gate_bollinger`, `val_composite`
+- **Seasonality:** `turn_of_month`, `day_of_week`, `month_of_year`
+- **Pairs / model-based:** `pairs`, `kalman_pairs`, `arima_garch`
+
+Optional exit layers on the QT `signal` command (off by default): `--profit-lock` (V1),
+`--candle-exit` (V2) and `--overbought-exit` (V3), each with an `--*-exempt` strategy list. See
+`signals/profit_lock.py`, `signals/candle_exit.py` and `signals/overbought_exit.py`.
 
 ### Claude skills (`.claude/skills/`)
 
-Six skills auto-load when this repo is the working directory:
+Seven skills auto-load when this repo is the working directory:
 
 1. **backtest-expert** — turns a plain-English strategy spec into a vectorized backtest (article skill #1, rewired for Questrade)
 2. **market-data-pipeline** — standardized OHLCV fetch via Questrade (article skill #2)
@@ -217,6 +228,7 @@ Six skills auto-load when this repo is the working directory:
 4. **risk-management** — ATR sizing, VaR, portfolio heat, kill-switch (article skill #4)
 5. **live-signal-monitor** — polling loop + alerts, no execution (article skill #5)
 6. **questrade-execution** — own skill: signal → risk gate → Questrade order, paper/live aware
+7. **claude-trader** — Claude as the trader: weighs the algorithms' signals and decides (`/trade-check`)
 
 ### Claude slash commands (`.claude/commands/`)
 
@@ -227,11 +239,16 @@ Six skills auto-load when this repo is the working directory:
 - `/risk-report` — current account exposure, heat, VaR
 - `/positions` — show current Questrade positions
 - `/kill` — hit the kill-switch immediately
+- `/trade-check` — Claude decides whether and how to trade right now (routes through the Router)
+- `/trade-now` — place one order Claude already decided on
+- `/tune` — backtest a strategy × symbol grid and rewrite `config/trading.yaml`
+- `/autonomous status|start|stop|tail` — manage the autonomous daemon
 
 ### Claude agents (`.claude/agents/`)
 
 - `risk-gate` — read-only audit of any proposed order set before live submission
 - `strategy-reviewer` — checks strategy code for lookahead, survivorship, overfitting smells
+- `autonomous-monitor` — periodic health audit of the autonomous daemon (never takes destructive actions)
 
 ---
 
