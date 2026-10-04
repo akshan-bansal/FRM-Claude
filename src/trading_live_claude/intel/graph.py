@@ -52,9 +52,19 @@ DEFAULT_GRAPH_JOURNAL = "state/intel_graph.jsonl"
 # saw the vendor's already-aggregated fields. ``venue`` and ``symbol`` were added when the paper
 # brokers started closing the fills→graph loop, giving downstream queries like "which venues
 # traded X" or "did fills cluster around a stressed_by market bridge" first-class node targets.
+#
+# ``society`` and ``factor`` (2026-10-03, HOMOGENEOUS_GRAPH_SCOPE.md): a ``society`` node is one
+# OASIS simulation run (id = the run_id the seed was issued under); a ``factor`` node is a
+# systematic return driver a symbol loads on (``meta.kind`` says which sort). Both join the existing
+# graph through ``symbol`` so a fill, the intel behind it and the simulated society's view are one
+# connected component rather than a third island.
+#
+# ``agent`` (2026-10-04): one simulated agent of a ``society``; id is ``<run_id>:<agent_id>`` so two
+# runs never share a node. Added once ``sim/oasis_graph.py`` could read per-agent structure out of
+# an OASIS run's database (the result file only ever carried per-symbol aggregates).
 NodeType = Literal[
     "poll", "domain", "region", "source", "market", "event", "venue", "symbol",
-    "analysis",
+    "analysis", "society", "factor", "agent",
 ]
 
 # Edge predicates.
@@ -68,10 +78,22 @@ NodeType = Literal[
 #   ``traded`` — a venue executed a fill on a symbol; weight is the notional, meta carries
 #                action / qty / price / session_id / order_id / ts_fill (a per-fill decomposition,
 #                paired with venue and symbol nodes to keep the record queryable)
+#   ``holds_stance`` — a simulated society's aggregate view of a symbol: weight is the mean stance in
+#                      [-1, +1] (-1 adverse), meta carries dispersion / agent count / run id. It is
+#                      what the simulation REPORTED; nothing says the stance was right.
+#   ``loads_on`` — a symbol's loading on a factor; weight is the loading, meta the estimator.
+#   ``member_of`` — an agent belongs to a society run (structural, weight 1).
+#   ``follows`` — one simulated agent follows another (weight 1).
+#   ``engaged`` — one agent liked / disliked / commented on / reposted another's items; weight is
+#                 the number of interactions, meta the breakdown. Counts only, never the text.
+#   ``attends`` — an agent's posts or comments mentioned a symbol; weight is the number of items.
+#                 A count of what the agent wrote about, not a view of it: no sentiment is read.
+#   ``seeded`` — a poll briefed a society (poll -> society): the snapshot the simulated agents were
+#                shown. This is what makes "which intelligence did this society read" a walk, not a guess.
 Predicate = Literal[
     "observed", "elevated_in", "co_occurs", "stressed_by",
     "mentioned_by", "about_domain", "affects_region", "traded", "ranked_by",
-    "scaled",
+    "scaled", "holds_stance", "loads_on", "member_of", "follows", "engaged", "attends", "seeded",
 ]
 
 # Threshold below which "elevated" is not asserted. Matches the interpret.py convention that a
@@ -302,6 +324,16 @@ DEFAULT_POLICIES: dict[Predicate, DecayPolicy] = {
                                     step_mid_factor=0.6, step_tail_factor=0.2, ttl_h=60 * 24),
     "affects_region": DecayPolicy(mode="step", step_band1_h=48.0, step_band2_h=336.0,
                                     step_mid_factor=0.6, step_tail_factor=0.2, ttl_h=60 * 24),
+    # A simulated view and an estimated loading both go stale: they describe a snapshot of the
+    # world, not a decision made at a moment. (``scaled`` and ``traded`` have NO policy on purpose.)
+    "holds_stance":   DecayPolicy(mode="exp", half_life_h=24.0, ttl_h=7 * 24),
+    "loads_on":       DecayPolicy(mode="exp", half_life_h=72.0, ttl_h=14 * 24),
+    # The structure of one simulated run: as perishable as the stance it came with.
+    "member_of":      DecayPolicy(mode="exp", half_life_h=24.0, ttl_h=7 * 24),
+    "follows":        DecayPolicy(mode="exp", half_life_h=24.0, ttl_h=7 * 24),
+    "engaged":        DecayPolicy(mode="exp", half_life_h=24.0, ttl_h=7 * 24),
+    "attends":        DecayPolicy(mode="exp", half_life_h=24.0, ttl_h=7 * 24),
+    "seeded":         DecayPolicy(mode="exp", half_life_h=24.0, ttl_h=7 * 24),
 }
 
 
@@ -364,7 +396,12 @@ def wash_edges(
         if pol.ttl_h is not None and age_h > pol.ttl_h:
             continue                    # pruned by hard TTL
         new_w = _decayed_weight(e.weight, age_h, pol)
-        if new_w < pol.min_weight:
+        # Magnitude, not sign: ``holds_stance`` is signed (-1 adverse .. +1 constructive). A signed
+        # compare dropped EVERY negative-weight edge on the first wash, i.e. it would have deleted
+        # exactly the adverse views the influence adapter acts on while keeping the constructive
+        # ones. Every pre-existing decaying predicate has a non-negative weight, so this changes
+        # nothing for them; ``traded`` / ``ranked_by`` are signed but have no policy at all.
+        if abs(new_w) < pol.min_weight:
             continue                    # decayed below the noise floor
         if abs(new_w - e.weight) < 1e-12:
             out.append(e)

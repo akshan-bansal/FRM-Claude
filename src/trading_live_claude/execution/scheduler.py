@@ -193,6 +193,16 @@ class SessionRouter:
                     return None
                 intent.shares = lots
                 intent.risk_dollars = lots * abs(intent.entry - intent.stop)
+                # The probe is a COPY, so a simulated-society scaling it applied is invisible to the
+                # real intent, and the gate pass inside submit() below would scale the already-scaled
+                # lot count a second time. Carry the record over, but ONLY when the probe really
+                # scaled: if society trimmed the probe to zero shares the probe merely collected a
+                # rejection reason (ignored here), and marking the real intent "handled" would let it
+                # through at full size. Left unmarked, the real gate pass reaches the same verdict.
+                if probe.society_influence is not None:
+                    intent.society_influence = probe.society_influence
+                    intent.society_run_id = probe.society_run_id
+                    intent.society_applied = probe.society_applied
         return self.inner.submit(intent, equity=equity, existing_risk=existing_risk,
                                  open_positions=open_positions,
                                  current_open_notional=current_open_notional)

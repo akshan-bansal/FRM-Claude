@@ -81,6 +81,28 @@ class OrderIntent:
     # caller that holds the instance; the Router falls back to its ``strategy_version_for``
     # resolver, and records nothing rather than guessing when neither is available.
     strategy_version: str = ""
+    # Simulated-society influence (HOMOGENEOUS_GRAPH_SCOPE.md). A multiplier in (0, 1] that can only
+    # REDUCE an entry; ``None`` = no view. Set by the caller, or resolved by ``Router.society_view``.
+    # ``society_applied`` makes the scaling idempotent: the card path gates an intent, waits for the
+    # card, then submits the SAME object again, and a second pass must not shrink it a second time.
+    society_influence: float | None = None
+    society_run_id: str = ""
+    society_applied: bool = False
+
+
+def _society_multiplier(value: object) -> float | None:
+    """A usable influence in ``(0, 1]``, or ``None`` for "no view".
+
+    Same contract as ``intel.graph.clamp_influence`` (kept local so the Router does not import the
+    intel package): non-numeric, NaN, or <= 0 means no view, and anything above 1 is capped at 1, so
+    a bad value can never enlarge an order.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    v = float(value)
+    if v != v or v <= 0.0:
+        return None
+    return min(v, 1.0)
 
 
 def mint_intent_id() -> str:
@@ -151,6 +173,11 @@ class Router:
         # launch scripts after construction; when set, an ENTRY outside the signed basket, or on a
         # venue with no valid signed basket, is rejected. Exits are never gated by it.
         self.basket_gate: BasketGate | None = None
+        # symbol -> (influence, run_id) for a simulated society's view, or None for no view. Like
+        # ``basket_gate`` it is set after construction and is OFF by default, so every existing
+        # caller behaves exactly as before. Only ever consulted for ENTRIES, and only ever shrinks
+        # one (see ``_apply_society_influence``).
+        self.society_view: Callable[[str], tuple[float, str] | None] | None = None
         # Resolver name -> strategy version, for intents that don't carry their own. LiveMonitor
         # installs one built from its actual strategy instances (so parameters are reflected).
         self.strategy_version_for: Callable[[str], str] | None = None
@@ -351,6 +378,55 @@ class Router:
                 held += n
         return total, held
 
+    def _apply_society_influence(self, intent: OrderIntent, reasons: list[str]) -> None:
+        """Shrink a BUY by the simulated society's influence, once, before any size gate runs.
+
+        Runs first so the min-ticket, size-cap and cost gates all judge the size that would
+        actually be sent, and the cost gate sees the SCALED notional (a smaller position pays a
+        larger fixed-fee ratio, and an intent pushed under the ceiling is rejected, never sized back
+        up). One-sided by construction: the multiplier is capped at 1, so this can only reduce.
+        Exits are never touched: getting out must not depend on a simulated view.
+
+        A resolver that raises, or returns something unusable, means "no view" and the order goes
+        through unscaled: this is advisory input, and the hard gates below do not depend on it.
+        """
+        if intent.society_applied or intent.action != OrderAction.BUY:
+            return
+        influence, run_id = intent.society_influence, intent.society_run_id
+        if influence is None and self.society_view is not None:
+            try:
+                got = self.society_view(intent.symbol)
+            except Exception as e:                              # advisory input must never break a trade
+                log.warning("router.society_view_failed", symbol=intent.symbol, error=str(e))
+                got = None
+            if got is not None:
+                influence, run_id = got
+        intent.society_applied = True                           # resolved once, whatever the outcome
+        mult = _society_multiplier(influence)
+        if mult is None or mult >= 1.0:
+            return
+        scaled = self.quantity_rule_for(intent.symbol).floor(intent.shares * mult, intent.entry)
+        if scaled <= 0:
+            reasons.append(
+                f"society influence {mult:.3f} trims {intent.shares:g} shares to 0 "
+                f"(run {run_id or 'n/a'})"
+            )
+            return
+        self._ledger_event("RISK_TRIMMED", {
+            "symbol": intent.symbol,
+            "from_shares": intent.shares,
+            "to_shares": scaled,
+            "original_notional": intent.shares * intent.entry,
+            "trimmed_notional": scaled * intent.entry,
+            "reason": f"society_influence={mult:.3f}",
+            "society_run_id": run_id,
+        }, intent=intent)
+        log.info("router.society_scaled", symbol=intent.symbol, from_shares=intent.shares,
+                 to_shares=scaled, influence=mult, run_id=run_id)
+        intent.shares = scaled
+        intent.society_influence = mult
+        intent.society_run_id = run_id
+
     def _gate(
         self,
         intent: OrderIntent,
@@ -361,6 +437,9 @@ class Router:
         current_open_notional: float | None = None,
     ) -> GateDecision:
         reasons: list[str] = []
+
+        # 0. Simulated-society influence (entries only; reduces size, never increases it)
+        self._apply_society_influence(intent, reasons)
 
         # 1. kill switch
         if self.kill_switch.state().halted:
@@ -709,6 +788,11 @@ class Router:
                 "risk_dollars": intent.risk_dollars,
                 "accepted": decision.accepted,
                 "rejected_reasons": decision.rejected_reasons,
+                # Only when a society view actually scaled this intent, so every other row is
+                # byte-identical to what it was before.
+                **({"society_influence": intent.society_influence,
+                    "society_run_id": intent.society_run_id}
+                   if intent.society_influence is not None else {}),
             }
         )
 
