@@ -5,13 +5,19 @@ The CLI command `trading tune` calls into this. Results are written to
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 
+import numpy as np
+import pandas as pd
+from numpy.typing import NDArray
+
 from .analysis.classification import confusion
-from .analysis.labeling import label_events
+from .analysis.labeling import forward_return, label_events
+from .analysis.lens_audit import MAX_EVENTS, LensResult, future_by_group, reliability_by_group
 from .backtest import BacktestEngine
 from .backtest.metrics import Metrics
 from .brokers.base import Broker
@@ -95,6 +101,140 @@ DEFAULT_TUNE_STRATEGIES: tuple[str, ...] = (
     "bollinger", "rsi_meanrevert", "ema_crossover", "macd", "momentum_breakout",
 )
 
+DEFAULT_LABEL_HORIZON = 10  # bars; the forward window run_tune labels (and the lens audit reads)
+
+
+# --------------------------------------------------------------------------- lens audit (advisory)
+#
+# An optional second opinion printed beside the scoreboard (``trading tune --lens-audit``). It is a
+# ruler, not a gate: it never reorders ``results``, never feeds ``pick_config`` / ``apply_tune`` and
+# adds no field to ``TuneResult`` (``asdict`` of that is what gets persisted to trading.yaml).
+
+ENTRY_FEATURES: tuple[str, ...] = ("ret_5", "ret_20", "ret_60", "vol_20")
+# Daily bars: 10 trading days can span ~14 calendar days. 1.6 calendar days per bar is a
+# conservative upper bound, so a label window is never treated as closed before it really is.
+AUDIT_DAYS_PER_BAR = 1.6
+
+FloatArray = NDArray[np.float64]
+
+
+@dataclass(frozen=True)
+class CandidateEvents:
+    """Entry-bar observations for one (strategy, symbol), kept only for the optional lens audit."""
+
+    strategy: str
+    symbol: str
+    day: FloatArray  # calendar day number of each entry bar
+    features: FloatArray  # n x len(ENTRY_FEATURES), all known at the bar's close
+    outcome: FloatArray  # forward return over the label horizon
+
+
+@dataclass(frozen=True)
+class LensVerdicts:
+    """What the audit says about one scoreboard row. ``None`` means too little data to say."""
+
+    reliability: LensResult | None  # read from the same strategy's entries on other symbols
+    future: LensResult | None  # read from this symbol's own matured history
+    n_events: int
+    thinned_by: int = 1
+
+
+def entry_events(
+    strategy: str, symbol: str, df: pd.DataFrame, entry: pd.Series, *, horizon: int
+) -> CandidateEvents | None:
+    """Entry bars with backward-looking features and the realized forward return.
+
+    Features use only data up to and including the bar (trailing returns, trailing volatility),
+    the same anchor ``label_events`` uses, so nothing here looks ahead. Bars whose forward window
+    runs off the end, or whose trailing window is incomplete, are dropped, never zero-filled.
+    """
+    if "time" not in df.columns:
+        return None  # cannot align events across symbols without dates
+    close = df["close"].astype(float)
+    feats = pd.DataFrame({
+        "ret_5": close.pct_change(5),
+        "ret_20": close.pct_change(20),
+        "ret_60": close.pct_change(60),
+        "vol_20": close.pct_change().rolling(20).std(),
+    })
+    fwd = forward_return(close, horizon)
+    fired = entry.astype(float).clip(0, 1).round().astype(bool)
+    ok = fired & feats.notna().all(axis=1) & fwd.notna()
+    if not bool(ok.any()):
+        return None
+    days = (pd.to_datetime(df["time"], utc=True) - pd.Timestamp("1970-01-01", tz="UTC")).dt.days
+    return CandidateEvents(
+        strategy=strategy,
+        symbol=symbol,
+        day=days[ok].to_numpy(dtype=float),
+        features=feats[ok].to_numpy(dtype=float),
+        outcome=fwd[ok].to_numpy(dtype=float),
+    )
+
+
+def _thin(events: list[CandidateEvents], limit: int) -> tuple[list[CandidateEvents], int]:
+    """Keep every k-th event per symbol until the total fits the lens module's dense-matrix limit."""
+    stride = 1
+    while sum(-(-len(e.outcome) // stride) for e in events) > limit:
+        stride += 1
+    if stride == 1:
+        return events, 1
+    return [
+        replace(e, day=e.day[::stride], features=e.features[::stride], outcome=e.outcome[::stride])
+        for e in events
+    ], stride
+
+
+def audit_candidates(
+    events: Iterable[CandidateEvents],
+    *,
+    label_horizon: int = DEFAULT_LABEL_HORIZON,
+    n_perm: int = 500,
+    seed: int = 7,
+) -> dict[tuple[str, str], LensVerdicts]:
+    """Lens verdicts per (strategy, symbol), one attention matrix per strategy.
+
+    Events for a strategy are pooled across its symbols; each symbol is then scored separately
+    (read only from the other symbols for reliability, only from its own matured past for future).
+    A strategy or symbol with too little data gets ``None`` for that lens, never a made-up verdict.
+    """
+    by_strategy: dict[str, list[CandidateEvents]] = {}
+    for e in events:
+        by_strategy.setdefault(e.strategy, []).append(e)
+    horizon_days = math.ceil(label_horizon * AUDIT_DAYS_PER_BAR)
+
+    out: dict[tuple[str, str], LensVerdicts] = {}
+    for strategy in sorted(by_strategy):
+        # sorted by symbol so the answer does not depend on which backtest thread finished first
+        evs, stride = _thin(sorted(by_strategy[strategy], key=lambda e: e.symbol), MAX_EVENTS)
+        x = np.vstack([e.features for e in evs])
+        y = np.concatenate([e.outcome for e in evs])
+        t = np.concatenate([e.day for e in evs])
+        g = np.concatenate([np.full(len(e.outcome), e.symbol) for e in evs])
+        rel: dict[object, LensResult] = {}
+        fut: dict[object, LensResult] = {}
+        try:
+            rel = reliability_by_group(x, y, g, time=t, label_horizon=horizon_days,
+                                       n_perm=n_perm, seed=seed)
+        except ValueError as exc:
+            log.info("tune.lens_audit.reliability_skipped", strategy=strategy, reason=str(exc))
+        try:
+            fut = future_by_group(x, y, g, time=t, label_horizon=horizon_days,
+                                  n_perm=n_perm, seed=seed)
+        except ValueError as exc:
+            log.info("tune.lens_audit.future_skipped", strategy=strategy, reason=str(exc))
+        for e in evs:
+            out[(strategy, e.symbol)] = LensVerdicts(
+                rel.get(e.symbol), fut.get(e.symbol), len(e.outcome), stride)
+    return out
+
+
+def lens_cell(r: LensResult | None) -> str:
+    """One table cell: a yes/no verdict with the numbers behind it, or n/a."""
+    if r is None:
+        return "n/a"
+    return f"{'yes' if r.supported else 'no'} (rho {r.spearman:+.2f}, p {r.p_value:.2f})"
+
 
 def run_tune(
     broker: Broker,
@@ -105,14 +245,19 @@ def run_tune(
     years: float = 5.0,
     parallel: int = 4,
     objective: str = DEFAULT_OBJECTIVE,
-    label_horizon: int = 10,
+    label_horizon: int = DEFAULT_LABEL_HORIZON,
     label_up_threshold: float = 0.03,
+    audit_sink: list[CandidateEvents] | None = None,
 ) -> list[TuneResult]:
     """Run every (strategy, symbol) combo and return ranked results.
 
     Each combo is scored on ``objective`` (a name in ``scoring.objective``) and
     carries its signal-quality precision/recall computed against forward-return
     labels, so the scoreboard shows both stages' health next to P&L.
+
+    ``audit_sink``, when given, collects each successful combo's entry-bar events for the optional
+    lens audit. It is write-only from here: results, ranking and scores are identical with or
+    without it.
     """
     market = MarketData(broker, cache=cache)
     engine = BacktestEngine()
@@ -132,7 +277,7 @@ def run_tune(
             labels = label_events(df, horizon=label_horizon, up_threshold=label_up_threshold)
             rep = confusion(signals["entry"], labels)
             result = engine.run(strategy=strat, df=df, symbol=symbol, timeframe="1d")
-            return TuneResult.from_backtest(
+            row = TuneResult.from_backtest(
                 strategy_name,
                 symbol,
                 result.metrics,
@@ -140,6 +285,17 @@ def run_tune(
                 recall=rep.recall,
                 objective=objective,
             )
+            if audit_sink is not None:
+                # Own handler: a fault in the optional audit must never cost a candidate its row.
+                try:
+                    ev = entry_events(strategy_name, symbol, df, signals["entry"], horizon=label_horizon)
+                except Exception as audit_exc:
+                    log.warning("tune.lens_audit.events_failed", strategy=strategy_name,
+                                symbol=symbol, error=str(audit_exc))
+                else:
+                    if ev is not None:
+                        audit_sink.append(ev)  # list.append is atomic under the GIL
+            return row
         except Exception as e:
             log.warning("tune.combo.failed", strategy=strategy_name, symbol=symbol, error=str(e))
             return None

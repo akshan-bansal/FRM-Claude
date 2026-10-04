@@ -69,7 +69,17 @@ from .signals.overbought_exit import OverboughtExit
 from .signals.oversold_entry import OversoldEntry
 from .signals.profit_lock import ProfitLock
 from .strategies import STRATEGIES, Strategy
-from .tune import DEFAULT_TUNE_STRATEGIES, DEFAULT_TUNE_UNIVERSE, apply_tune, run_tune
+from .tune import (
+    DEFAULT_LABEL_HORIZON,
+    DEFAULT_TUNE_STRATEGIES,
+    DEFAULT_TUNE_UNIVERSE,
+    CandidateEvents,
+    TuneResult,
+    apply_tune,
+    audit_candidates,
+    lens_cell,
+    run_tune,
+)
 
 app = typer.Typer(help="Claude Code algorithmic trading CLI (paper-first; live behind explicit flag).")
 console = Console()
@@ -978,6 +988,31 @@ def risk_report() -> None:
 # ----- tune ------------------------------------------------------------------
 
 
+def _print_lens_audit(rows: list[TuneResult], events: list[CandidateEvents], *, n_perm: int) -> None:
+    """Advisory table under the scoreboard. Reads the results; changes nothing."""
+    verdicts = audit_candidates(events, label_horizon=DEFAULT_LABEL_HORIZON, n_perm=n_perm)
+    table = Table(title="Lens audit (advisory only: does not affect ranking or trading.yaml)")
+    for col in ("strategy", "symbol", "score", "transfer to other symbols",
+                "persistence in own history", "entries"):
+        table.add_column(col)
+    thinned = 1
+    for r in rows:
+        v = verdicts.get((r.strategy, r.symbol))
+        thinned = max(thinned, v.thinned_by) if v else thinned
+        table.add_row(r.strategy, r.symbol, f"{r.score:.2f}",
+                      lens_cell(v.reliability if v else None),
+                      lens_cell(v.future if v else None),
+                      str(v.n_events) if v else "0")
+    console.print(table)
+    console.print(
+        "[dim]transfer: entry-state to forward-return, read from this strategy's entries on other "
+        "symbols. persistence: read from this symbol's own already-matured history. 'no' means not "
+        "distinguishable from chance, which is a limit on the evidence, not proof there is no edge. "
+        f"n/a means too few entries to say.{f' Entries thinned to every {thinned}th.' if thinned > 1 else ''}"
+        "[/dim]"
+    )
+
+
 @app.command()
 def tune(
     years: float = typer.Option(5.0, help="Years of history per backtest"),
@@ -985,6 +1020,10 @@ def tune(
     strategies: str = typer.Option("", help="Comma-separated strategy keys (empty = all)"),
     dry_run: bool = typer.Option(False, help="Score + print, but don't write trading.yaml"),
     parallel: int = typer.Option(4, help="Concurrent backtests"),
+    lens_audit: bool = typer.Option(
+        False, help="Also print an advisory lens audit; never changes ranking or trading.yaml"),
+    lens_permutations: int = typer.Option(
+        500, help="Permutation draws per lens verdict (more = slower, finer p-values)"),
 ) -> None:
     """Backtest a strategy x symbol grid; write the winning config to config/trading.yaml."""
     settings = get_settings()
@@ -998,7 +1037,9 @@ def tune(
         f"[bold]Tuning[/bold] {len(strat_list)} strategies x {len(sym_list)} symbols, "
         f"years={years}, parallel={parallel}"
     )
-    results = run_tune(broker, cache, symbols=sym_list, strategies=strat_list, years=years, parallel=parallel)
+    audit_sink: list[CandidateEvents] | None = [] if lens_audit else None
+    results = run_tune(broker, cache, symbols=sym_list, strategies=strat_list, years=years,
+                       parallel=parallel, audit_sink=audit_sink)
     if not results:
         console.print("[red]No backtests succeeded.[/red]")
         raise typer.Exit(code=1)
@@ -1019,6 +1060,13 @@ def tune(
             f"{r.score:.2f}",
         )
     console.print(table)
+
+    if audit_sink is not None:
+        try:
+            _print_lens_audit(results[:15], audit_sink, n_perm=lens_permutations)
+        except Exception as exc:  # advisory only: it must never stop the tune from completing
+            log.warning("tune.lens_audit.failed", error=str(exc))
+            console.print(f"[yellow]Lens audit skipped ({exc}). Ranking and trading.yaml unaffected.[/yellow]")
 
     update = apply_tune(results, dry_run=dry_run)
     if update is None:
